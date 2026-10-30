@@ -1,10 +1,12 @@
 /**
- * Reusable Tooltip & Plain-English Formatting Utilities (`static/ui/src/components/tooltip.ts`)
+ * Reusable Tooltip, Date, Lozenge & Avatar Utilities (`static/ui/src/components/tooltip.ts`)
  *
- * Provides:
- * 1. `renderInfoTooltip(title, body, formula)`: Renders a sleek `?` badge that reveals
- *    technical math/formulas on hover without cluttering the primary UI.
- * 2. `formatFriendlyDate(isoDate)`: Converts `2026-12-14` -> `Dec 14, 2026` (or `Dec 14`).
+ * Implements Atlassian Design System (ADS) helpers:
+ * 1. `renderInfoTooltip(title, explanation, mathFormula)`: Renders a clean ADS `?` badge that reveals
+ *    technical math/formulas on hover without cluttering the primary Jira view.
+ * 2. `formatFriendlyDate(isoDate)`: Converts `2026-12-14` -> `Dec 14, 2026`.
+ * 3. `renderJiraStatusLozenge(status)`: Renders an authentic rectangular Jira lozenge (`TO DO`, `IN PROGRESS`, `DONE`, `AT RISK`).
+ * 4. `getInitials(name)`: Extracts 2-letter avatar initials (e.g. `PP`, `MC`).
  */
 
 export function escapeHtmlText(str: string): string {
@@ -36,6 +38,27 @@ export function formatFriendlyDate(isoDate: string, includeYear = false): string
   return includeYear ? `${monthName} ${d}, ${y}` : `${monthName} ${d}`;
 }
 
+export function getInitials(name: string): string {
+  if (!name || name.toLowerCase() === 'unassigned') return 'UA';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+export function renderJiraStatusLozenge(status: string): string {
+  const lower = (status || 'To Do').toLowerCase();
+  if (lower === 'done' || lower === 'completed') {
+    return `<span class="jira-lozenge jira-lozenge-done">DONE</span>`;
+  }
+  if (lower.includes('risk') || lower.includes('block') || lower === 'off track') {
+    return `<span class="jira-lozenge jira-lozenge-danger">${escapeHtmlText(status.toUpperCase())}</span>`;
+  }
+  if (lower.includes('progress')) {
+    return `<span class="jira-lozenge jira-lozenge-inprogress">IN PROGRESS</span>`;
+  }
+  return `<span class="jira-lozenge jira-lozenge-todo">TO DO</span>`;
+}
+
 export function renderInfoTooltip(
   title: string,
   explanation: string,
@@ -56,4 +79,3 @@ export function renderInfoTooltip(
     </span>
   `;
 }
-

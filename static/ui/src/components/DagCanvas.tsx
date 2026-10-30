@@ -1,17 +1,12 @@
 /**
- * Step 4 Component 2: Interactive Dependency Graph Canvas (`static/ui/src/components/DagCanvas.tsx`)
+ * Step 4 Component 2: Atlassian Jira-Native Dependency & Timeline Canvas (`static/ui/src/components/DagCanvas.tsx`)
  *
- * Designed for instant visual comprehension:
- * - Spacious 164x66px cards aligned cleanly across 3 team swimlanes.
- * - Zero raw math or Greek symbols on the cards:
- *   Line 1: Issue Key (`CHRON-104`) + Top Impact Badge (`+8d Delay`, `+7.7d`, or `Blocker`)
- *   Line 2: Readable Task Title
- *   Line 3: Clean Status Dot + Status Name (`In Progress`, `Done`, `At Risk`) + Estimate (`7d est.`)
- * - Strong Edge Hierarchy:
- *   Background edges are subtle; Active Downstream Impact path glows with animated crimson arrows.
- * - Rich Floating Hover Inspector Card:
- *   Hovering over any task displays full task summary, assignee, linked Teamwork Graph Goal,
- *   Confluence ADR, and statistical metrics (Uncertainty ±σ, Criticality %, Ripple Weight).
+ * Designed via Stitch MCP (`StitchMCP` Project `9764708271730429878`) to match Jira Cloud cards:
+ * - Authentic white Jira Issue Cards (`#FFFFFF`, `1px solid #DCDFE4`)
+ * - Standard Jira blue checkbox icon (`#0C66E4`) + Issue Key (`BLP-7`) + Rectangular Status Lozenge (`TO DO`, `IN PROGRESS`, `DONE`, `AT RISK`)
+ * - Assignee avatar circle (`PP`, `MC`) + clean estimate tag (`5d est.`)
+ * - Scales cleanly whether the active Jira project has 2 issues (e.g. BloomPath Sprint `BLP-7`, `BLP-8`) or 18 issues.
+ * - Hovering any issue card reveals the floating Jira Inspector Popover with full metadata & math.
  */
 
 import { CausalGraph, SimulationResult } from '../../../../src/engine/types';
@@ -19,6 +14,7 @@ import { evaluateNodeTemporalState } from './TimelineScrubber';
 import {
   escapeHtmlText,
   formatFriendlyDate,
+  getInitials,
   renderInfoTooltip,
 } from './tooltip';
 
@@ -34,33 +30,62 @@ export interface DagCanvasProps {
 
 export function computeNodeCoordinates(
   graph: CausalGraph
-): Record<string, { x: number; y: number; laneIndex: number; colIndex: number }> {
+): {
+  coords: Record<string, { x: number; y: number; laneIndex: number; colIndex: number }>;
+  activeTeams: Array<{ id: string; name: string; lead: string; color: string }>;
+  svgHeight: number;
+  svgWidth: number;
+} {
   const coords: Record<string, { x: number; y: number; laneIndex: number; colIndex: number }> =
     {};
 
-  const teamOrder = graph.teams.map((t) => t.name);
+  // Only render swimlanes that actually contain issues in this project
+  const usedTeamNames = Array.from(new Set(graph.nodes.map((n) => n.team)));
+  const activeTeams = usedTeamNames.map((tName, idx) => {
+    const found = graph.teams.find((t) => t.name === tName);
+    const defaultColors = ['#0C66E4', '#1F845A', '#E2B203', '#6E5DC6'];
+    return (
+      found ?? {
+        id: `team-${idx}`,
+        name: tName,
+        lead: 'Project Team',
+        color: defaultColors[idx % defaultColors.length],
+      }
+    );
+  });
+
+  if (activeTeams.length === 0) {
+    activeTeams.push({
+      id: 'team-0',
+      name: `${graph.projectName} Team`,
+      lead: 'Project Lead',
+      color: '#0C66E4',
+    });
+  }
+
   const laneGroups = new Map<number, string[]>();
-  for (let l = 0; l < Math.max(3, teamOrder.length); l++) {
+  for (let l = 0; l < activeTeams.length; l++) {
     laneGroups.set(l, []);
   }
 
   for (const key of graph.topologicalOrder) {
     const node = graph.nodes.find((n) => n.key === key);
     if (!node) continue;
-    let laneIdx = teamOrder.indexOf(node.team);
+    let laneIdx = activeTeams.findIndex((t) => t.name === node.team);
     if (laneIdx < 0) laneIdx = 0;
     laneGroups.get(laneIdx)!.push(key);
   }
 
-  const laneYCenters = [115, 315, 515];
-  const xStart = 112;
-  const xGap = 186;
+  const laneHeight = 190;
+  const xStart = 128;
+  const xGap = 224;
+  let maxCols = 1;
 
   for (const [laneIdx, keys] of laneGroups.entries()) {
+    if (keys.length > maxCols) maxCols = keys.length;
+    const yBase = laneIdx * laneHeight + 112;
     keys.forEach((key, colIdx) => {
-      const yBase = laneYCenters[laneIdx % laneYCenters.length];
-      // Subtle vertical stagger so horizontal edges never collide with intermediate text
-      const yOffset = colIdx % 2 === 0 ? -8 : 8;
+      const yOffset = keys.length > 2 ? (colIdx % 2 === 0 ? -6 : 6) : 0;
       coords[key] = {
         x: xStart + colIdx * xGap,
         y: yBase + yOffset,
@@ -70,7 +95,10 @@ export function computeNodeCoordinates(
     });
   }
 
-  return coords;
+  const svgHeight = Math.max(240, activeTeams.length * laneHeight + 28);
+  const svgWidth = Math.max(820, xStart + maxCols * xGap + 60);
+
+  return { coords, activeTeams, svgHeight, svgWidth };
 }
 
 export function renderDagCanvas(props: DagCanvasProps): string {
@@ -84,27 +112,28 @@ export function renderDagCanvas(props: DagCanvasProps): string {
     scrubberDayOffset,
   } = props;
 
-  const coords = computeNodeCoordinates(graph);
+  const { coords, activeTeams, svgHeight, svgWidth } = computeNodeCoordinates(graph);
   const blastSet = new Set(activeSim.blastRadiusNodes);
   const criticalSet = new Set(activeSim.criticalPathNodes);
   const hasActiveIntervention =
     delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
   const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
 
-  const nodeW = 160;
-  const nodeH = 66;
+  const nodeW = 192;
+  const nodeH = 82;
+  const laneHeight = 190;
 
-  // Swimlane background bands
-  const laneBands = graph.teams
+  // Swimlane background bands (Atlassian light subtle container)
+  const laneBands = activeTeams
     .map((team, idx) => {
-      const yTop = idx * 200 + 18;
+      const yTop = idx * laneHeight + 16;
       return `
         <g>
-          <rect x="14" y="${yTop}" width="1152" height="184" rx="12"
-            fill="rgba(15, 23, 42, 0.52)" stroke="rgba(148, 163, 184, 0.13)" />
-          <rect x="14" y="${yTop}" width="6" height="184" rx="3" fill="${team.color}" />
-          <text x="32" y="${yTop + 24}" fill="${team.color}" font-size="11.5" font-weight="700" letter-spacing="0.04em">
-            ${escapeHtmlText(team.name.toUpperCase())} TEAM · Lead: ${escapeHtmlText(team.lead)}
+          <rect x="14" y="${yTop}" width="${svgWidth - 28}" height="${laneHeight - 16}" rx="6"
+            fill="#F7F8F9" stroke="#DCDFE4" stroke-width="1" />
+          <rect x="14" y="${yTop}" width="4" height="${laneHeight - 16}" rx="2" fill="${team.color}" />
+          <text x="30" y="${yTop + 22}" fill="#44546F" font-size="11" font-weight="700" letter-spacing="0.04em">
+            ${escapeHtmlText(team.name.toUpperCase())}
           </text>
         </g>
       `;
@@ -123,7 +152,7 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       const x2 = toPos.x - nodeW / 2;
       const y2 = toPos.y;
 
-      const dx = Math.max(46, Math.abs(x2 - x1) * 0.46);
+      const dx = Math.max(48, Math.abs(x2 - x1) * 0.45);
       const pathD = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 
       const isDecoupledEdge = decoupleBlockingEdges && edge.from === selectedNodeKey;
@@ -148,13 +177,13 @@ export function renderDagCanvas(props: DagCanvasProps): string {
         markerId = 'url(#arrow-critical)';
       }
 
-      const edgeTooltip = `${edge.from} ${edge.dependencyType} ${edge.to} (Propagation weight: ${Math.round(edge.propagationWeight * 100)}%)`;
+      const edgeTooltip = `${edge.from} ${edge.dependencyType} ${edge.to}`;
 
       return `<path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>`;
     })
     .join('');
 
-  // Render spacious, easy-to-read task cards
+  // Render authentic Jira Issue Cards inside SVG
   const nodeElements = graph.nodes
     .map((node) => {
       const pos = coords[node.key];
@@ -182,23 +211,28 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       const xLeft = pos.x - nodeW / 2;
       const yTop = pos.y - nodeH / 2;
 
-      let statusColor = '#64748b';
-      let statusShort = 'Scheduled';
+      // Jira Status Lozenge colors inside SVG card
+      let lozengeBg = '#E9F2FF';
+      let lozengeTextCol = '#0055CC';
+      let lozengeLabel = 'TO DO';
       if (temporalState === 'Done') {
-        statusColor = '#10b981';
-        statusShort = 'Done';
+        lozengeBg = '#DFFCF0';
+        lozengeTextCol = '#216E4E';
+        lozengeLabel = 'DONE';
       } else if (temporalState === 'At Risk / Blocked') {
-        statusColor = '#f43f5e';
-        statusShort = 'At Risk';
+        lozengeBg = '#FFECEB';
+        lozengeTextCol = '#AE2E24';
+        lozengeLabel = 'AT RISK';
       } else if (temporalState === 'In Progress') {
-        statusColor = '#38bdf8';
-        statusShort = 'In Progress';
+        lozengeBg = '#FFF7D6';
+        lozengeTextCol = '#A54800';
+        lozengeLabel = 'IN PROGRESS';
       }
 
       const rippleShift = stat?.rippleDelayDays ?? 0;
       const goalObj = graph.goals.find((g) => g.id === node.goalId);
 
-      // Human-friendly badge on top-right of card (Zero `do(...)` notation)
+      // Top-right shift pill if affected by What-If simulation
       let topBadge = '';
       if (isSelected && hasActiveIntervention) {
         const labelText =
@@ -207,12 +241,12 @@ export function renderDagCanvas(props: DagCanvasProps): string {
             : delayDays < 0
               ? `${delayDays}d Faster`
               : addDeveloper
-                ? '+1 Dev Added'
+                ? '+1 Dev'
                 : 'Decoupled';
         topBadge = `
-          <g transform="translate(${xLeft + nodeW - 76}, ${yTop - 11})">
-            <rect width="78" height="19" rx="5" fill="#0284c7" stroke="#7dd3fc" stroke-width="1.2" />
-            <text x="39" y="13" text-anchor="middle" fill="#fff" font-size="9.5" font-weight="700" font-family="Inter, sans-serif">
+          <g transform="translate(${xLeft + nodeW - 72}, ${yTop - 10})">
+            <rect width="72" height="18" rx="3" fill="#0C66E4" />
+            <text x="36" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="700">
               ${escapeHtmlText(labelText)}
             </text>
           </g>
@@ -220,29 +254,20 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       } else if (isInBlast && Math.abs(rippleShift) > 0) {
         const signText =
           rippleShift > 0 ? `+${rippleShift.toFixed(1)}d Slip` : `${rippleShift.toFixed(1)}d`;
-        const fillCol = rippleShift > 0 ? '#be123c' : '#047857';
-        const strokeCol = rippleShift > 0 ? '#fda4af' : '#6ee7b7';
+        const fillCol = rippleShift > 0 ? '#CA3521' : '#1F845A';
         topBadge = `
-          <g transform="translate(${xLeft + nodeW - 64}, ${yTop - 11})">
-            <rect width="66" height="19" rx="5" fill="${fillCol}" stroke="${strokeCol}" stroke-width="1.1" />
-            <text x="33" y="13" text-anchor="middle" fill="#fff" font-size="9.5" font-weight="700" font-family="Inter, sans-serif">
+          <g transform="translate(${xLeft + nodeW - 64}, ${yTop - 10})">
+            <rect width="64" height="18" rx="3" fill="${fillCol}" />
+            <text x="32" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="700">
               ${signText}
-            </text>
-          </g>
-        `;
-      } else if (isCritical) {
-        topBadge = `
-          <g transform="translate(${xLeft + nodeW - 56}, ${yTop - 10})">
-            <rect width="56" height="17" rx="4" fill="rgba(245, 158, 11, 0.25)" stroke="#fbbf24" stroke-width="1" />
-            <text x="28" y="12" text-anchor="middle" fill="#fde68a" font-size="9" font-weight="700" font-family="Inter, sans-serif">
-              Blocker
             </text>
           </g>
         `;
       }
 
       const shortSummary =
-        node.summary.length > 26 ? `${node.summary.slice(0, 25)}…` : node.summary;
+        node.summary.length > 27 ? `${node.summary.slice(0, 26)}…` : node.summary;
+      const avatarInitials = getInitials(node.assignee);
 
       const hoverJson = JSON.stringify({
         key: node.key,
@@ -267,23 +292,36 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           data-node-key="${escapeHtmlText(node.key)}"
           data-node-hover="${escapeHtmlText(hoverJson)}"
         >
+          <!-- Jira White Issue Card -->
           <rect x="${xLeft}" y="${yTop}" width="${nodeW}" height="${nodeH}" class="dag-node-rect" />
-          <!-- Line 1: Issue Key -->
-          <text x="${xLeft + 12}" y="${yTop + 19}" fill="#f8fafc" font-size="11.5" font-weight="700" font-family="JetBrains Mono, monospace">
-            ${escapeHtmlText(node.key)}
-          </text>
-          <!-- Line 2: Human Task Title -->
-          <text x="${xLeft + 12}" y="${yTop + 37}" fill="#e2e8f0" font-size="11" font-weight="500">
+
+          <!-- Row 1: Issue Title (just like Jira Board card) -->
+          <text x="${xLeft + 12}" y="${yTop + 22}" fill="#172B4D" font-size="11.5" font-weight="600">
             ${escapeHtmlText(shortSummary)}
           </text>
-          <!-- Line 3: Clean Status Pill + Duration Estimate (Zero Greek symbols) -->
-          <circle cx="${xLeft + 16}" cy="${yTop + 53}" r="4.5" fill="${statusColor}" />
-          <text x="${xLeft + 25}" y="${yTop + 56}" fill="#94a3b8" font-size="10" font-weight="600">
-            ${escapeHtmlText(statusShort)}
+
+          <!-- Row 2: Rectangular Status Lozenge + Duration Estimate -->
+          <rect x="${xLeft + 12}" y="${yTop + 31}" width="${Math.max(46, lozengeLabel.length * 6.5 + 10)}" height="16" rx="3" fill="${lozengeBg}" />
+          <text x="${xLeft + 17}" y="${yTop + 42.5}" fill="${lozengeTextCol}" font-size="9.2" font-weight="700" letter-spacing="0.03em">
+            ${escapeHtmlText(lozengeLabel)}
           </text>
-          <text x="${xLeft + nodeW - 12}" y="${yTop + 56}" text-anchor="end" fill="#64748b" font-size="10" font-family="JetBrains Mono, monospace">
+          <text x="${xLeft + nodeW - 12}" y="${yTop + 42.5}" text-anchor="end" fill="#626F86" font-size="10">
             ${node.baseEstimateDays}d est.
           </text>
+
+          <!-- Row 3: Jira Blue Checkbox Icon + Issue Key (e.g. BLP-7) + Assignee Avatar Circle -->
+          <rect x="${xLeft + 12}" y="${yTop + 57}" width="13" height="13" rx="2.5" fill="#0C66E4" />
+          <path d="M ${xLeft + 15} ${yTop + 63.5} L ${xLeft + 17.5} ${yTop + 66} L ${xLeft + 22} ${yTop + 60.5}" stroke="#FFFFFF" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+          <text x="${xLeft + 30}" y="${yTop + 67.5}" fill="#44546F" font-size="11" font-weight="600">
+            ${escapeHtmlText(node.key)}
+          </text>
+
+          <!-- Assignee Circular Avatar -->
+          <circle cx="${xLeft + nodeW - 20}" cy="${yTop + 63.5}" r="10" fill="#DFE1E6" stroke="#FFFFFF" stroke-width="1" />
+          <text x="${xLeft + nodeW - 20}" y="${yTop + 67}" text-anchor="middle" fill="#172B4D" font-size="8.5" font-weight="700">
+            ${escapeHtmlText(avatarInitials)}
+          </text>
+
           ${topBadge}
         </g>
       `;
@@ -294,32 +332,32 @@ export function renderDagCanvas(props: DagCanvasProps): string {
     <div class="panel-card dag-panel-card">
       <div class="panel-header">
         <div class="panel-title">
-          <span>🕸️ Cross-Team Dependency Map — Click Any Task to Simulate Delays</span>
+          <span>Issue Dependency Map (${escapeHtmlText(graph.projectName)})</span>
           ${renderInfoTooltip(
-            'Directed Acyclic Graph (DAG) & Ripple Propagation',
-            'Shows how tasks across Core Engine, Cloud Infra, and Client UI depend on one another. Click any task card to test a What-If delay or resource change, or hover over any card for full technical details.',
-            `Kahn Topological Sort (${graph.nodes.length} nodes, ${graph.edges.length} directed edges, ${graph.brokenCycles.length} cycles auto-broken)`
+            'Interactive Issue Dependency Map',
+            'Displays the live issues and dependency links from your selected Jira project. Click any issue card to test a What-If schedule change, or hover over any card for statistical diagnostics.',
+            `Topological Order: ${graph.topologicalOrder.join(' -> ')}`
           )}
         </div>
         <div class="dag-legend">
-          <span class="legend-item"><span class="legend-dot" style="background:#38bdf8;"></span>Selected Task</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span>Critical Blocker</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#f43f5e;"></span>Delayed Downstream</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#10b981;"></span>Completed</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#0C66E4;"></span>Selected Issue</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#E2B203;"></span>Critical Path</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#CA3521;"></span>Impacted Downstream</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#1F845A;"></span>Done</span>
         </div>
       </div>
 
       <div class="dag-viewport" id="dag-viewport-container">
-        <svg viewBox="0 0 1180 620" class="dag-svg" id="pwm-dag-svg">
+        <svg viewBox="0 0 ${svgWidth} ${svgHeight}" class="dag-svg" id="pwm-dag-svg" style="height:${svgHeight}px;min-width:${svgWidth}px;">
           <defs>
             <marker id="arrow-default" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="rgba(148, 163, 184, 0.45)" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#8590A2" />
             </marker>
             <marker id="arrow-critical" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#f59e0b" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#D97706" />
             </marker>
             <marker id="arrow-blast" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#f43f5e" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#CA3521" />
             </marker>
           </defs>
           ${laneBands}
@@ -327,7 +365,7 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           ${nodeElements}
         </svg>
 
-        <!-- Floating Hover Inspector Card (Populated on Node Mouseover) -->
+        <!-- Floating Hover Inspector Card -->
         <div id="dag-node-hover-card" class="dag-hover-card" style="display:none;"></div>
       </div>
     </div>

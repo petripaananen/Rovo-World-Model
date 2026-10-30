@@ -1,5 +1,5 @@
 /**
- * Project World Model (PWM) & Jira Time Machine — Main Forge Entrypoint (`src/index.ts`)
+ * Rovo-World-Model — Main Forge Entrypoint (`src/index.ts`)
  *
  * Exports:
  * - `uiResolverHandler`: `@forge/resolver` handler for the `jira:projectPage` Custom UI Cockpit
@@ -22,19 +22,25 @@ import {
   simulateDelayImpact,
   simulateDelayImpactHandler,
 } from './rovo/actions';
-import { fetchProjectCausalGraph } from './twg/graphFetcher';
+import {
+  fetchAvailableJiraProjects,
+  fetchProjectCausalGraph,
+} from './twg/graphFetcher';
 import { seedJiraProject, seedProjectChronosScenario } from './twg/syntheticSeeder';
 
 const resolver = new Resolver();
 
-function extractProjectKey(req: unknown, payloadProjectKey?: string): string {
-  if (payloadProjectKey) return payloadProjectKey;
+function extractProjectKey(req: unknown, payloadProjectKey?: string): string | undefined {
+  if (payloadProjectKey && payloadProjectKey.trim().length > 0) {
+    return payloadProjectKey.trim().toUpperCase();
+  }
   const ctx = (req as { context?: { extension?: { project?: { key?: string } } } })?.context;
-  return ctx?.extension?.project?.key || 'CHRON';
+  return ctx?.extension?.project?.key;
 }
 
 /**
- * 1. `getGraphData` / `getInitialWorldModel` — Loads the CausalGraph and baseline 500-iteration Monte Carlo simulation.
+ * 1. `getGraphData` / `getInitialWorldModel` — Loads available Jira projects, the active project's
+ *    `CausalGraph`, and baseline 500-iteration Monte Carlo simulation.
  */
 async function handleGetGraphData(req: { payload?: unknown; context?: unknown }) {
   const payload = (req?.payload ?? {}) as {
@@ -42,6 +48,7 @@ async function handleGetGraphData(req: { payload?: unknown; context?: unknown })
     forceDemo?: boolean;
   };
   const projectKey = extractProjectKey(req, payload.projectKey);
+  const availableProjects = await fetchAvailableJiraProjects();
 
   const graph = await fetchProjectCausalGraph({
     projectKey,
@@ -51,6 +58,7 @@ async function handleGetGraphData(req: { payload?: unknown; context?: unknown })
   const baselineSimulation = runMonteCarloSimulation(graph, { iterations: 500 });
 
   return {
+    availableProjects,
     graph,
     simulation: baselineSimulation,
     mcpTools: MCP_TOOLS_MANIFEST,
@@ -61,8 +69,8 @@ resolver.define('getGraphData', handleGetGraphData);
 resolver.define('getInitialWorldModel', handleGetGraphData);
 
 /**
- * 2. `runWhatIfSimulation` / `simulateIntervention` — Runs $do(\text{targetNodeId})$ counterfactual simulation
- * supporting `deltaDays` (-5 to +30), `addDeveloper`, and `decoupleBlockingEdges`.
+ * 2. `runWhatIfSimulation` / `simulateIntervention` — Runs counterfactual simulation
+ *    supporting `deltaDays` (-5 to +30), `addDeveloper`, and `decoupleBlockingEdges`.
  */
 async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unknown }) {
   const payload = (req?.payload ?? {}) as {
@@ -81,7 +89,7 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
   });
 
   const targetNodeId =
-    payload.targetNodeId || graph.topologicalOrder[3] || graph.nodes[0]?.key || 'CHRON-104';
+    payload.targetNodeId || graph.topologicalOrder[0] || graph.nodes[0]?.key || 'BLP-7';
   const deltaDays = Number(payload.deltaDays ?? 0);
   const addDeveloper = Boolean(payload.addDeveloper);
   const decoupleBlockingEdges = Boolean(payload.decoupleBlockingEdges);
@@ -112,14 +120,14 @@ resolver.define('runWhatIfSimulation', handleRunWhatIfSimulation);
 resolver.define('simulateIntervention', handleRunWhatIfSimulation);
 
 /**
- * 3. `loadDemoScenario` / `seedDemoScenario` — One-click Judge Demo Scenario loader ("Project Chronos: Next-Gen Platform Launch").
+ * 3. `loadDemoScenario` / `seedDemoScenario` — Optional Demo Scenario loader if explicitly requested.
  */
 async function handleLoadDemoScenario(req: { payload?: unknown; context?: unknown }) {
   const payload = (req?.payload ?? {}) as {
     projectKey?: string;
     populateJiraIssues?: boolean;
   };
-  const projectKey = extractProjectKey(req, payload.projectKey);
+  const projectKey = extractProjectKey(req, payload.projectKey) || 'BLP';
 
   const seedReport = await seedProjectChronosScenario({
     projectKey,
@@ -139,16 +147,18 @@ resolver.define('loadDemoScenario', handleLoadDemoScenario);
 resolver.define('seedDemoScenario', handleLoadDemoScenario);
 
 /**
- * 4. `createRealJiraIssues` — Uses `seedJiraProject(projectKey)` to create real linked demo issues via Jira REST API.
+ * 4. `createRealJiraIssues` — Uses `seedJiraProject(projectKey)` to create real linked issues via Jira REST API,
+ *    then reloads the live Jira project graph.
  */
 resolver.define('createRealJiraIssues', async (req) => {
   const payload = (req?.payload ?? {}) as { projectKey?: string };
-  const projectKey = extractProjectKey(req, payload.projectKey);
+  const projectKey = extractProjectKey(req, payload.projectKey) || 'BLP';
   const seedReport = await seedJiraProject(projectKey);
-  const baselineSimulation = runMonteCarloSimulation(seedReport.graph, { iterations: 500 });
+  const liveGraph = await fetchProjectCausalGraph({ projectKey });
+  const baselineSimulation = runMonteCarloSimulation(liveGraph, { iterations: 500 });
   return {
     seedReport,
-    graph: seedReport.graph,
+    graph: liveGraph,
     simulation: baselineSimulation,
   };
 });

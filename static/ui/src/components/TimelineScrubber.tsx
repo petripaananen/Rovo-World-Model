@@ -1,11 +1,8 @@
 /**
- * Step 4 Component 3: Time Machine Scrubber (`static/ui/src/components/TimelineScrubber.tsx`)
+ * Step 4 Component 3: Atlassian Jira-Native Timeline Scrubber (`static/ui/src/components/TimelineScrubber.tsx`)
  *
- * Human-first Timeline Scrubber:
- * - Clean milestone buttons with human dates (no raw `t₀` notation in primary labels).
- * - Dragging the slider updates the DAG canvas in real time to show which tasks are
- *   Done, In Progress, At Risk, or Scheduled on that exact calendar date.
- * - Sleek Delivery Confidence Bar (with hover tooltip revealing the full 500-run Monte Carlo distribution).
+ * Clean Jira Plans / Timeline bar with rectangular ADS status lozenges (`DONE`, `IN PROGRESS`, `AT RISK`, `TO DO`)
+ * and human-friendly milestone buttons.
  */
 
 import { addCalendarDays } from '../../../../src/engine/dag';
@@ -23,9 +20,6 @@ import {
 
 export type TemporalNodeState = 'Done' | 'In Progress' | 'At Risk / Blocked' | 'Scheduled';
 
-/**
- * Evaluates a node's expected state on any scrubbed day offset `t` (-28d to +65d).
- */
 export function evaluateNodeTemporalState(
   node: CausalNode,
   stat: NodeSimulationStats | undefined,
@@ -34,7 +28,6 @@ export function evaluateNodeTemporalState(
 ): TemporalNodeState {
   const statusLower = node.status.toLowerCase();
 
-  // At Present State (t === 0), reflect live status + any active blast-radius risk
   if (scrubberDayOffset === 0) {
     if (statusLower === 'done') return 'Done';
     if (statusLower === 'blocked' || (hasActiveIntervention && (stat?.rippleDelayDays ?? 0) >= 3)) {
@@ -44,7 +37,6 @@ export function evaluateNodeTemporalState(
     return 'Scheduled';
   }
 
-  // Past Sprints (t < 0)
   if (scrubberDayOffset < 0) {
     const completedAgo = node.completedDaysAgo ?? 14;
     if (statusLower === 'done' && scrubberDayOffset >= -completedAgo) {
@@ -59,7 +51,6 @@ export function evaluateNodeTemporalState(
     return 'Scheduled';
   }
 
-  // Future Forecast Window (t > 0)
   if (statusLower === 'done') return 'Done';
 
   const p50Start = stat?.p50StartDay ?? 0;
@@ -93,12 +84,12 @@ export interface TimelineScrubberProps {
 }
 
 const HUMAN_EPOCH_LABELS: Record<number, { title: string; badge: string }> = {
-  0: { title: 'Sprint -2 (Kickoff)', badge: '4 Weeks Ago' },
-  1: { title: 'Sprint -1 (Integration)', badge: '2 Weeks Ago' },
-  2: { title: 'Today (Current Sprint)', badge: 'Live State' },
-  3: { title: 'Likely Finish (50%)', badge: 'Median Target' },
-  4: { title: 'Commit Target (85%)', badge: 'Recommended' },
-  5: { title: 'Worst-Case Buffer (95%)', badge: 'Safe Cutoff' },
+  0: { title: 'Sprint -2', badge: '4W AGO' },
+  1: { title: 'Sprint -1', badge: '2W AGO' },
+  2: { title: 'Today (Current)', badge: 'LIVE' },
+  3: { title: 'Likely Finish', badge: '50% TARGET' },
+  4: { title: 'Commit Target', badge: '85% COMMIT' },
+  5: { title: 'Buffer Cutoff', badge: '95% SAFE' },
 };
 
 export function renderTimelineScrubber(props: TimelineScrubberProps): string {
@@ -136,8 +127,8 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
     scrubberDayOffset === 0
       ? 'Today'
       : scrubberDayOffset > 0
-        ? `In ${scrubberDayOffset} Days`
-        : `${Math.abs(scrubberDayOffset)} Days Ago`;
+        ? `+${scrubberDayOffset} Days`
+        : `${scrubberDayOffset} Days`;
 
   const maxBucketProb = Math.max(
     0.05,
@@ -148,22 +139,21 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
     <section class="time-machine-panel">
       <div class="tm-header">
         <div class="tm-title">
-          <span>⏱️ Project Time Machine — Scrub Past Sprints to Future Delivery Dates</span>
+          <span>Timeline &amp; Sprint Forecast Scrubber</span>
           ${renderInfoTooltip(
-            'Temporal State & Probability Cone Scrubber',
-            'Click any milestone or drag the timeline slider to inspect the exact state of every task on that calendar date. Hover over the mini histogram on the right to inspect the 500-world Monte Carlo completion density.',
-            `Reference t₀ = ${graph.referenceDate} | Viewing t = ${scrubberDayOffset >= 0 ? `+${scrubberDayOffset}d` : `${scrubberDayOffset}d`} (${scrubbedDate})`
+            'Timeline Scrubber',
+            'Select a sprint milestone or drag the timeline slider to preview which issues are expected to be Done, In Progress, or At Risk on any future date.',
+            `Reference Date = ${graph.referenceDate} | Selected Offset = ${scrubberDayOffset}d (${scrubbedDate})`
           )}
         </div>
         <div class="tm-date-readout">
           <span class="tm-date-pill">
-            📅 Viewing Date: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
-            <span class="tm-offset-tag">${relativeOffsetLabel}</span>
+            Viewing Date: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
+            <span class="jira-lozenge jira-lozenge-todo">${relativeOffsetLabel}</span>
           </span>
         </div>
       </div>
 
-      <!-- Clean Milestone Buttons -->
       <div class="epoch-track">
         ${epochs
           .map((ep, idx) => {
@@ -171,15 +161,20 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
               title: ep.label,
               badge: `${ep.dayOffset >= 0 ? `+${ep.dayOffset}d` : `${ep.dayOffset}d`}`,
             };
-            const isFutureShift = idx >= 3 && ep.dayOffset > 0;
+            const lozClass =
+              idx === 2
+                ? 'jira-lozenge-done'
+                : idx >= 3
+                  ? 'jira-lozenge-todo'
+                  : 'jira-lozenge-neutral';
             return `
               <button
                 class="epoch-node ${idx === selectedEpochIndex ? 'active' : ''}"
                 data-epoch-idx="${idx}"
-                title="${escapeHtmlText(ep.narrative)} (Offset: ${ep.dayOffset >= 0 ? `+${ep.dayOffset}d` : `${ep.dayOffset}d`})"
+                title="${escapeHtmlText(ep.narrative)}"
               >
                 <div class="epoch-node-top">
-                  <span class="epoch-badge-tag ${idx === 2 ? 'today-tag' : isFutureShift ? 'future-tag' : ''}">${escapeHtmlText(meta.badge)}</span>
+                  <span class="jira-lozenge ${lozClass}">${escapeHtmlText(meta.badge)}</span>
                   <span class="epoch-date-str">${formatFriendlyDate(ep.date)}</span>
                 </div>
                 <div class="epoch-node-label">${escapeHtmlText(meta.title)}</div>
@@ -192,33 +187,32 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
       <div class="tm-scrubber-row">
         <div class="tm-narrative-box">
           <div class="tm-slider-wrap">
-            <span class="tm-slider-bound">◀ 4 Weeks Ago</span>
+            <span class="tm-slider-bound">Past (-28d)</span>
             <input
               type="range"
               min="-28"
-              max="${Math.max(56, Math.ceil(activeSim.p95Days) + 6)}"
+              max="${Math.max(35, Math.ceil(activeSim.p95Days) + 6)}"
               value="${scrubberDayOffset}"
               class="tm-slider"
               id="time-machine-range"
-              title="Drag to scrub across project history and simulated future completion dates"
+              title="Drag to scrub across past sprints and future completion dates"
             />
-            <span class="tm-slider-bound">Worst-Case (${formatFriendlyDate(activeSim.p95Date)}) ▶</span>
+            <span class="tm-slider-bound">Buffer (${formatFriendlyDate(activeSim.p95Date)})</span>
           </div>
 
           <div class="tm-status-summary">
-            <span class="tm-status-prefix">Project Snapshot on <strong>${formatFriendlyDate(scrubbedDate)}</strong>:</span>
-            <span class="badge-pill emerald">✓ ${dynamicDone} Done</span>
-            <span class="badge-pill cyan">● ${dynamicInProgress} In Progress</span>
-            <span class="badge-pill ${dynamicAtRisk > 0 ? 'rose' : ''}">⚠ ${dynamicAtRisk} At Risk / Blocked</span>
-            <span class="badge-pill">⏳ ${dynamicScheduled} Scheduled</span>
+            <span class="tm-status-prefix">Status on <strong>${formatFriendlyDate(scrubbedDate)}</strong>:</span>
+            <span class="jira-lozenge jira-lozenge-done">${dynamicDone} DONE</span>
+            <span class="jira-lozenge jira-lozenge-inprogress">${dynamicInProgress} IN PROGRESS</span>
+            <span class="jira-lozenge ${dynamicAtRisk > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-neutral'}">${dynamicAtRisk} AT RISK</span>
+            <span class="jira-lozenge jira-lozenge-todo">${dynamicScheduled} TO DO</span>
           </div>
         </div>
 
-        <!-- Compact Forecast Distribution Preview (Math details on hover) -->
-        <div class="cone-box-wrap" title="Hover individual bars to see exact Monte Carlo completion probability and cumulative confidence (CDF)">
+        <div class="cone-box-wrap" title="Hover bars for exact Monte Carlo completion probability and cumulative confidence">
           <div class="cone-box-header">
-            <span>Release Probability Curve</span>
-            <strong style="color:#fcd34d;">85% Target: ${formatFriendlyDate(activeSim.p85Date)}</strong>
+            <span>Delivery Confidence Distribution</span>
+            <strong style="color:#0C66E4;">Target: ${formatFriendlyDate(activeSim.p85Date)}</strong>
           </div>
           <div class="cone-mini-chart">
             ${activeSim.distributionBuckets
@@ -229,7 +223,7 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
                 return `
                   <div
                     class="cone-bar-col"
-                    title="${formatFriendlyDate(b.date, true)} (+${b.dayOffset}d): ${Math.round(b.probability * 100)}% finish probability | Cumulative Confidence: ${Math.round(b.cumulativeProbability * 100)}%"
+                    title="${formatFriendlyDate(b.date, true)}: ${Math.round(b.probability * 100)}% density | Confidence: ${Math.round(b.cumulativeProbability * 100)}%"
                   >
                     <div class="cone-bar ${isNearP85 ? 'p85-marker' : ''} ${isNearScrub ? 'scrub-marker' : ''}" style="height:${heightPct}%;"></div>
                     <span class="cone-bar-label">${formatFriendlyDate(b.date)}</span>

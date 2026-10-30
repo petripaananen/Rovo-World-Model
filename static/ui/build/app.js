@@ -1197,621 +1197,169 @@ function runIntervention(graph, targetNodeId, deltaDays, iterationsOrOptions = D
 }
 
 
-// === Module: twg/syntheticSeeder ===
+// === Module: ui/components/tooltip ===
 /**
- * Project World Model (PWM) — Synthetic Seeder & Judge-Ready Demo Dataset
+ * Reusable Tooltip, Date, Lozenge & Avatar Utilities (`static/ui/src/components/tooltip.ts`)
  *
- * Implements "Project Chronos: Next-Gen Platform Launch":
- * - 18 interconnected CausalNodes across 3 Engineering Teams (*Core Engine*, *Cloud Infra*, *Client UI*)
- * - 2 high-level Atlassian Teamwork Graph (TWG) Goals (*Zero-Downtime Migration*, *Q4 Global Launch*)
- * - Rich cross-team causal edges (`Blocks`, `Depends on`, `Architectural Decision`)
- * - Provides `seedJiraProject(projectKey)` (and `seedProjectChronosScenario`) to either:
- *   (a) Populate real linked Jira issues via `api.asApp().requestJira(route`/rest/api/3/issue`)`
- *   (b) Load a zero-setup in-memory / Forge storage causal graph snapshot (`isSyntheticDemo: true`)
+ * Implements Atlassian Design System (ADS) helpers:
+ * 1. `renderInfoTooltip(title, explanation, mathFormula)`: Renders a clean ADS `?` badge that reveals
+ *    technical math/formulas on hover without cluttering the primary Jira view.
+ * 2. `formatFriendlyDate(isoDate)`: Converts `2026-12-14` -> `Dec 14, 2026`.
+ * 3. `renderJiraStatusLozenge(status)`: Renders an authentic rectangular Jira lozenge (`TO DO`, `IN PROGRESS`, `DONE`, `AT RISK`).
+ * 4. `getInitials(name)`: Extracts 2-letter avatar initials (e.g. `PP`, `MC`).
  */
-const CHRONOS_DEFAULT_REFERENCE_DATE = '2026-10-30';
-const CHRONOS_TEAMS = [
-    {
-        id: 'team-core-engine',
-        name: 'Core Engine',
-        lead: 'Elena Vance',
-        color: '#6366f1',
-        cognitiveLoad: 78,
-    },
-    {
-        id: 'team-cloud-infra',
-        name: 'Cloud Infra',
-        lead: 'Marcus Chen',
-        color: '#06b6d4',
-        cognitiveLoad: 74,
-    },
-    {
-        id: 'team-client-ui',
-        name: 'Client UI',
-        lead: 'Aria Patel',
-        color: '#10b981',
-        cognitiveLoad: 66,
-    },
-];
-function buildChronosGoals(referenceDate = CHRONOS_DEFAULT_REFERENCE_DATE) {
-    return [
-        {
-            id: 'GOAL-ALPHA',
-            key: 'TWG-GOAL-101',
-            name: 'Zero-Downtime Migration',
-            targetDate: addCalendarDays(referenceDate, 24),
-            targetDayOffset: 24,
-            ownerTeam: 'Core Engine',
-            description: 'Complete distributed state WAL sync, zero-copy graph serializer, and zero-downtime multi-region cutover under 50ms.',
-            status: 'On Track',
-        },
-        {
-            id: 'GOAL-OMEGA',
-            key: 'TWG-GOAL-202',
-            name: 'Q4 Global Launch',
-            targetDate: addCalendarDays(referenceDate, 43),
-            targetDayOffset: 43,
-            ownerTeam: 'Client UI',
-            description: 'Ship interactive Time Machine cockpit, Rovo Causal Agent actions, MCP server endpoint, and pass global production readiness.',
-            status: 'On Track',
-        },
+function escapeHtmlText(str) {
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+function formatFriendlyDate(isoDate, includeYear = false) {
+    if (!isoDate || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate))
+        return isoDate;
+    const [y, m, d] = isoDate.split('-').map(Number);
+    const months = [
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec',
     ];
+    const monthName = months[(m - 1) % 12] ?? 'Nov';
+    return includeYear ? `${monthName} ${d}, ${y}` : `${monthName} ${d}`;
 }
-/**
- * Generates the 18 interconnected nodes for "Project Chronos: Next-Gen Platform Launch"
- * across *Core Engine*, *Cloud Infra*, and *Client UI*.
- */
-function buildChronosNodes(projectKey = 'CHRON', referenceDate = CHRONOS_DEFAULT_REFERENCE_DATE) {
-    const prefix = projectKey.trim().toUpperCase() || 'CHRON';
-    const k = (num) => `${prefix}-${num}`;
-    return [
-        // =========================================================================
-        // TEAM 1: Core Engine (6 Nodes: 101..106)
-        // =========================================================================
-        {
-            id: k(101),
-            key: k(101),
-            summary: 'Event-Sourced Graph Schema & Immutable Ledger Spec',
-            status: 'Done',
-            baseEstimateDays: 4,
-            uncertaintySigma: 0.4,
-            assignee: 'Elena Vance',
-            team: 'Core Engine',
-            goalId: 'GOAL-ALPHA',
-            sprint: -2,
-            issueType: 'Epic',
-            storyPoints: 5,
-            completedDaysAgo: 18,
-            dueDate: addCalendarDays(referenceDate, -18),
-            confluenceDecision: {
-                id: 'CONF-ADR-01',
-                title: 'ADR-01: Event-Sourced Causal Graph Ledger Specification',
-                spaceKey: 'ARCH',
-            },
-        },
-        {
-            id: k(102),
-            key: k(102),
-            summary: 'Multi-Tenant Storage Sharding & Key-Value Snapshot Layer',
-            status: 'Done',
-            baseEstimateDays: 5,
-            uncertaintySigma: 0.5,
-            assignee: 'Devon Brooks',
-            team: 'Core Engine',
-            goalId: 'GOAL-ALPHA',
-            sprint: -1,
-            issueType: 'Story',
-            storyPoints: 5,
-            completedDaysAgo: 9,
-            dueDate: addCalendarDays(referenceDate, -9),
-        },
-        {
-            id: k(103),
-            key: k(103),
-            summary: 'Incremental Jira Webhook & IssueLink Ingestion Pipeline',
-            status: 'In Progress',
-            baseEstimateDays: 5,
-            uncertaintySigma: 1.4,
-            assignee: 'Devon Brooks',
-            team: 'Core Engine',
-            goalId: 'GOAL-ALPHA',
-            sprint: 0,
-            issueType: 'Story',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 5),
-        },
-        {
-            id: k(104),
-            key: k(104),
-            summary: 'Distributed State Snapshot & WAL Sync Protocol',
-            status: 'In Progress',
-            baseEstimateDays: 7,
-            uncertaintySigma: 2.3,
-            assignee: 'Elena Vance',
-            team: 'Core Engine',
-            goalId: 'GOAL-ALPHA',
-            sprint: 0,
-            issueType: 'Epic',
-            storyPoints: 8,
-            dueDate: addCalendarDays(referenceDate, 7),
-            confluenceDecision: {
-                id: 'CONF-ADR-04',
-                title: 'ADR-04: Distributed WAL Consensus & Snapshot Handoff Protocol',
-                spaceKey: 'ARCH',
-            },
-        },
-        {
-            id: k(105),
-            key: k(105),
-            summary: 'High-Throughput Graph Mutation & Concurrency Lock Manager',
-            status: 'To Do',
-            baseEstimateDays: 6,
-            uncertaintySigma: 1.8,
-            assignee: 'Elena Vance',
-            team: 'Core Engine',
-            goalId: 'GOAL-ALPHA',
-            sprint: 1,
-            issueType: 'Story',
-            storyPoints: 8,
-            dueDate: addCalendarDays(referenceDate, 14),
-        },
-        {
-            id: k(106),
-            key: k(106),
-            summary: 'Core Engine Chaos Fault-Injection & Zero-Downtime Cutover Gate',
-            status: 'To Do',
-            baseEstimateDays: 5,
-            uncertaintySigma: 1.5,
-            assignee: 'Devon Brooks',
-            team: 'Core Engine',
-            goalId: 'GOAL-ALPHA',
-            sprint: 1,
-            issueType: 'Task',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 21),
-        },
-        // =========================================================================
-        // TEAM 2: Cloud Infra (6 Nodes: 107..112)
-        // =========================================================================
-        {
-            id: k(107),
-            key: k(107),
-            summary: 'Topological Sort & Three-Color DFS Cycle Breaker Kernel',
-            status: 'Done',
-            baseEstimateDays: 4,
-            uncertaintySigma: 0.3,
-            assignee: 'Marcus Chen',
-            team: 'Cloud Infra',
-            goalId: 'GOAL-ALPHA',
-            sprint: -2,
-            issueType: 'Story',
-            storyPoints: 5,
-            completedDaysAgo: 15,
-            dueDate: addCalendarDays(referenceDate, -15),
-        },
-        {
-            id: k(108),
-            key: k(108),
-            summary: 'Twin-Network Common Random Numbers (CRN) Monte Carlo Sampler',
-            status: 'In Progress',
-            baseEstimateDays: 6,
-            uncertaintySigma: 1.6,
-            assignee: 'Marcus Chen',
-            team: 'Cloud Infra',
-            goalId: 'GOAL-ALPHA',
-            sprint: 0,
-            issueType: 'Story',
-            storyPoints: 8,
-            dueDate: addCalendarDays(referenceDate, 6),
-        },
-        {
-            id: k(109),
-            key: k(109),
-            summary: 'Zero-Copy Graph Tensor Serializer & Multi-Region Replication Bridge',
-            status: 'Blocked',
-            baseEstimateDays: 6,
-            uncertaintySigma: 2.5,
-            assignee: 'Sora Takahashi',
-            team: 'Cloud Infra',
-            goalId: 'GOAL-ALPHA',
-            sprint: 0,
-            issueType: 'Story',
-            storyPoints: 8,
-            dueDate: addCalendarDays(referenceDate, 13),
-        },
-        {
-            id: k(110),
-            key: k(110),
-            summary: 'Atlassian Teamwork Graph (TWG) Goal-to-Issue Alignment Resolver',
-            status: 'To Do',
-            baseEstimateDays: 5,
-            uncertaintySigma: 1.5,
-            assignee: 'Sora Takahashi',
-            team: 'Cloud Infra',
-            goalId: 'GOAL-OMEGA',
-            sprint: 1,
-            issueType: 'Story',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 19),
-        },
-        {
-            id: k(111),
-            key: k(111),
-            summary: 'Rovo Counterfactual Action Handlers & Bottleneck Synthesizer',
-            status: 'To Do',
-            baseEstimateDays: 5,
-            uncertaintySigma: 1.4,
-            assignee: 'Marcus Chen',
-            team: 'Cloud Infra',
-            goalId: 'GOAL-OMEGA',
-            sprint: 2,
-            issueType: 'Story',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 26),
-        },
-        {
-            id: k(112),
-            key: k(112),
-            summary: 'Model Context Protocol (MCP) JSON-RPC World Model Webtrigger',
-            status: 'To Do',
-            baseEstimateDays: 4,
-            uncertaintySigma: 1.2,
-            assignee: 'Sora Takahashi',
-            team: 'Cloud Infra',
-            goalId: 'GOAL-OMEGA',
-            sprint: 2,
-            issueType: 'Task',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 30),
-        },
-        // =========================================================================
-        // TEAM 3: Client UI (6 Nodes: 113..118)
-        // =========================================================================
-        {
-            id: k(113),
-            key: k(113),
-            summary: 'Dark-Mode Cockpit Design System & Probability Cone Tokens',
-            status: 'Done',
-            baseEstimateDays: 3,
-            uncertaintySigma: 0.3,
-            assignee: 'Aria Patel',
-            team: 'Client UI',
-            goalId: 'GOAL-OMEGA',
-            sprint: -1,
-            issueType: 'Story',
-            storyPoints: 3,
-            completedDaysAgo: 11,
-            dueDate: addCalendarDays(referenceDate, -11),
-        },
-        {
-            id: k(114),
-            key: k(114),
-            summary: 'Interactive Causal DAG Canvas & Blast Radius Ripple Renderer',
-            status: 'In Progress',
-            baseEstimateDays: 6,
-            uncertaintySigma: 1.5,
-            assignee: 'Aria Patel',
-            team: 'Client UI',
-            goalId: 'GOAL-OMEGA',
-            sprint: 0,
-            issueType: 'Story',
-            storyPoints: 8,
-            dueDate: addCalendarDays(referenceDate, 6),
-        },
-        {
-            id: k(115),
-            key: k(115),
-            summary: 'Temporal Scrubber ("Time Machine") Past-to-Future Cone Slider',
-            status: 'To Do',
-            baseEstimateDays: 5,
-            uncertaintySigma: 1.4,
-            assignee: 'Liam O’Connor',
-            team: 'Client UI',
-            goalId: 'GOAL-OMEGA',
-            sprint: 1,
-            issueType: 'Story',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 18),
-        },
-        {
-            id: k(116),
-            key: k(116),
-            summary: 'Real-Time Delay/Accelerate Intervention Panel & Goal Telemetry HUD',
-            status: 'To Do',
-            baseEstimateDays: 5,
-            uncertaintySigma: 1.5,
-            assignee: 'Aria Patel',
-            team: 'Client UI',
-            goalId: 'GOAL-OMEGA',
-            sprint: 2,
-            issueType: 'Story',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 25),
-        },
-        {
-            id: k(117),
-            key: k(117),
-            summary: 'End-to-End Multi-Team Shadow Simulation & Load Verification',
-            status: 'To Do',
-            baseEstimateDays: 5,
-            uncertaintySigma: 1.7,
-            assignee: 'Liam O’Connor',
-            team: 'Client UI',
-            goalId: 'GOAL-OMEGA',
-            sprint: 2,
-            issueType: 'Task',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 33),
-        },
-        {
-            id: k(118),
-            key: k(118),
-            summary: 'Project Chronos Q4 Global Launch Production Cutover & Sign-Off',
-            status: 'To Do',
-            baseEstimateDays: 4,
-            uncertaintySigma: 1.1,
-            assignee: 'Aria Patel',
-            team: 'Client UI',
-            goalId: 'GOAL-OMEGA',
-            sprint: 3,
-            issueType: 'Milestone',
-            storyPoints: 5,
-            dueDate: addCalendarDays(referenceDate, 39),
-        },
-    ];
+function getInitials(name) {
+    if (!name || name.toLowerCase() === 'unassigned')
+        return 'UA';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1)
+        return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
-/**
- * Generates the causal dependency edges (`Blocks`, `Depends on`, `Architectural Decision`)
- * connecting the 18 nodes across *Core Engine*, *Cloud Infra*, and *Client UI*.
- */
-function buildChronosEdges(projectKey = 'CHRON') {
-    const prefix = projectKey.trim().toUpperCase() || 'CHRON';
-    const k = (num) => `${prefix}-${num}`;
-    return [
-        // Foundation links
-        { from: k(101), to: k(102), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(101), to: k(107), dependencyType: 'Architectural Decision', propagationWeight: 0.9 },
-        { from: k(102), to: k(103), dependencyType: 'Blocks', propagationWeight: 0.9 },
-        { from: k(102), to: k(104), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        // Critical bottleneck fan-out from CHRON-104 (Distributed State Snapshot & WAL Sync Protocol)
-        { from: k(104), to: k(105), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(104), to: k(109), dependencyType: 'Architectural Decision', propagationWeight: 1.0 },
-        { from: k(103), to: k(110), dependencyType: 'Depends on', propagationWeight: 0.85 },
-        // Core Engine completion chain -> GOAL-ALPHA (Zero-Downtime Migration)
-        { from: k(105), to: k(106), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(109), to: k(106), dependencyType: 'Depends on', propagationWeight: 0.85 },
-        // Cloud Infra chain
-        { from: k(107), to: k(108), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(108), to: k(109), dependencyType: 'Blocks', propagationWeight: 0.95 },
-        { from: k(109), to: k(110), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(109), to: k(111), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(110), to: k(111), dependencyType: 'Depends on', propagationWeight: 0.9 },
-        { from: k(110), to: k(112), dependencyType: 'Blocks', propagationWeight: 0.95 },
-        // Client UI chain + Cross-Team Handoffs
-        { from: k(113), to: k(114), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(108), to: k(115), dependencyType: 'Architectural Decision', propagationWeight: 0.85 },
-        { from: k(114), to: k(115), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(109), to: k(116), dependencyType: 'Depends on', propagationWeight: 0.95 },
-        { from: k(115), to: k(116), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        // Final convergence to Q4 Global Launch (CHRON-117 -> CHRON-118)
-        { from: k(106), to: k(117), dependencyType: 'Architectural Decision', propagationWeight: 0.95 },
-        { from: k(111), to: k(117), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(112), to: k(117), dependencyType: 'Depends on', propagationWeight: 0.9 },
-        { from: k(116), to: k(117), dependencyType: 'Blocks', propagationWeight: 1.0 },
-        { from: k(117), to: k(118), dependencyType: 'Blocks', propagationWeight: 1.0 },
-    ];
+function renderJiraStatusLozenge(status) {
+    const lower = (status || 'To Do').toLowerCase();
+    if (lower === 'done' || lower === 'completed') {
+        return `<span class="jira-lozenge jira-lozenge-done">DONE</span>`;
+    }
+    if (lower.includes('risk') || lower.includes('block') || lower === 'off track') {
+        return `<span class="jira-lozenge jira-lozenge-danger">${escapeHtmlText(status.toUpperCase())}</span>`;
+    }
+    if (lower.includes('progress')) {
+        return `<span class="jira-lozenge jira-lozenge-inprogress">IN PROGRESS</span>`;
+    }
+    return `<span class="jira-lozenge jira-lozenge-todo">TO DO</span>`;
 }
-/**
- * Returns the complete, cycle-verified 18-node "Project Chronos: Next-Gen Platform Launch"
- * `CausalGraph` snapshot (`isSyntheticDemo: true`) ready for simulation.
- */
-function getChronosSyntheticGraph(projectKey = 'CHRON', referenceDate = CHRONOS_DEFAULT_REFERENCE_DATE) {
-    const cleanKey = projectKey.trim().toUpperCase() || 'CHRON';
-    const nodes = buildChronosNodes(cleanKey, referenceDate);
-    const edges = buildChronosEdges(cleanKey);
-    const goals = buildChronosGoals(referenceDate);
-    return buildCausalDAG({
-        projectKey: cleanKey,
-        projectName: 'Project Chronos: Next-Gen Platform Launch',
-        referenceDate,
-        source: 'synthetic-seed',
-        isSyntheticDemo: true,
-        nodes,
-        edges,
-        goals,
-        teams: CHRONOS_TEAMS,
-    });
-}
-/**
- * Helper `seedJiraProject(projectKey)` that uses `api.asApp().requestJira(route`/rest/api/3/issue`)`
- * to create real linked demo issues in Jira when the user clicks "Create Real Jira Issues".
- */
-async function seedJiraProject(projectKey = 'CHRON') {
-    return seedProjectChronosScenario({
-        projectKey,
-        populateJiraIssues: true,
-    });
-}
-/**
- * Populates the Project Chronos scenario either:
- * (a) into live Jira issues + issueLinks via `api.asApp().requestJira()` when `populateJiraIssues` is true, OR
- * (b) into an in-memory / Forge app storage causal graph snapshot (`isSyntheticDemo: true`) so judges can test
- *     immediately in empty Jira cloud instances with zero setup.
- */
-async function seedProjectChronosScenario(options = {}) {
-    const projectKey = (options.projectKey || 'CHRON').trim().toUpperCase();
-    const referenceDate = options.referenceDate || CHRONOS_DEFAULT_REFERENCE_DATE;
-    const syntheticGraph = getChronosSyntheticGraph(projectKey, referenceDate);
-    // Attempt to persist snapshot in Forge KVS storage if running inside Atlassian Forge
-    try {
-        const forgeApi = await import('@forge/api');
-        if (forgeApi?.storage) {
-            await forgeApi.storage.set(`pwm:graph:${projectKey}`, syntheticGraph);
-            await forgeApi.storage.set('pwm:activeDemoGraph', syntheticGraph);
-        }
-    }
-    catch {
-        // Running outside Forge runtime (e.g., local test runner); in-memory graph is returned directly
-    }
-    if (!options.populateJiraIssues) {
-        return {
-            mode: 'in-memory-snapshot',
-            projectKey,
-            createdIssuesCount: 0,
-            createdLinksCount: 0,
-            graph: syntheticGraph,
-            message: `Loaded "Project Chronos: Next-Gen Platform Launch" (${syntheticGraph.nodes.length} causal nodes, ${syntheticGraph.edges.length} dependency links across ${syntheticGraph.teams.length} teams and ${syntheticGraph.goals.length} Teamwork Graph Goals).`,
-        };
-    }
-    // Option (a): Attempt to create real linked Jira issues via `api.asApp().requestJira(route`/rest/api/3/issue`)`
-    let createdIssuesCount = 0;
-    let createdLinksCount = 0;
-    const syntheticToRealKey = new Map();
-    try {
-        const forgeApi = await import('@forge/api');
-        const api = forgeApi.default;
-        const { route } = forgeApi;
-        for (const node of syntheticGraph.nodes) {
-            const response = await api.asApp().requestJira(route `/rest/api/3/issue`, {
-                method: 'POST',
-                headers: {
-                    Accept: 'application/json',
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    fields: {
-                        project: { key: projectKey },
-                        summary: `[PWM] ${node.summary}`,
-                        issuetype: { name: 'Task' },
-                        labels: [
-                            `team:${node.team.replace(/\s+/g, '-')}`,
-                            `goal:${node.goalId}`,
-                            `estimate:${node.baseEstimateDays}d`,
-                        ],
-                    },
-                }),
-            });
-            if (response.ok) {
-                const data = (await response.json());
-                if (data?.key) {
-                    syntheticToRealKey.set(node.key, data.key);
-                    createdIssuesCount++;
-                }
-            }
-            else {
-                break;
-            }
-        }
-        if (createdIssuesCount >= 5) {
-            for (const edge of syntheticGraph.edges) {
-                const outwardKey = syntheticToRealKey.get(edge.to);
-                const inwardKey = syntheticToRealKey.get(edge.from);
-                if (!outwardKey || !inwardKey)
-                    continue;
-                const linkRes = await api.asApp().requestJira(route `/rest/api/3/issueLink`, {
-                    method: 'POST',
-                    headers: {
-                        Accept: 'application/json',
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        type: { name: 'Blocks' },
-                        inwardIssue: { key: inwardKey },
-                        outwardIssue: { key: outwardKey },
-                    }),
-                });
-                if (linkRes.ok) {
-                    createdLinksCount++;
-                }
-            }
-            return {
-                mode: 'jira-issues-populated',
-                projectKey,
-                createdIssuesCount,
-                createdLinksCount,
-                graph: syntheticGraph,
-                message: `Populated ${createdIssuesCount} live Jira issues and ${createdLinksCount} dependency links in project ${projectKey}, and synced the Project Chronos World Model snapshot.`,
-            };
-        }
-    }
-    catch (err) {
-        console.warn(`[PWM Seeder] Live Jira issue population skipped or unavailable (${err instanceof Error ? err.message : String(err)}); using high-fidelity in-memory snapshot.`);
-    }
-    return {
-        mode: 'in-memory-snapshot',
-        projectKey,
-        createdIssuesCount,
-        createdLinksCount,
-        graph: syntheticGraph,
-        message: `Loaded "Project Chronos: Next-Gen Platform Launch" snapshot (${syntheticGraph.nodes.length} nodes, ${syntheticGraph.edges.length} causal edges across 3 teams and 2 Teamwork Graph Goals).`,
-    };
+function renderInfoTooltip(title, explanation, mathFormula) {
+    return `
+    <span class="info-tooltip-wrap" tabindex="0">
+      <span class="info-badge" aria-label="More info">?</span>
+      <span class="info-popover">
+        <strong class="info-popover-title">${escapeHtmlText(title)}</strong>
+        <span class="info-popover-body">${escapeHtmlText(explanation)}</span>
+        ${mathFormula
+        ? `<code class="info-popover-math">📐 ${escapeHtmlText(mathFormula)}</code>`
+        : ''}
+      </span>
+    </span>
+  `;
 }
 
 
 // === Module: ui/components/HeaderBar ===
 /**
- * Step 4 Component 1: Executive Header Bar & 4-Card KPI Strip (`static/ui/src/components/HeaderBar.tsx`)
+ * Step 4 Component 1: Atlassian Jira-Native Header Bar & 4-Card Summary Strip (`static/ui/src/components/HeaderBar.tsx`)
  *
- * Designed for 3-second executive clarity:
- * - Human-readable product subtitle (all math/formulas tucked behind `?` tooltips)
- * - 1-click Judge Actions: Load Demo Scenario, Create Real Jira Issues, Focus Top Blocker, Reset
- * - 4 High-Impact Executive KPI Cards:
- *   1. Projected Release Date (with slip/gain pill + hover tooltip for P85 Monte Carlo math)
- *   2. Delivery Confidence Window (Earliest Likely to Worst-Case + hover tooltip for P50-P95 & CVaR)
- *   3. Critical Path Blockers (Top gating task + hover tooltip for Criticality Index & DAG math)
- *   4. Business Goals & Impact (Teamwork Graph Goal status + affected downstream tasks)
+ * Designed via Stitch MCP & Atlassian Design System (ADS):
+ * - Native Jira Breadcrumb (`Spaces / [Project Switcher Dropdown] / Rovo-World-Model`)
+ * - Switches dynamically across the user's real Jira projects (e.g., BloomPath Sprint, Triton)
+ * - Clean Atlassian action buttons: `Sync Live Jira`, `Focus #1 Blocker`, `Seed Sample Tasks`, `Reset`
+ * - 4 Atlassian Executive Summary Cards with rectangular ADS lozenges (`ON TRACK`, `AT RISK`, `BLOCKER`)
+ *   and progressive-disclosure `?` tooltips for all underlying math.
  */
 function renderHeaderBar(props) {
-    const { graph, baselineSim, activeSim, intervention, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, statusBanner, } = props;
+    const { availableProjects, graph, baselineSim, activeSim, intervention, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, statusBanner, } = props;
     const p85Shift = intervention ? intervention.p85ShiftDays : 0;
     const p95Shift = intervention ? intervention.p95ShiftDays : 0;
     const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
-    const dataBadgeLabel = graph.isSyntheticDemo
-        ? `Demo Scenario (${graph.nodes.length} Tasks)`
-        : `Live Jira (${graph.nodes.length} Tasks)`;
     const affectedGoalsCount = activeSim.goalImpacts.filter((g) => g.status !== 'On Track' || Math.abs(g.rippleDelayDays) > 0).length;
     const topBlocker = activeSim.topBottlenecks[0];
-    const topBlockerKey = topBlocker?.key ?? 'CHRON-104';
-    const formatShiftPill = (shift, neutralLabel) => {
-        if (shift > 0) {
-            return `<span class="kpi-delta delayed">+${shift}d Slip</span>`;
-        }
-        if (shift < 0) {
-            return `<span class="kpi-delta baseline">${shift}d Faster</span>`;
-        }
-        return `<span class="kpi-delta neutral">${neutralLabel}</span>`;
-    };
+    const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'BLP-7';
     const windowBufferDays = Math.max(1, Math.round(activeSim.p95Days - activeSim.p50Days));
+    const projectList = availableProjects.length > 0
+        ? availableProjects
+        : [
+            {
+                id: graph.projectKey,
+                key: graph.projectKey,
+                name: graph.projectName,
+            },
+        ];
+    const hasCurrentInList = projectList.some((p) => p.key === graph.projectKey);
+    if (!hasCurrentInList) {
+        projectList.unshift({
+            id: graph.projectKey,
+            key: graph.projectKey,
+            name: graph.projectName,
+        });
+    }
+    const releaseLozenge = p85Shift > 0
+        ? `<span class="jira-lozenge jira-lozenge-danger">+${p85Shift}D SLIP</span>`
+        : p85Shift < 0
+            ? `<span class="jira-lozenge jira-lozenge-done">${p85Shift}D FASTER</span>`
+            : `<span class="jira-lozenge jira-lozenge-done">ON TRACK</span>`;
     return `
     <header class="cockpit-header">
       <div class="brand-cluster">
-        <div class="brand-orb">RWM</div>
+        <div class="jira-project-avatar" title="${escapeHtmlText(graph.projectName)} (${escapeHtmlText(graph.projectKey)})">
+          ${escapeHtmlText(graph.projectKey.slice(0, 3))}
+        </div>
         <div class="brand-titles">
-          <h1>
-            Rovo-World-Model
-            <span class="badge-pill ${graph.isSyntheticDemo ? 'cyan' : 'emerald'}">
-              ${escapeHtmlText(dataBadgeLabel)}
+          <div class="jira-breadcrumbs">
+            <span>Spaces</span>
+            <span class="crumb-sep">/</span>
+            <select id="jira-project-select" class="jira-project-select" title="Switch active Jira project">
+              ${projectList
+        .map((p) => `
+                  <option value="${escapeHtmlText(p.key)}" ${p.key === graph.projectKey ? 'selected' : ''}>
+                    ${escapeHtmlText(p.name)} (${escapeHtmlText(p.key)})
+                  </option>
+                `)
+        .join('')}
+            </select>
+            <span class="crumb-sep">/</span>
+            <span class="crumb-current">Rovo-World-Model</span>
+          </div>
+          <div class="brand-heading-row">
+            <h1>${escapeHtmlText(graph.projectName)}</h1>
+            <span class="jira-lozenge jira-lozenge-todo">
+              ${graph.nodes.length} ${graph.nodes.length === 1 ? 'ISSUE' : 'ISSUES'}
             </span>
-          </h1>
-          <div class="brand-subtitle">
-            Interactive Delivery Risk Simulator &amp; Project Time Machine
-            ${renderInfoTooltip('Under the Hood: Causal Digital Twin Engine', 'Constructs a Directed Acyclic Graph (DAG) from Jira issues and Teamwork Graph goals, then runs 500 paired Monte Carlo simulations in under 25ms to predict cascading delivery risks before they happen.', 'P(Release | do(Task = +Δd)) via 500 Common Random Numbers (CRN) iterations')}
+            <span class="jira-lozenge jira-lozenge-goal">TEAMWORK GRAPH</span>
+            ${renderInfoTooltip('Rovo-World-Model Digital Twin', 'Automatically loads issues and dependencies from your selected Jira project and runs 500 Monte Carlo simulations to forecast delivery dates and goal risks.', `Active Project: ${graph.projectKey} (${graph.nodes.length} nodes, ${graph.edges.length} links) | Latency: ${activeSim.executionTimeMs} ms`)}
           </div>
         </div>
       </div>
 
       <div class="header-actions">
-        <button class="btn btn-primary" id="btn-load-demo" title="Load the 18-task Project Chronos multi-team launch scenario">
-          ⚡ Load Demo Scenario
+        <button class="btn btn-primary" id="btn-sync-jira" title="Refresh live issues and dependency links from Jira">
+          ↻ Sync Jira Project
         </button>
-        <button class="btn" id="btn-create-jira-issues" title="Create real linked Jira issues in this project via Jira REST API">
-          ➕ Seed Jira Issues
+        <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path blocker issue">
+          🎯 Focus Blocker (${escapeHtmlText(topBlockerKey)})
         </button>
-        <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path bottleneck task">
-          🎯 Inspect #1 Blocker (${escapeHtmlText(topBlockerKey)})
+        <button class="btn" id="btn-create-jira-issues" title="Populate linked sample issues into this Jira project via REST API">
+          ➕ Add Sample Issues
         </button>
-        <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim" title="Clear all what-if changes and return to baseline">
-          ↺ Reset
+        <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim" title="Reset What-If simulation back to baseline">
+          Reset
         </button>
       </div>
     </header>
@@ -1822,78 +1370,76 @@ function renderHeaderBar(props) {
                <span class="status-dot"></span>
                <span>${escapeHtmlText(statusBanner)}</span>
              </div>
-             <span class="status-latency-pill" title="500 baseline + 500 counterfactual simulations executed in ${activeSim.executionTimeMs} ms">
-               ⚡ Simulated 500 futures in ${activeSim.executionTimeMs} ms
+             <span class="status-latency-pill" title="500 Monte Carlo futures computed in ${activeSim.executionTimeMs} ms">
+               500 simulations · ${activeSim.executionTimeMs} ms
              </span>
            </div>`
         : ''}
 
-    <!-- 4-CARD EXECUTIVE KPI SUMMARY -->
+    <!-- 4-CARD ATLASSIAN EXECUTIVE SUMMARY STRIP -->
     <section class="kpi-strip">
       <!-- Card 1: Projected Release Date -->
       <div class="kpi-card ${p85Shift > 0 ? 'highlight-shift' : p85Shift < 0 ? 'highlight-accel' : ''}">
         <div class="kpi-label">
-          <span>🎯 Projected Release Date</span>
-          ${renderInfoTooltip('85% Confidence Commit Date (P85)', 'In 85 out of 100 simulated project futures, all release tasks finish on or before this date. Compare against the original baseline to see the net impact of your What-If change.', `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d from today) | Baseline P85 = ${baselineSim.p85Date}`)}
+          <span>PROJECTED RELEASE DATE</span>
+          ${renderInfoTooltip('85% Confidence Commit Date (P85)', 'Statistically, 85 out of 100 simulated project runs finish on or before this date. Compare with the baseline target to see the impact of your What-If change.', `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d) | Baseline P85 = ${baselineSim.p85Date}`)}
         </div>
         <div class="kpi-value">
           <span>${formatFriendlyDate(activeSim.p85Date, true)}</span>
-          ${formatShiftPill(p85Shift, 'On Track')}
+          ${releaseLozenge}
         </div>
         <div class="kpi-sub">
-          Original Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong> (85% confidence)
+          Baseline Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong> (85% confidence)
         </div>
       </div>
 
-      <!-- Card 2: Delivery Risk Window -->
+      <!-- Card 2: Delivery Forecast Window -->
       <div class="kpi-card">
         <div class="kpi-label">
-          <span>📅 Delivery Forecast Range</span>
-          ${renderInfoTooltip('Probability Cone & Tail Risk (P50 – P95 & CVaR)', 'Shows the spread between the Likely Median finish date (50% chance) and the Worst-Case finish date (95% chance), plus the Extreme Tail Risk (worst 5% average).', `P50=${activeSim.p50Date} | P95=${activeSim.p95Date} (${p95Shift >= 0 ? `+${p95Shift}d` : `${p95Shift}d`}) | CVaR₀.₉₅=${activeSim.cvar95Date}`)}
+          <span>DELIVERY FORECAST WINDOW</span>
+          ${renderInfoTooltip('Probability Cone & Tail Risk (P50 – P95 & CVaR)', 'Shows the window between Likely Median completion (50% probability) and Worst-Case Buffer (95% probability).', `P50=${activeSim.p50Date} | P95=${activeSim.p95Date} (${p95Shift >= 0 ? `+${p95Shift}d` : `${p95Shift}d`}) | CVaR₀.₉₅=${activeSim.cvar95Date}`)}
         </div>
         <div class="kpi-value">
           <span>${formatFriendlyDate(activeSim.p50Date)} – ${formatFriendlyDate(activeSim.p95Date)}</span>
-          <span class="kpi-delta neutral">±${windowBufferDays}d Window</span>
+          <span class="jira-lozenge jira-lozenge-todo">±${windowBufferDays}D SPREAD</span>
         </div>
         <div class="kpi-sub">
-          Likely (50%): <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · Worst-Case (95%): <strong>${formatFriendlyDate(activeSim.p95Date)}</strong>
+          Likely (50%): <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · Buffer (95%): <strong>${formatFriendlyDate(activeSim.p95Date)}</strong>
         </div>
       </div>
 
-      <!-- Card 3: Critical Bottlenecks -->
+      <!-- Card 3: Critical Blockers -->
       <div class="kpi-card">
         <div class="kpi-label">
-          <span>🚧 Critical Path Blockers</span>
-          ${renderInfoTooltip('Topological Critical Path & Ripple Weight', 'Tasks that directly gate the final release date. Any delay on a critical blocker immediately delays downstream teams unless decoupled.', `Critical Path (${activeSim.criticalPathNodes.length} nodes) | Top Blocker ${topBlockerKey} Ripple Weight = ${topBlocker?.downstreamRippleWeight ?? 9.5}`)}
+          <span>CRITICAL PATH BLOCKERS</span>
+          ${renderInfoTooltip('Topological Critical Path', 'Issues with zero or near-zero schedule slack that directly gate the project completion date.', `Critical Path (${activeSim.criticalPathNodes.length} issues) | Top Blocker ${topBlockerKey} Ripple Weight = ${topBlocker?.downstreamRippleWeight ?? 1.0}`)}
         </div>
         <div class="kpi-value">
-          <span>${activeSim.criticalPathNodes.length} Gating Tasks</span>
-          <span class="kpi-delta delayed">#1: ${escapeHtmlText(topBlockerKey)}</span>
+          <span>${activeSim.criticalPathNodes.length} ${activeSim.criticalPathNodes.length === 1 ? 'Blocker' : 'Blockers'}</span>
+          <span class="jira-lozenge jira-lozenge-inprogress">TOP: ${escapeHtmlText(topBlockerKey)}</span>
         </div>
         <div class="kpi-sub">
-          <strong>${escapeHtmlText(topBlockerKey)}</strong> gates <strong>${topBlocker?.downstreamCount ?? 10} downstream tasks</strong> across teams
+          <strong>${escapeHtmlText(topBlockerKey)}</strong> impacts <strong>${topBlocker?.downstreamCount ?? 1} downstream ${(topBlocker?.downstreamCount ?? 1) === 1 ? 'issue' : 'issues'}</strong>
         </div>
       </div>
 
-      <!-- Card 4: Business Goals & Downstream Impact -->
+      <!-- Card 4: Teamwork Graph Goals -->
       <div class="kpi-card ${affectedGoalsCount > 0 && p85Shift > 0 ? 'highlight-shift' : ''}">
         <div class="kpi-label">
-          <span>🧭 Goals &amp; Downstream Impact</span>
-          ${renderInfoTooltip('Atlassian Teamwork Graph (TWG) Goal Alignment', 'Tracks how task-level delays ripple up into company-level Teamwork Graph Goals and across dependent engineering teams.', `Active What-If on ${selectedNodeKey}: ${activeSim.blastRadiusNodes.length} downstream tasks shifted | Friction E = ${activeSim.quasimetricEnergy}`)}
+          <span>TEAMWORK GRAPH GOALS</span>
+          ${renderInfoTooltip('Atlassian Teamwork Graph Alignment', 'Connects project issues to high-level Teamwork Graph Goals and tracks on-time delivery probability.', `Selected: ${selectedNodeKey} | Downstream Impact: ${activeSim.blastRadiusNodes.length} issues | Friction E = ${activeSim.quasimetricEnergy}`)}
         </div>
         <div class="kpi-value">
           <span>${hasActiveIntervention
-        ? `${activeSim.blastRadiusNodes.length} Tasks Impacted`
-        : `${activeSim.goalImpacts.length} Goals Tracked`}</span>
-          <span class="kpi-delta ${affectedGoalsCount > 0 && p85Shift > 0 ? 'delayed' : 'baseline'}">
-            ${affectedGoalsCount > 0 && p85Shift > 0
-        ? `${affectedGoalsCount} Goal At Risk`
-        : 'Goals On Track'}
+        ? `${activeSim.blastRadiusNodes.length} Impacted`
+        : `${activeSim.goalImpacts.length} Goals Linked`}</span>
+          <span class="jira-lozenge ${affectedGoalsCount > 0 && p85Shift > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-done'}">
+            ${affectedGoalsCount > 0 && p85Shift > 0 ? 'AT RISK' : 'HEALTHY'}
           </span>
         </div>
         <div class="kpi-sub">
           ${activeSim.goalImpacts
-        .map((g) => `${escapeHtmlText(g.goalName)}: <strong>${g.status}</strong>`)
+        .map((g) => `${escapeHtmlText(g.goalName)} (${g.status})`)
         .join(' · ')}
         </div>
       </div>
@@ -1904,20 +1450,13 @@ function renderHeaderBar(props) {
 
 // === Module: ui/components/TimelineScrubber ===
 /**
- * Step 4 Component 3: Time Machine Scrubber (`static/ui/src/components/TimelineScrubber.tsx`)
+ * Step 4 Component 3: Atlassian Jira-Native Timeline Scrubber (`static/ui/src/components/TimelineScrubber.tsx`)
  *
- * Human-first Timeline Scrubber:
- * - Clean milestone buttons with human dates (no raw `t₀` notation in primary labels).
- * - Dragging the slider updates the DAG canvas in real time to show which tasks are
- *   Done, In Progress, At Risk, or Scheduled on that exact calendar date.
- * - Sleek Delivery Confidence Bar (with hover tooltip revealing the full 500-run Monte Carlo distribution).
- */
-/**
- * Evaluates a node's expected state on any scrubbed day offset `t` (-28d to +65d).
+ * Clean Jira Plans / Timeline bar with rectangular ADS status lozenges (`DONE`, `IN PROGRESS`, `AT RISK`, `TO DO`)
+ * and human-friendly milestone buttons.
  */
 function evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveIntervention) {
     const statusLower = node.status.toLowerCase();
-    // At Present State (t === 0), reflect live status + any active blast-radius risk
     if (scrubberDayOffset === 0) {
         if (statusLower === 'done')
             return 'Done';
@@ -1928,7 +1467,6 @@ function evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveInter
             return 'In Progress';
         return 'Scheduled';
     }
-    // Past Sprints (t < 0)
     if (scrubberDayOffset < 0) {
         const completedAgo = node.completedDaysAgo ?? 14;
         if (statusLower === 'done' && scrubberDayOffset >= -completedAgo) {
@@ -1942,7 +1480,6 @@ function evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveInter
         }
         return 'Scheduled';
     }
-    // Future Forecast Window (t > 0)
     if (statusLower === 'done')
         return 'Done';
     const p50Start = stat?.p50StartDay ?? 0;
@@ -1966,12 +1503,12 @@ function evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveInter
     return 'Scheduled';
 }
 const HUMAN_EPOCH_LABELS = {
-    0: { title: 'Sprint -2 (Kickoff)', badge: '4 Weeks Ago' },
-    1: { title: 'Sprint -1 (Integration)', badge: '2 Weeks Ago' },
-    2: { title: 'Today (Current Sprint)', badge: 'Live State' },
-    3: { title: 'Likely Finish (50%)', badge: 'Median Target' },
-    4: { title: 'Commit Target (85%)', badge: 'Recommended' },
-    5: { title: 'Worst-Case Buffer (95%)', badge: 'Safe Cutoff' },
+    0: { title: 'Sprint -2', badge: '4W AGO' },
+    1: { title: 'Sprint -1', badge: '2W AGO' },
+    2: { title: 'Today (Current)', badge: 'LIVE' },
+    3: { title: 'Likely Finish', badge: '50% TARGET' },
+    4: { title: 'Commit Target', badge: '85% COMMIT' },
+    5: { title: 'Buffer Cutoff', badge: '95% SAFE' },
 };
 function renderTimelineScrubber(props) {
     const { graph, activeSim, selectedEpochIndex, scrubberDayOffset, hasActiveIntervention, } = props;
@@ -1996,25 +1533,24 @@ function renderTimelineScrubber(props) {
     const relativeOffsetLabel = scrubberDayOffset === 0
         ? 'Today'
         : scrubberDayOffset > 0
-            ? `In ${scrubberDayOffset} Days`
-            : `${Math.abs(scrubberDayOffset)} Days Ago`;
+            ? `+${scrubberDayOffset} Days`
+            : `${scrubberDayOffset} Days`;
     const maxBucketProb = Math.max(0.05, ...activeSim.distributionBuckets.map((b) => b.probability));
     return `
     <section class="time-machine-panel">
       <div class="tm-header">
         <div class="tm-title">
-          <span>⏱️ Project Time Machine — Scrub Past Sprints to Future Delivery Dates</span>
-          ${renderInfoTooltip('Temporal State & Probability Cone Scrubber', 'Click any milestone or drag the timeline slider to inspect the exact state of every task on that calendar date. Hover over the mini histogram on the right to inspect the 500-world Monte Carlo completion density.', `Reference t₀ = ${graph.referenceDate} | Viewing t = ${scrubberDayOffset >= 0 ? `+${scrubberDayOffset}d` : `${scrubberDayOffset}d`} (${scrubbedDate})`)}
+          <span>Timeline &amp; Sprint Forecast Scrubber</span>
+          ${renderInfoTooltip('Timeline Scrubber', 'Select a sprint milestone or drag the timeline slider to preview which issues are expected to be Done, In Progress, or At Risk on any future date.', `Reference Date = ${graph.referenceDate} | Selected Offset = ${scrubberDayOffset}d (${scrubbedDate})`)}
         </div>
         <div class="tm-date-readout">
           <span class="tm-date-pill">
-            📅 Viewing Date: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
-            <span class="tm-offset-tag">${relativeOffsetLabel}</span>
+            Viewing Date: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
+            <span class="jira-lozenge jira-lozenge-todo">${relativeOffsetLabel}</span>
           </span>
         </div>
       </div>
 
-      <!-- Clean Milestone Buttons -->
       <div class="epoch-track">
         ${epochs
         .map((ep, idx) => {
@@ -2022,15 +1558,19 @@ function renderTimelineScrubber(props) {
             title: ep.label,
             badge: `${ep.dayOffset >= 0 ? `+${ep.dayOffset}d` : `${ep.dayOffset}d`}`,
         };
-        const isFutureShift = idx >= 3 && ep.dayOffset > 0;
+        const lozClass = idx === 2
+            ? 'jira-lozenge-done'
+            : idx >= 3
+                ? 'jira-lozenge-todo'
+                : 'jira-lozenge-neutral';
         return `
               <button
                 class="epoch-node ${idx === selectedEpochIndex ? 'active' : ''}"
                 data-epoch-idx="${idx}"
-                title="${escapeHtmlText(ep.narrative)} (Offset: ${ep.dayOffset >= 0 ? `+${ep.dayOffset}d` : `${ep.dayOffset}d`})"
+                title="${escapeHtmlText(ep.narrative)}"
               >
                 <div class="epoch-node-top">
-                  <span class="epoch-badge-tag ${idx === 2 ? 'today-tag' : isFutureShift ? 'future-tag' : ''}">${escapeHtmlText(meta.badge)}</span>
+                  <span class="jira-lozenge ${lozClass}">${escapeHtmlText(meta.badge)}</span>
                   <span class="epoch-date-str">${formatFriendlyDate(ep.date)}</span>
                 </div>
                 <div class="epoch-node-label">${escapeHtmlText(meta.title)}</div>
@@ -2043,33 +1583,32 @@ function renderTimelineScrubber(props) {
       <div class="tm-scrubber-row">
         <div class="tm-narrative-box">
           <div class="tm-slider-wrap">
-            <span class="tm-slider-bound">◀ 4 Weeks Ago</span>
+            <span class="tm-slider-bound">Past (-28d)</span>
             <input
               type="range"
               min="-28"
-              max="${Math.max(56, Math.ceil(activeSim.p95Days) + 6)}"
+              max="${Math.max(35, Math.ceil(activeSim.p95Days) + 6)}"
               value="${scrubberDayOffset}"
               class="tm-slider"
               id="time-machine-range"
-              title="Drag to scrub across project history and simulated future completion dates"
+              title="Drag to scrub across past sprints and future completion dates"
             />
-            <span class="tm-slider-bound">Worst-Case (${formatFriendlyDate(activeSim.p95Date)}) ▶</span>
+            <span class="tm-slider-bound">Buffer (${formatFriendlyDate(activeSim.p95Date)})</span>
           </div>
 
           <div class="tm-status-summary">
-            <span class="tm-status-prefix">Project Snapshot on <strong>${formatFriendlyDate(scrubbedDate)}</strong>:</span>
-            <span class="badge-pill emerald">✓ ${dynamicDone} Done</span>
-            <span class="badge-pill cyan">● ${dynamicInProgress} In Progress</span>
-            <span class="badge-pill ${dynamicAtRisk > 0 ? 'rose' : ''}">⚠ ${dynamicAtRisk} At Risk / Blocked</span>
-            <span class="badge-pill">⏳ ${dynamicScheduled} Scheduled</span>
+            <span class="tm-status-prefix">Status on <strong>${formatFriendlyDate(scrubbedDate)}</strong>:</span>
+            <span class="jira-lozenge jira-lozenge-done">${dynamicDone} DONE</span>
+            <span class="jira-lozenge jira-lozenge-inprogress">${dynamicInProgress} IN PROGRESS</span>
+            <span class="jira-lozenge ${dynamicAtRisk > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-neutral'}">${dynamicAtRisk} AT RISK</span>
+            <span class="jira-lozenge jira-lozenge-todo">${dynamicScheduled} TO DO</span>
           </div>
         </div>
 
-        <!-- Compact Forecast Distribution Preview (Math details on hover) -->
-        <div class="cone-box-wrap" title="Hover individual bars to see exact Monte Carlo completion probability and cumulative confidence (CDF)">
+        <div class="cone-box-wrap" title="Hover bars for exact Monte Carlo completion probability and cumulative confidence">
           <div class="cone-box-header">
-            <span>Release Probability Curve</span>
-            <strong style="color:#fcd34d;">85% Target: ${formatFriendlyDate(activeSim.p85Date)}</strong>
+            <span>Delivery Confidence Distribution</span>
+            <strong style="color:#0C66E4;">Target: ${formatFriendlyDate(activeSim.p85Date)}</strong>
           </div>
           <div class="cone-mini-chart">
             ${activeSim.distributionBuckets
@@ -2080,7 +1619,7 @@ function renderTimelineScrubber(props) {
         return `
                   <div
                     class="cone-bar-col"
-                    title="${formatFriendlyDate(b.date, true)} (+${b.dayOffset}d): ${Math.round(b.probability * 100)}% finish probability | Cumulative Confidence: ${Math.round(b.cumulativeProbability * 100)}%"
+                    title="${formatFriendlyDate(b.date, true)}: ${Math.round(b.probability * 100)}% density | Confidence: ${Math.round(b.cumulativeProbability * 100)}%"
                   >
                     <div class="cone-bar ${isNearP85 ? 'p85-marker' : ''} ${isNearScrub ? 'scrub-marker' : ''}" style="height:${heightPct}%;"></div>
                     <span class="cone-bar-label">${formatFriendlyDate(b.date)}</span>
@@ -2098,44 +1637,60 @@ function renderTimelineScrubber(props) {
 
 // === Module: ui/components/DagCanvas ===
 /**
- * Step 4 Component 2: Interactive Dependency Graph Canvas (`static/ui/src/components/DagCanvas.tsx`)
+ * Step 4 Component 2: Atlassian Jira-Native Dependency & Timeline Canvas (`static/ui/src/components/DagCanvas.tsx`)
  *
- * Designed for instant visual comprehension:
- * - Spacious 164x66px cards aligned cleanly across 3 team swimlanes.
- * - Zero raw math or Greek symbols on the cards:
- *   Line 1: Issue Key (`CHRON-104`) + Top Impact Badge (`+8d Delay`, `+7.7d`, or `Blocker`)
- *   Line 2: Readable Task Title
- *   Line 3: Clean Status Dot + Status Name (`In Progress`, `Done`, `At Risk`) + Estimate (`7d est.`)
- * - Strong Edge Hierarchy:
- *   Background edges are subtle; Active Downstream Impact path glows with animated crimson arrows.
- * - Rich Floating Hover Inspector Card:
- *   Hovering over any task displays full task summary, assignee, linked Teamwork Graph Goal,
- *   Confluence ADR, and statistical metrics (Uncertainty ±σ, Criticality %, Ripple Weight).
+ * Designed via Stitch MCP (`StitchMCP` Project `9764708271730429878`) to match Jira Cloud cards:
+ * - Authentic white Jira Issue Cards (`#FFFFFF`, `1px solid #DCDFE4`)
+ * - Standard Jira blue checkbox icon (`#0C66E4`) + Issue Key (`BLP-7`) + Rectangular Status Lozenge (`TO DO`, `IN PROGRESS`, `DONE`, `AT RISK`)
+ * - Assignee avatar circle (`PP`, `MC`) + clean estimate tag (`5d est.`)
+ * - Scales cleanly whether the active Jira project has 2 issues (e.g. BloomPath Sprint `BLP-7`, `BLP-8`) or 18 issues.
+ * - Hovering any issue card reveals the floating Jira Inspector Popover with full metadata & math.
  */
 function computeNodeCoordinates(graph) {
     const coords = {};
-    const teamOrder = graph.teams.map((t) => t.name);
+    // Only render swimlanes that actually contain issues in this project
+    const usedTeamNames = Array.from(new Set(graph.nodes.map((n) => n.team)));
+    const activeTeams = usedTeamNames.map((tName, idx) => {
+        const found = graph.teams.find((t) => t.name === tName);
+        const defaultColors = ['#0C66E4', '#1F845A', '#E2B203', '#6E5DC6'];
+        return (found ?? {
+            id: `team-${idx}`,
+            name: tName,
+            lead: 'Project Team',
+            color: defaultColors[idx % defaultColors.length],
+        });
+    });
+    if (activeTeams.length === 0) {
+        activeTeams.push({
+            id: 'team-0',
+            name: `${graph.projectName} Team`,
+            lead: 'Project Lead',
+            color: '#0C66E4',
+        });
+    }
     const laneGroups = new Map();
-    for (let l = 0; l < Math.max(3, teamOrder.length); l++) {
+    for (let l = 0; l < activeTeams.length; l++) {
         laneGroups.set(l, []);
     }
     for (const key of graph.topologicalOrder) {
         const node = graph.nodes.find((n) => n.key === key);
         if (!node)
             continue;
-        let laneIdx = teamOrder.indexOf(node.team);
+        let laneIdx = activeTeams.findIndex((t) => t.name === node.team);
         if (laneIdx < 0)
             laneIdx = 0;
         laneGroups.get(laneIdx).push(key);
     }
-    const laneYCenters = [115, 315, 515];
-    const xStart = 112;
-    const xGap = 186;
+    const laneHeight = 190;
+    const xStart = 128;
+    const xGap = 224;
+    let maxCols = 1;
     for (const [laneIdx, keys] of laneGroups.entries()) {
+        if (keys.length > maxCols)
+            maxCols = keys.length;
+        const yBase = laneIdx * laneHeight + 112;
         keys.forEach((key, colIdx) => {
-            const yBase = laneYCenters[laneIdx % laneYCenters.length];
-            // Subtle vertical stagger so horizontal edges never collide with intermediate text
-            const yOffset = colIdx % 2 === 0 ? -8 : 8;
+            const yOffset = keys.length > 2 ? (colIdx % 2 === 0 ? -6 : 6) : 0;
             coords[key] = {
                 x: xStart + colIdx * xGap,
                 y: yBase + yOffset,
@@ -2144,28 +1699,31 @@ function computeNodeCoordinates(graph) {
             };
         });
     }
-    return coords;
+    const svgHeight = Math.max(240, activeTeams.length * laneHeight + 28);
+    const svgWidth = Math.max(820, xStart + maxCols * xGap + 60);
+    return { coords, activeTeams, svgHeight, svgWidth };
 }
 function renderDagCanvas(props) {
     const { graph, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, scrubberDayOffset, } = props;
-    const coords = computeNodeCoordinates(graph);
+    const { coords, activeTeams, svgHeight, svgWidth } = computeNodeCoordinates(graph);
     const blastSet = new Set(activeSim.blastRadiusNodes);
     const criticalSet = new Set(activeSim.criticalPathNodes);
     const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
     const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
-    const nodeW = 160;
-    const nodeH = 66;
-    // Swimlane background bands
-    const laneBands = graph.teams
+    const nodeW = 192;
+    const nodeH = 82;
+    const laneHeight = 190;
+    // Swimlane background bands (Atlassian light subtle container)
+    const laneBands = activeTeams
         .map((team, idx) => {
-        const yTop = idx * 200 + 18;
+        const yTop = idx * laneHeight + 16;
         return `
         <g>
-          <rect x="14" y="${yTop}" width="1152" height="184" rx="12"
-            fill="rgba(15, 23, 42, 0.52)" stroke="rgba(148, 163, 184, 0.13)" />
-          <rect x="14" y="${yTop}" width="6" height="184" rx="3" fill="${team.color}" />
-          <text x="32" y="${yTop + 24}" fill="${team.color}" font-size="11.5" font-weight="700" letter-spacing="0.04em">
-            ${escapeHtmlText(team.name.toUpperCase())} TEAM · Lead: ${escapeHtmlText(team.lead)}
+          <rect x="14" y="${yTop}" width="${svgWidth - 28}" height="${laneHeight - 16}" rx="6"
+            fill="#F7F8F9" stroke="#DCDFE4" stroke-width="1" />
+          <rect x="14" y="${yTop}" width="4" height="${laneHeight - 16}" rx="2" fill="${team.color}" />
+          <text x="30" y="${yTop + 22}" fill="#44546F" font-size="11" font-weight="700" letter-spacing="0.04em">
+            ${escapeHtmlText(team.name.toUpperCase())}
           </text>
         </g>
       `;
@@ -2182,7 +1740,7 @@ function renderDagCanvas(props) {
         const y1 = fromPos.y;
         const x2 = toPos.x - nodeW / 2;
         const y2 = toPos.y;
-        const dx = Math.max(46, Math.abs(x2 - x1) * 0.46);
+        const dx = Math.max(48, Math.abs(x2 - x1) * 0.45);
         const pathD = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
         const isDecoupledEdge = decoupleBlockingEdges && edge.from === selectedNodeKey;
         const isBlastEdge = intervenedKey !== '' &&
@@ -2203,11 +1761,11 @@ function renderDagCanvas(props) {
             edgeClass += ' critical-edge';
             markerId = 'url(#arrow-critical)';
         }
-        const edgeTooltip = `${edge.from} ${edge.dependencyType} ${edge.to} (Propagation weight: ${Math.round(edge.propagationWeight * 100)}%)`;
+        const edgeTooltip = `${edge.from} ${edge.dependencyType} ${edge.to}`;
         return `<path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>`;
     })
         .join('');
-    // Render spacious, easy-to-read task cards
+    // Render authentic Jira Issue Cards inside SVG
     const nodeElements = graph.nodes
         .map((node) => {
         const pos = coords[node.key];
@@ -2230,23 +1788,28 @@ function renderDagCanvas(props) {
             groupClass += ' intervened-origin';
         const xLeft = pos.x - nodeW / 2;
         const yTop = pos.y - nodeH / 2;
-        let statusColor = '#64748b';
-        let statusShort = 'Scheduled';
+        // Jira Status Lozenge colors inside SVG card
+        let lozengeBg = '#E9F2FF';
+        let lozengeTextCol = '#0055CC';
+        let lozengeLabel = 'TO DO';
         if (temporalState === 'Done') {
-            statusColor = '#10b981';
-            statusShort = 'Done';
+            lozengeBg = '#DFFCF0';
+            lozengeTextCol = '#216E4E';
+            lozengeLabel = 'DONE';
         }
         else if (temporalState === 'At Risk / Blocked') {
-            statusColor = '#f43f5e';
-            statusShort = 'At Risk';
+            lozengeBg = '#FFECEB';
+            lozengeTextCol = '#AE2E24';
+            lozengeLabel = 'AT RISK';
         }
         else if (temporalState === 'In Progress') {
-            statusColor = '#38bdf8';
-            statusShort = 'In Progress';
+            lozengeBg = '#FFF7D6';
+            lozengeTextCol = '#A54800';
+            lozengeLabel = 'IN PROGRESS';
         }
         const rippleShift = stat?.rippleDelayDays ?? 0;
         const goalObj = graph.goals.find((g) => g.id === node.goalId);
-        // Human-friendly badge on top-right of card (Zero `do(...)` notation)
+        // Top-right shift pill if affected by What-If simulation
         let topBadge = '';
         if (isSelected && hasActiveIntervention) {
             const labelText = delayDays > 0
@@ -2254,12 +1817,12 @@ function renderDagCanvas(props) {
                 : delayDays < 0
                     ? `${delayDays}d Faster`
                     : addDeveloper
-                        ? '+1 Dev Added'
+                        ? '+1 Dev'
                         : 'Decoupled';
             topBadge = `
-          <g transform="translate(${xLeft + nodeW - 76}, ${yTop - 11})">
-            <rect width="78" height="19" rx="5" fill="#0284c7" stroke="#7dd3fc" stroke-width="1.2" />
-            <text x="39" y="13" text-anchor="middle" fill="#fff" font-size="9.5" font-weight="700" font-family="Inter, sans-serif">
+          <g transform="translate(${xLeft + nodeW - 72}, ${yTop - 10})">
+            <rect width="72" height="18" rx="3" fill="#0C66E4" />
+            <text x="36" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="700">
               ${escapeHtmlText(labelText)}
             </text>
           </g>
@@ -2267,28 +1830,18 @@ function renderDagCanvas(props) {
         }
         else if (isInBlast && Math.abs(rippleShift) > 0) {
             const signText = rippleShift > 0 ? `+${rippleShift.toFixed(1)}d Slip` : `${rippleShift.toFixed(1)}d`;
-            const fillCol = rippleShift > 0 ? '#be123c' : '#047857';
-            const strokeCol = rippleShift > 0 ? '#fda4af' : '#6ee7b7';
+            const fillCol = rippleShift > 0 ? '#CA3521' : '#1F845A';
             topBadge = `
-          <g transform="translate(${xLeft + nodeW - 64}, ${yTop - 11})">
-            <rect width="66" height="19" rx="5" fill="${fillCol}" stroke="${strokeCol}" stroke-width="1.1" />
-            <text x="33" y="13" text-anchor="middle" fill="#fff" font-size="9.5" font-weight="700" font-family="Inter, sans-serif">
+          <g transform="translate(${xLeft + nodeW - 64}, ${yTop - 10})">
+            <rect width="64" height="18" rx="3" fill="${fillCol}" />
+            <text x="32" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="700">
               ${signText}
             </text>
           </g>
         `;
         }
-        else if (isCritical) {
-            topBadge = `
-          <g transform="translate(${xLeft + nodeW - 56}, ${yTop - 10})">
-            <rect width="56" height="17" rx="4" fill="rgba(245, 158, 11, 0.25)" stroke="#fbbf24" stroke-width="1" />
-            <text x="28" y="12" text-anchor="middle" fill="#fde68a" font-size="9" font-weight="700" font-family="Inter, sans-serif">
-              Blocker
-            </text>
-          </g>
-        `;
-        }
-        const shortSummary = node.summary.length > 26 ? `${node.summary.slice(0, 25)}…` : node.summary;
+        const shortSummary = node.summary.length > 27 ? `${node.summary.slice(0, 26)}…` : node.summary;
+        const avatarInitials = getInitials(node.assignee);
         const hoverJson = JSON.stringify({
             key: node.key,
             summary: node.summary,
@@ -2311,23 +1864,36 @@ function renderDagCanvas(props) {
           data-node-key="${escapeHtmlText(node.key)}"
           data-node-hover="${escapeHtmlText(hoverJson)}"
         >
+          <!-- Jira White Issue Card -->
           <rect x="${xLeft}" y="${yTop}" width="${nodeW}" height="${nodeH}" class="dag-node-rect" />
-          <!-- Line 1: Issue Key -->
-          <text x="${xLeft + 12}" y="${yTop + 19}" fill="#f8fafc" font-size="11.5" font-weight="700" font-family="JetBrains Mono, monospace">
-            ${escapeHtmlText(node.key)}
-          </text>
-          <!-- Line 2: Human Task Title -->
-          <text x="${xLeft + 12}" y="${yTop + 37}" fill="#e2e8f0" font-size="11" font-weight="500">
+
+          <!-- Row 1: Issue Title (just like Jira Board card) -->
+          <text x="${xLeft + 12}" y="${yTop + 22}" fill="#172B4D" font-size="11.5" font-weight="600">
             ${escapeHtmlText(shortSummary)}
           </text>
-          <!-- Line 3: Clean Status Pill + Duration Estimate (Zero Greek symbols) -->
-          <circle cx="${xLeft + 16}" cy="${yTop + 53}" r="4.5" fill="${statusColor}" />
-          <text x="${xLeft + 25}" y="${yTop + 56}" fill="#94a3b8" font-size="10" font-weight="600">
-            ${escapeHtmlText(statusShort)}
+
+          <!-- Row 2: Rectangular Status Lozenge + Duration Estimate -->
+          <rect x="${xLeft + 12}" y="${yTop + 31}" width="${Math.max(46, lozengeLabel.length * 6.5 + 10)}" height="16" rx="3" fill="${lozengeBg}" />
+          <text x="${xLeft + 17}" y="${yTop + 42.5}" fill="${lozengeTextCol}" font-size="9.2" font-weight="700" letter-spacing="0.03em">
+            ${escapeHtmlText(lozengeLabel)}
           </text>
-          <text x="${xLeft + nodeW - 12}" y="${yTop + 56}" text-anchor="end" fill="#64748b" font-size="10" font-family="JetBrains Mono, monospace">
+          <text x="${xLeft + nodeW - 12}" y="${yTop + 42.5}" text-anchor="end" fill="#626F86" font-size="10">
             ${node.baseEstimateDays}d est.
           </text>
+
+          <!-- Row 3: Jira Blue Checkbox Icon + Issue Key (e.g. BLP-7) + Assignee Avatar Circle -->
+          <rect x="${xLeft + 12}" y="${yTop + 57}" width="13" height="13" rx="2.5" fill="#0C66E4" />
+          <path d="M ${xLeft + 15} ${yTop + 63.5} L ${xLeft + 17.5} ${yTop + 66} L ${xLeft + 22} ${yTop + 60.5}" stroke="#FFFFFF" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+          <text x="${xLeft + 30}" y="${yTop + 67.5}" fill="#44546F" font-size="11" font-weight="600">
+            ${escapeHtmlText(node.key)}
+          </text>
+
+          <!-- Assignee Circular Avatar -->
+          <circle cx="${xLeft + nodeW - 20}" cy="${yTop + 63.5}" r="10" fill="#DFE1E6" stroke="#FFFFFF" stroke-width="1" />
+          <text x="${xLeft + nodeW - 20}" y="${yTop + 67}" text-anchor="middle" fill="#172B4D" font-size="8.5" font-weight="700">
+            ${escapeHtmlText(avatarInitials)}
+          </text>
+
           ${topBadge}
         </g>
       `;
@@ -2337,28 +1903,28 @@ function renderDagCanvas(props) {
     <div class="panel-card dag-panel-card">
       <div class="panel-header">
         <div class="panel-title">
-          <span>🕸️ Cross-Team Dependency Map — Click Any Task to Simulate Delays</span>
-          ${renderInfoTooltip('Directed Acyclic Graph (DAG) & Ripple Propagation', 'Shows how tasks across Core Engine, Cloud Infra, and Client UI depend on one another. Click any task card to test a What-If delay or resource change, or hover over any card for full technical details.', `Kahn Topological Sort (${graph.nodes.length} nodes, ${graph.edges.length} directed edges, ${graph.brokenCycles.length} cycles auto-broken)`)}
+          <span>Issue Dependency Map (${escapeHtmlText(graph.projectName)})</span>
+          ${renderInfoTooltip('Interactive Issue Dependency Map', 'Displays the live issues and dependency links from your selected Jira project. Click any issue card to test a What-If schedule change, or hover over any card for statistical diagnostics.', `Topological Order: ${graph.topologicalOrder.join(' -> ')}`)}
         </div>
         <div class="dag-legend">
-          <span class="legend-item"><span class="legend-dot" style="background:#38bdf8;"></span>Selected Task</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span>Critical Blocker</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#f43f5e;"></span>Delayed Downstream</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#10b981;"></span>Completed</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#0C66E4;"></span>Selected Issue</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#E2B203;"></span>Critical Path</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#CA3521;"></span>Impacted Downstream</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#1F845A;"></span>Done</span>
         </div>
       </div>
 
       <div class="dag-viewport" id="dag-viewport-container">
-        <svg viewBox="0 0 1180 620" class="dag-svg" id="pwm-dag-svg">
+        <svg viewBox="0 0 ${svgWidth} ${svgHeight}" class="dag-svg" id="pwm-dag-svg" style="height:${svgHeight}px;min-width:${svgWidth}px;">
           <defs>
             <marker id="arrow-default" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="rgba(148, 163, 184, 0.45)" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#8590A2" />
             </marker>
             <marker id="arrow-critical" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#f59e0b" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#D97706" />
             </marker>
             <marker id="arrow-blast" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#f43f5e" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#CA3521" />
             </marker>
           </defs>
           ${laneBands}
@@ -2366,7 +1932,7 @@ function renderDagCanvas(props) {
           ${nodeElements}
         </svg>
 
-        <!-- Floating Hover Inspector Card (Populated on Node Mouseover) -->
+        <!-- Floating Hover Inspector Card -->
         <div id="dag-node-hover-card" class="dag-hover-card" style="display:none;"></div>
       </div>
     </div>
@@ -2376,15 +1942,14 @@ function renderDagCanvas(props) {
 
 // === Module: ui/components/ScenarioPanel ===
 /**
- * Step 4 Component 4: What-If Scenario Simulator Panel (`static/ui/src/components/ScenarioPanel.tsx`)
+ * Step 4 Component 4: Atlassian Jira-Native What-If Simulator Panel (`static/ui/src/components/ScenarioPanel.tsx`)
  *
- * Redesigned around Progressive Disclosure & 3-Second Usability:
- * - Zero raw math or Greek letters in primary labels (`What-If Scenario Simulator` instead of `$do$-Calculus`).
- * - Step 1: Selected Task & What-If Sliders (`Delay / Accelerate` + `Add Developer` + `Break Dependency`).
- * - Step 2: Immediate Release Forecast Comparison (Likely Target, 85% Commit Target, Worst-Case Buffer)
- *   with hover tooltips for CVaR_0.95, Quasimetric Energy E, and 500 CRN Monte Carlo runs.
- * - Step 3: One-click Rovo Agent Action button (`Copy Rovo AI Action Prompt`).
- * - Step 4: Clean Inspector Tabs (`Impacted Tasks`, `Top Blockers`, `Goals & Math Spec`).
+ * Designed via Stitch MCP (`StitchMCP`) & Atlassian Design System (ADS):
+ * - Looks and behaves like a native Jira Cloud Issue Detail & Rovo Insights drawer.
+ * - Rectangular ADS status lozenges (`TO DO`, `IN PROGRESS`, `DONE`, `AT RISK`).
+ * - Step 1: Schedule Change Slider (`-5d` to `+30d`) + Mitigation Toggles (`Add Developer`, `Decouple Dependency`).
+ * - Step 2: Release Date Comparison Bars + Solid Atlassian Blue (`#0C66E4`) `Ask @Rovo-World-Model Agent` button.
+ * - Step 3: Teamwork Graph Goals & Inspector Tabs (`Impacted Issues`, `Top Blockers`, `Math & MCP Spec`).
  */
 function buildRovoMitigationPrompt(props) {
     const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, activeSim } = props;
@@ -2399,7 +1964,7 @@ function buildRovoMitigationPrompt(props) {
     if (decoupleBlockingEdges)
         modifiers.push('decoupling outgoing blocking dependencies');
     const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
-    return `@Rovo-World-Model Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream tasks. Recommend the top dependency to decouple so we ship on time.`;
+    return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate what happens to our "${goal?.name ?? 'Sprint Delivery'}" goal if issue ${node.key} ("${node.summary}") is ${shiftStr}${modSuffix}. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
 }
 function renderTabBody(props) {
     const { activeRightTab, activeSim, intervention, graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, } = props;
@@ -2409,21 +1974,20 @@ function renderTabBody(props) {
         if (!hasActiveIntervention || deltas.length === 0) {
             return `
         <div class="empty-tab-notice">
-          Drag the <strong>Schedule Change Slider</strong> above or toggle <strong>Add Developer / Break Dependency</strong> to see which downstream tasks shift across teams.
+          Adjust the <strong>Schedule Change Slider</strong> above or toggle a mitigation to preview downstream issue shifts in <strong>${escapeHtmlText(graph.projectName)}</strong>.
         </div>
       `;
         }
         const rows = deltas
             .map((d) => {
             const signStr = d.shiftDays > 0 ? `+${d.shiftDays}d` : `${d.shiftDays}d`;
-            const deltaClass = d.shiftDays > 0 ? 'delayed' : 'baseline';
+            const lozClass = d.shiftDays > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-done';
             return `
-          <tr data-select-node="${escapeHtmlText(d.key)}" style="cursor:pointer;" title="Click to select ${escapeHtmlText(d.key)} (${escapeHtmlText(d.summary)})">
-            <td><strong style="font-family:var(--font-mono);color:#38bdf8;">${escapeHtmlText(d.key)}</strong></td>
-            <td>${escapeHtmlText(d.summary.slice(0, 32))}${d.summary.length > 32 ? '…' : ''}</td>
-            <td><span class="badge-pill">${escapeHtmlText(d.team)}</span></td>
-            <td style="font-family:var(--font-mono);">${formatFriendlyDate(d.intervenedP85Date)}</td>
-            <td><span class="kpi-delta ${deltaClass}">${signStr}</span></td>
+          <tr data-select-node="${escapeHtmlText(d.key)}" style="cursor:pointer;" title="Click to inspect ${escapeHtmlText(d.key)} (${escapeHtmlText(d.summary)})">
+            <td><strong class="jira-issue-key">${escapeHtmlText(d.key)}</strong></td>
+            <td>${escapeHtmlText(d.summary.slice(0, 30))}${d.summary.length > 30 ? '…' : ''}</td>
+            <td>${formatFriendlyDate(d.intervenedP85Date)}</td>
+            <td><span class="jira-lozenge ${lozClass}">${signStr}</span></td>
           </tr>
         `;
         })
@@ -2432,9 +1996,8 @@ function renderTabBody(props) {
       <table class="cascade-table">
         <thead>
           <tr>
-            <th>Task</th>
+            <th>Issue</th>
             <th>Summary</th>
-            <th>Team</th>
             <th>New Finish</th>
             <th>Shift</th>
           </tr>
@@ -2447,18 +2010,18 @@ function renderTabBody(props) {
         return activeSim.topBottlenecks
             .slice(0, 5)
             .map((b, idx) => `
-        <div class="bottleneck-item" data-select-node="${escapeHtmlText(b.key)}" title="Click to test interventions on ${escapeHtmlText(b.key)} | Ripple Weight: ${b.downstreamRippleWeight} | Criticality: ${Math.round(b.criticalityIndex * 100)}%">
+        <div class="bottleneck-item" data-select-node="${escapeHtmlText(b.key)}" title="Click to select ${escapeHtmlText(b.key)} | Ripple Weight: ${b.downstreamRippleWeight}">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <span>
-              <strong style="font-family:var(--font-mono);color:#a5b4fc;">#${idx + 1} ${escapeHtmlText(b.key)}</strong>
+              <strong style="color:#0C66E4;">#${idx + 1} ${escapeHtmlText(b.key)}</strong>
               — <strong style="font-size:12px;">${escapeHtmlText(b.summary)}</strong>
             </span>
-            <span class="badge-pill rose">Blocks ${b.downstreamCount} Tasks</span>
+            <span class="jira-lozenge jira-lozenge-inprogress">GATES ${b.downstreamCount}</span>
           </div>
-          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
-            Team: <strong>${escapeHtmlText(b.team)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong>
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px;">
+            Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong>
           </div>
-          <div style="font-size:11px;color:#67e8f9;margin-top:4px;">
+          <div style="font-size:11.5px;color:#0055CC;margin-top:4px;">
             💡 ${escapeHtmlText(b.recommendation)}
           </div>
         </div>
@@ -2478,7 +2041,7 @@ function renderTabBody(props) {
                 decoupleBlockingEdges,
             },
         },
-        advancedMathMetrics: {
+        statisticalDiagnostics: {
             cvar95TailRiskDate: `${activeSim.cvar95Date} (+${activeSim.cvar95Days}d)`,
             quasimetricLatentEnergyE: activeSim.quasimetricEnergy,
             estimatedReworkHours: `${activeSim.estimatedReworkHours}h`,
@@ -2490,20 +2053,17 @@ function renderTabBody(props) {
     <div style="display:flex;flex-direction:column;gap:10px;">
       <div class="advanced-math-grid">
         <div class="math-stat-box" title="Conditional Value-at-Risk (CVaR 0.95): Expected finish date across the worst 5% tail-risk simulation runs">
-          <span>Worst 5% Tail Date (CVaR₀.₉₅)</span>
-          <strong style="color:#fda4af;">${formatFriendlyDate(activeSim.cvar95Date, true)}</strong>
+          <span>Worst 5% Tail (CVaR₀.₉₅)</span>
+          <strong style="color:#AE2E24;">${formatFriendlyDate(activeSim.cvar95Date, true)}</strong>
         </div>
         <div class="math-stat-box" title="Quasimetric Latent Energy E(s -> s'): Measures asymmetric schedule friction required to recover baseline dates">
-          <span>Schedule Friction (Latent E)</span>
-          <strong style="color:#67e8f9;">${activeSim.quasimetricEnergy}</strong>
+          <span>Schedule Friction (E)</span>
+          <strong style="color:#0055CC;">${activeSim.quasimetricEnergy}</strong>
         </div>
-        <div class="math-stat-box" title="Expected downstream context-switching & interface rework hours caused by schedule shift">
-          <span>Est. Rework Overhead</span>
-          <strong style="color:#fcd34d;">${activeSim.estimatedReworkHours} hrs</strong>
+        <div class="math-stat-box" title="Expected downstream context-switching & interface rework hours">
+          <span>Est. Rework Risk</span>
+          <strong style="color:#A54800;">${activeSim.estimatedReworkHours} hrs</strong>
         </div>
-      </div>
-      <div style="font-size:11px;color:var(--text-secondary);">
-        <strong>Live MCP Endpoint &amp; Rovo Action Payload:</strong>
       </div>
       <pre class="code-console">${escapeHtmlText(JSON.stringify(mcpRpcSample, null, 2))}</pre>
     </div>
@@ -2514,25 +2074,25 @@ function renderScenarioPanel(props) {
     const selectedNode = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
     const selectedStat = activeSim.nodeStats[selectedNode.key];
     const linkedGoal = graph.goals.find((g) => g.id === selectedNode.goalId) ?? graph.goals[0];
-    const maxTimelineScale = Math.max(65, baselineSim.p95Days + 10, activeSim.p95Days + 10);
-    const pct = (days) => Math.min(100, Math.max(6, Math.round((days / maxTimelineScale) * 100)));
+    const maxTimelineScale = Math.max(45, baselineSim.p95Days + 8, activeSim.p95Days + 8);
+    const pct = (days) => Math.min(100, Math.max(8, Math.round((days / maxTimelineScale) * 100)));
     const delaySignLabel = delayDays > 0
         ? `+${delayDays} Days Delay`
         : delayDays < 0
             ? `${delayDays} Days Faster`
-            : 'No Change (Baseline)';
-    const activeBadgeText = delayDays > 0
-        ? `Simulated: +${delayDays}d Delay`
+            : '0 Days (Baseline)';
+    const activeLozenge = delayDays > 0
+        ? `<span class="jira-lozenge jira-lozenge-danger">+${delayDays}D DELAY</span>`
         : delayDays < 0
-            ? `Simulated: ${delayDays}d Faster`
+            ? `<span class="jira-lozenge jira-lozenge-done">${delayDays}D FASTER</span>`
             : addDeveloper || decoupleBlockingEdges
-                ? 'Mitigation Active'
-                : 'Baseline';
+                ? `<span class="jira-lozenge jira-lozenge-done">MITIGATED</span>`
+                : `<span class="jira-lozenge jira-lozenge-todo">BASELINE</span>`;
     const uncertaintyLabel = selectedNode.uncertaintySigma >= 1.8
-        ? 'High Variance'
+        ? 'High'
         : selectedNode.uncertaintySigma >= 1.0
-            ? 'Moderate'
-            : 'Low Variance';
+            ? 'Medium'
+            : 'Low';
     const forecastRows = [
         {
             label: 'Likely Finish (50%)',
@@ -2544,14 +2104,14 @@ function renderScenarioPanel(props) {
         },
         {
             label: 'Commit Target (85%)',
-            tooltip: 'Recommended P85 Commitment Date: 85% probability of shipping on or before this date.',
+            tooltip: 'Recommended P85 Commitment Date: 85% probability of finishing on or before this date.',
             baseDays: baselineSim.p85Days,
             intDays: activeSim.p85Days,
             baseDate: baselineSim.p85Date,
             intDate: activeSim.p85Date,
         },
         {
-            label: 'Worst-Case (95%)',
+            label: 'Buffer Cutoff (95%)',
             tooltip: `Conservative P95 Buffer Date. Extreme 5% tail risk (CVaR₀.₉₅) = ${activeSim.cvar95Date}.`,
             baseDays: baselineSim.p95Days,
             intDays: activeSim.p95Days,
@@ -2565,51 +2125,44 @@ function renderScenarioPanel(props) {
       <div class="panel-card">
         <div class="panel-header">
           <div class="panel-title">
-            <span>🎛️ What-If Scenario Simulator</span>
-            ${renderInfoTooltip('Counterfactual Intervention Engine (do-Calculus)', 'Test schedule slips, extra engineering capacity, or dependency decoupling on any selected task. All downstream tasks and Teamwork Graph goals recalculate immediately.', `Active Intervention: do(${selectedNode.key} = ${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`}, addDev=${addDeveloper}, decouple=${decoupleBlockingEdges})`)}
+            <span>What-If Scenario Simulator</span>
+            ${renderInfoTooltip('What-If Scenario Simulator', 'Select any issue from your Jira project and test how a delay, acceleration, or resource change affects the overall delivery date and Teamwork Graph goals.', `Active Intervention: do(${selectedNode.key} = ${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`})`)}
           </div>
-          <span class="badge-pill ${delayDays > 0 ? 'rose' : delayDays < 0 ? 'emerald' : 'cyan'}">
-            ${escapeHtmlText(activeBadgeText)}
-          </span>
+          ${activeLozenge}
         </div>
 
         <div class="intervention-box">
-          <!-- Selected Task Summary Card -->
+          <!-- Selected Issue Card -->
           <div class="selected-node-banner">
             <div class="node-banner-top">
-              <span class="node-key-tag">${escapeHtmlText(selectedNode.key)} · ${escapeHtmlText(selectedNode.status)}</span>
-              <span class="badge-pill">${escapeHtmlText(selectedNode.team)} · ${escapeHtmlText(selectedNode.assignee)}</span>
+              <span class="node-key-tag">${escapeHtmlText(selectedNode.key)}</span>
+              ${renderJiraStatusLozenge(selectedNode.status)}
             </div>
             <div class="node-summary-text">${escapeHtmlText(selectedNode.summary)}</div>
             <div class="node-meta-grid">
               <div class="meta-cell">
-                <span>Teamwork Goal</span>
-                <strong>${escapeHtmlText(linkedGoal?.name ?? selectedNode.goalId)}</strong>
+                <span>Assignee</span>
+                <strong>${escapeHtmlText(selectedNode.assignee)}</strong>
               </div>
               <div class="meta-cell">
-                <span>Estimated Effort</span>
+                <span>Estimate</span>
                 <strong>${selectedNode.baseEstimateDays} Days</strong>
               </div>
               <div class="meta-cell" title="Log-normal uncertainty standard deviation σ = ±${selectedNode.uncertaintySigma} days">
-                <span>Risk Spread ⓘ</span>
+                <span>Uncertainty ⓘ</span>
                 <strong>${uncertaintyLabel}</strong>
               </div>
-              <div class="meta-cell" title="Criticality Index: ${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% of Monte Carlo simulations have this task on the critical path">
-                <span>Path Impact ⓘ</span>
-                <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% Critical</strong>
+              <div class="meta-cell" title="Criticality Index: ${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% of Monte Carlo runs place this issue on the critical path">
+                <span>Criticality ⓘ</span>
+                <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}%</strong>
               </div>
             </div>
-            ${selectedNode.confluenceDecision
-        ? `<div class="confluence-adr-pill" title="Linked Confluence Architecture Decision Record via Atlassian Teamwork Graph">
-                     📄 Linked Decision: <strong>${escapeHtmlText(selectedNode.confluenceDecision.title)}</strong>
-                   </div>`
-        : ''}
           </div>
 
-          <!-- Step 1: Schedule & Mitigation Controls -->
+          <!-- Step 1: Schedule Change Slider & Mitigations -->
           <div class="delay-slider-card">
             <div class="slider-header">
-              <span class="slider-title">1. Simulate Task Delay or Speedup</span>
+              <span class="slider-title">1. Schedule Change (-5d to +30d)</span>
               <span class="slider-readout ${delayDays < 0 ? 'accel-text' : delayDays === 0 ? 'neutral-text' : ''}">
                 ${delaySignLabel}
               </span>
@@ -2627,47 +2180,47 @@ function renderScenarioPanel(props) {
               ${[-5, -3, 0, 5, 10, 18, 30]
         .map((val) => `
                   <button class="preset-btn ${delayDays === val ? 'active' : ''}" data-preset-delay="${val}">
-                    ${val === 0 ? 'Reset (0d)' : val > 0 ? `+${val}d` : `${val}d`}
+                    ${val === 0 ? '0d' : val > 0 ? `+${val}d` : `${val}d`}
                   </button>
                 `)
         .join('')}
             </div>
 
-            <div class="mitigation-label">2. Test Recovery Mitigations</div>
+            <div class="mitigation-label">2. Recovery Mitigations</div>
             <div class="scope-toggles-row">
               <button
                 class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
                 id="btn-toggle-add-dev"
-                title="Math: Compresses base task estimate by 35% and reduces uncertainty variance σ by 40%"
+                title="Reduces task duration by 35% and variance σ by 40%"
               >
-                👩‍💻 ${addDeveloper ? '✓ Developer Added (-35% Time)' : 'Add +1 Developer'}
+                ${addDeveloper ? '✓ +1 Developer Added' : '+ Add Developer (+1 FTE)'}
               </button>
               <button
                 class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
                 id="btn-toggle-decouple-edge"
-                title="Math: Inserts an interface mock contract, reducing outgoing dependency propagation weight to 0.25"
+                title="Reduces outgoing blocking dependency propagation weight to 0.25"
               >
-                ✂️ ${decoupleBlockingEdges ? '✓ Dependency Decoupled' : 'Decouple Dependency'}
+                ${decoupleBlockingEdges ? '✓ Dependency Decoupled' : '✂ Decouple Dependency'}
               </button>
             </div>
           </div>
 
-          <!-- Step 3: Side-by-Side Release Date Comparison -->
+          <!-- Step 2: Release Date Comparison Bars -->
           <div class="comparison-bars-card">
             <div style="font-size:12px;font-weight:700;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
-              <span>📊 Release Date Impact (Original vs. Simulated)</span>
-              ${renderInfoTooltip('Baseline vs. Counterfactual Forecast', `Compares your original baseline schedule against the simulated What-If scenario across 500 paired runs. Extreme 5% Tail Date (CVaR₀.₉₅): ${formatFriendlyDate(activeSim.cvar95Date, true)} | Friction E: ${activeSim.quasimetricEnergy} | Est. Rework: ${activeSim.estimatedReworkHours}h.`, `ΔP85 = ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | CVaR₀.₉₅ = ${activeSim.cvar95Date}`)}
+              <span>Projected Release Impact</span>
+              ${renderInfoTooltip('Baseline vs. Simulated Forecast', `Compares your baseline schedule against the simulated What-If change across 500 paired runs. Worst 5% Tail Date: ${formatFriendlyDate(activeSim.cvar95Date, true)}.`, `ΔP85 = ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | CVaR₀.₉₅ = ${activeSim.cvar95Date}`)}
             </div>
 
             ${forecastRows
         .map((row) => {
         const diff = Number((row.intDays - row.baseDays).toFixed(1));
-        const intBarColor = diff > 0 ? '#f43f5e' : diff < 0 ? '#10b981' : '#38bdf8';
+        const intBarColor = diff > 0 ? '#CA3521' : diff < 0 ? '#1F845A' : '#0C66E4';
         const diffBadge = diff > 0
-            ? `<span style="color:#fb7185;font-weight:700;">(+${diff}d)</span>`
+            ? `<span style="color:#AE2E24;font-weight:700;">(+${diff}d)</span>`
             : diff < 0
-                ? `<span style="color:#34d399;font-weight:700;">(${diff}d)</span>`
-                : `<span style="color:#94a3b8;">(No change)</span>`;
+                ? `<span style="color:#216E4E;font-weight:700;">(${diff}d)</span>`
+                : `<span style="color:#626F86;">(0d)</span>`;
         return `
                   <div class="dist-compare-group" title="${escapeHtmlText(row.tooltip)}">
                     <div class="dist-compare-label">
@@ -2689,21 +2242,21 @@ function renderScenarioPanel(props) {
     })
         .join('')}
 
-            <button class="btn btn-rovo-copy" id="btn-copy-rovo-prompt" title="Copy a ready-to-paste prompt for @Rovo-World-Model Agent in Jira Rovo Chat">
-              ${copiedPromptNotice ? '✓ Copied Prompt for @Rovo-World-Model Agent!' : '🤖 Ask @Rovo-World-Model Agent for Mitigation Plan'}
+            <button class="btn btn-primary btn-rovo-copy" id="btn-copy-rovo-prompt" title="Copy prompt for @Rovo-World-Model Agent in Rovo Chat">
+              ${copiedPromptNotice ? '✓ Copied Prompt for @Rovo-World-Model Agent!' : '✨ Ask @Rovo-World-Model Agent'}
             </button>
           </div>
         </div>
       </div>
 
-      <!-- Atlassian Teamwork Graph (TWG) Goals Status Card -->
+      <!-- Teamwork Graph Goals Card -->
       <div class="panel-card">
         <div class="panel-header">
           <div class="panel-title">
-            <span>🧭 Business Goals (Atlassian Teamwork Graph)</span>
-            ${renderInfoTooltip('Teamwork Graph Goal Alignment', 'Shows how engineering task changes affect high-level company goals and their probability of finishing on or before the target deadline.')}
+            <span>Teamwork Graph Goals</span>
+            ${renderInfoTooltip('Teamwork Graph Goal Alignment', 'Tracks how issue schedule changes ripple up to linked Teamwork Graph Goals.')}
           </div>
-          <span class="badge-pill cyan">${activeSim.goalImpacts.length} Linked Goals</span>
+          <span class="jira-lozenge jira-lozenge-goal">${activeSim.goalImpacts.length} GOALS</span>
         </div>
         <div class="goals-list">
           ${activeSim.goalImpacts
@@ -2713,24 +2266,19 @@ function renderScenarioPanel(props) {
             : goal.status === 'At Risk'
                 ? 'at-risk'
                 : '';
-        const pillVariant = goal.status === 'Off Track'
-            ? 'rose'
-            : goal.status === 'At Risk'
-                ? 'amber'
-                : 'emerald';
         const probPct = Math.round(goal.probabilityOfOnTime * 100);
         const barColor = goal.status === 'Off Track'
-            ? '#f43f5e'
+            ? '#CA3521'
             : goal.status === 'At Risk'
-                ? '#f59e0b'
-                : '#10b981';
+                ? '#D97706'
+                : '#1F845A';
         const shiftSign = goal.rippleDelayDays > 0
-            ? `+${goal.rippleDelayDays}d slip`
+            ? `+${goal.rippleDelayDays}d`
             : goal.rippleDelayDays < 0
-                ? `${goal.rippleDelayDays}d faster`
+                ? `${goal.rippleDelayDays}d`
                 : '';
         return `
-                <div class="goal-card ${statusClass}" title="Goal ID: ${escapeHtmlText(goal.goalKey)} | Owner Team: ${escapeHtmlText(goal.ownerTeam)}">
+                <div class="goal-card ${statusClass}" title="Goal Key: ${escapeHtmlText(goal.goalKey)} | Owner: ${escapeHtmlText(goal.ownerTeam)}">
                   <div class="goal-top">
                     <div>
                       <div class="goal-name">${escapeHtmlText(goal.goalName)}</div>
@@ -2738,12 +2286,12 @@ function renderScenarioPanel(props) {
                         Owner: ${escapeHtmlText(goal.ownerTeam)}
                       </div>
                     </div>
-                    <span class="badge-pill ${pillVariant}">${escapeHtmlText(goal.status)}</span>
+                    ${renderJiraStatusLozenge(goal.status)}
                   </div>
                   <div class="goal-dates-row">
                     <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
-                    <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em style="color:${goal.rippleDelayDays > 0 ? '#fb7185' : '#34d399'};">(${shiftSign})</em>` : ''}</span>
-                    <span>On-Time Chance: <strong>${probPct}%</strong></span>
+                    <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em style="color:${goal.rippleDelayDays > 0 ? '#AE2E24' : '#216E4E'};">(${shiftSign})</em>` : ''}</span>
+                    <span>On-Time: <strong>${probPct}%</strong></span>
                   </div>
                   <div class="prob-bar-track">
                     <div class="prob-bar-fill" style="width:${probPct}%;background:${barColor};"></div>
@@ -2755,17 +2303,17 @@ function renderScenarioPanel(props) {
         </div>
       </div>
 
-      <!-- Downstream Impact / Bottlenecks / Math & MCP Inspector Tabs -->
+      <!-- Inspector Tabs -->
       <div class="panel-card">
         <div class="tab-bar">
           <button class="tab-btn ${activeRightTab === 'cascade' ? 'active' : ''}" data-tab="cascade">
-            🌊 Impacted Tasks (${activeSim.blastRadiusNodes.length})
+            Impacted Issues (${activeSim.blastRadiusNodes.length})
           </button>
           <button class="tab-btn ${activeRightTab === 'bottlenecks' ? 'active' : ''}" data-tab="bottlenecks">
-            🚧 Top Blockers (${activeSim.topBottlenecks.length})
+            Top Blockers (${activeSim.topBottlenecks.length})
           </button>
           <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
-            ⚙️ Math &amp; MCP Spec
+            Math &amp; MCP
           </button>
         </div>
         <div class="tab-body">
@@ -2781,50 +2329,117 @@ function renderScenarioPanel(props) {
 /**
  * Rovo-World-Model — Main Custom UI Cockpit Controller (`static/ui/src/cockpit.ts`)
  *
- * Composes:
- * 1. `HeaderBar.tsx` (`renderHeaderBar`)
- * 2. `TimelineScrubber.tsx` (`renderTimelineScrubber`)
- * 3. `DagCanvas.tsx` (`renderDagCanvas`)
- * 4. `ScenarioPanel.tsx` (`renderScenarioPanel`, `buildRovoMitigationPrompt`)
- *
- * Includes interactive floating hover card inspector for DAG nodes so technical math
- * and metadata appear smoothly on mouseover without cluttering the canvas.
+ * Uses Atlassian Forge's `window.__bridge.callBridge('invoke', ...)` to load real Jira projects
+ * (e.g., `BloomPath Sprint (BLP)`, `Triton (TRI)`) and their live issues directly from Jira Cloud.
  */
 /**
- * Helper to invoke Atlassian Forge Custom UI resolver (`@forge/bridge`) when running inside Jira Cloud,
- * with seamless local mock fallback during browser development.
+ * Invokes Atlassian Forge Custom UI resolver via `window.__bridge.callBridge('invoke', ...)`
+ * (the native runtime channel used by `@forge/bridge` inside Jira Cloud iframes).
  */
 async function invokeForgeResolver(functionKey, payload = {}) {
     try {
         const win = window;
+        if (win.__bridge && typeof win.__bridge.callBridge === 'function') {
+            return await win.__bridge.callBridge('invoke', {
+                functionKey,
+                payload,
+            });
+        }
         if (win.__forgeBridge && typeof win.__forgeBridge.invoke === 'function') {
             return await win.__forgeBridge.invoke(functionKey, payload);
         }
     }
     catch {
-        // Fallback to local engine
+        // Fallback when running outside Jira iframe
     }
     return null;
 }
-const initialGraph = getChronosSyntheticGraph('CHRON');
+/**
+ * Builds the default initial graph from real Jira project issues (`BloomPath Sprint (BLP)`)
+ * while the live `getGraphData` bridge call completes.
+ */
+function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomPath Sprint') {
+    const dag = buildDAGFromJiraIssues(projectKey, [
+        {
+            id: '10007',
+            key: `${projectKey}-7`,
+            fields: {
+                summary: 'Test Issue 2 - Progress Tracking',
+                status: { name: 'To Do' },
+                assignee: { displayName: 'Petri Paananen' },
+                customfield_10016: 4,
+                issuelinks: [
+                    {
+                        type: { name: 'Blocks', outward: 'blocks' },
+                        outwardIssue: { key: `${projectKey}-8` },
+                    },
+                ],
+            },
+        },
+        {
+            id: '10008',
+            key: `${projectKey}-8`,
+            fields: {
+                summary: 'Test Issue 3 - Sprint Health',
+                status: { name: 'To Do' },
+                assignee: { displayName: 'Petri Paananen' },
+                customfield_10016: 5,
+            },
+        },
+    ], [
+        {
+            id: 'GOAL-ALPHA',
+            key: `${projectKey}-GOAL-1`,
+            name: `${projectName} Sprint Delivery`,
+            targetDate: '2026-11-18',
+            targetDayOffset: 18,
+            ownerTeam: `${projectName} Engineering`,
+            status: 'On Track',
+        },
+        {
+            id: 'GOAL-OMEGA',
+            key: `${projectKey}-GOAL-2`,
+            name: `${projectName} Release Milestone`,
+            targetDate: '2026-12-02',
+            targetDayOffset: 32,
+            ownerTeam: `${projectName} Engineering`,
+            status: 'On Track',
+        },
+    ], [
+        {
+            id: 'team-1',
+            name: `${projectName} Engineering`,
+            lead: 'Petri Paananen',
+            color: '#0C66E4',
+            cognitiveLoad: 65,
+        },
+    ], '2026-10-30');
+    return {
+        ...dag,
+        projectName,
+        isSyntheticDemo: false,
+    };
+}
+const initialGraph = createInitialRealProjectGraph('BLP', 'BloomPath Sprint');
 const initialBaseline = runMonteCarloSimulation(initialGraph, { iterations: 500 });
-const initialIntervention = runIntervention(initialGraph, 'CHRON-104', 8, {
-    iterations: 500,
-});
 const state = {
+    availableProjects: [
+        { id: 'BLP', key: 'BLP', name: 'BloomPath Sprint' },
+        { id: 'TRI', key: 'TRI', name: 'Triton' },
+    ],
     graph: initialGraph,
     baselineSim: initialBaseline,
-    activeSim: initialIntervention,
-    intervention: initialIntervention,
-    selectedNodeKey: 'CHRON-104',
-    delayDays: 8,
+    activeSim: initialBaseline,
+    intervention: null,
+    selectedNodeKey: initialGraph.nodes[0]?.key ?? 'BLP-7',
+    delayDays: 0,
     addDeveloper: false,
     decoupleBlockingEdges: false,
     selectedEpochIndex: 2, // Today
     scrubberDayOffset: 0,
     activeRightTab: 'cascade',
     copiedPromptNotice: false,
-    statusBanner: 'Viewing "Project Chronos: Next-Gen Platform Launch" — Click any task card on the map or drag the What-If slider on the right to simulate schedule changes.',
+    statusBanner: 'Connected to Jira project — Click any issue card or drag the Schedule Change slider to simulate timeline impacts.',
 };
 function recomputeSimulation() {
     state.baselineSim = runMonteCarloSimulation(state.graph, { iterations: 500 });
@@ -2851,6 +2466,7 @@ function renderCockpit() {
     root.innerHTML = `
     <div class="cockpit-shell">
       ${renderHeaderBar({
+        availableProjects: state.availableProjects,
         graph: state.graph,
         baselineSim: state.baselineSim,
         activeSim: state.activeSim,
@@ -2898,15 +2514,51 @@ function renderCockpit() {
   `;
     attachCockpitEventListeners();
 }
+async function loadJiraProjectGraph(projectKey) {
+    const remoteData = await invokeForgeResolver('getGraphData', projectKey ? { projectKey } : {});
+    if (remoteData?.availableProjects && remoteData.availableProjects.length > 0) {
+        state.availableProjects = remoteData.availableProjects;
+    }
+    if (remoteData?.graph && remoteData.graph.nodes && remoteData.graph.nodes.length >= 1) {
+        state.graph = remoteData.graph;
+        state.selectedNodeKey =
+            remoteData.graph.nodes[0]?.key ?? state.selectedNodeKey;
+        state.delayDays = 0;
+        state.addDeveloper = false;
+        state.decoupleBlockingEdges = false;
+        recomputeSimulation();
+        state.statusBanner = `Loaded live Jira project "${state.graph.projectName}" (${state.graph.projectKey}) with ${state.graph.nodes.length} ${state.graph.nodes.length === 1 ? 'issue' : 'issues'}.`;
+        renderCockpit();
+    }
+    else if (projectKey) {
+        const matched = state.availableProjects.find((p) => p.key === projectKey);
+        state.graph = createInitialRealProjectGraph(projectKey, matched?.name ?? `${projectKey} Project`);
+        state.selectedNodeKey = state.graph.nodes[0]?.key ?? `${projectKey}-1`;
+        state.delayDays = 0;
+        recomputeSimulation();
+        renderCockpit();
+    }
+}
 function attachCockpitEventListeners() {
     const triggerRemoteWhatIf = () => {
         void invokeForgeResolver('runWhatIfSimulation', {
+            projectKey: state.graph.projectKey,
             targetNodeId: state.selectedNodeKey,
             deltaDays: state.delayDays,
             addDeveloper: state.addDeveloper,
             decoupleBlockingEdges: state.decoupleBlockingEdges,
         });
     };
+    // 0. Project Switcher Dropdown (`#jira-project-select`)
+    const projectSelect = document.getElementById('jira-project-select');
+    if (projectSelect) {
+        projectSelect.addEventListener('change', async () => {
+            const nextKey = projectSelect.value;
+            state.statusBanner = `Switching to Jira project ${nextKey}…`;
+            renderCockpit();
+            await loadJiraProjectGraph(nextKey);
+        });
+    }
     // 1. Node click + hover inspector on SVG DAG
     const hoverCard = document.getElementById('dag-node-hover-card');
     const viewportContainer = document.getElementById('dag-viewport-container');
@@ -2930,19 +2582,18 @@ function attachCockpitEventListeners() {
             try {
                 const info = JSON.parse(rawHover);
                 const shiftLine = info.rippleShift > 0
-                    ? `<span style="color:#fda4af;font-weight:700;">+${info.rippleShift.toFixed(1)}d downstream slip</span>`
+                    ? `<span style="color:#AE2E24;font-weight:700;">+${info.rippleShift.toFixed(1)}d downstream slip</span>`
                     : info.rippleShift < 0
-                        ? `<span style="color:#6ee7b7;font-weight:700;">${info.rippleShift.toFixed(1)}d faster</span>`
-                        : `<span style="color:#94a3b8;">On Baseline Schedule</span>`;
+                        ? `<span style="color:#216E4E;font-weight:700;">${info.rippleShift.toFixed(1)}d faster</span>`
+                        : `<span style="color:#626F86;">On Baseline Schedule</span>`;
                 hoverCard.innerHTML = `
           <div class="hover-card-header">
             <span class="hover-card-key">${escapeHtmlText(info.key)}</span>
-            <span class="badge-pill">${escapeHtmlText(info.team)}</span>
+            <span class="jira-lozenge jira-lozenge-todo">${escapeHtmlText(info.status.toUpperCase())}</span>
           </div>
           <div class="hover-card-title">${escapeHtmlText(info.summary)}</div>
           <div class="hover-card-meta">
             <div><span>Assignee:</span> <strong>${escapeHtmlText(info.assignee)}</strong></div>
-            <div><span>Status:</span> <strong>${escapeHtmlText(info.status)}</strong></div>
             <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
             <div><span>Schedule Impact:</span> ${shiftLine}</div>
             <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
@@ -2953,7 +2604,7 @@ function attachCockpitEventListeners() {
           <div class="hover-card-math">
             📐 <code>Est = ${info.estimateDays}d (σ = ±${info.sigma}d) | Criticality = ${info.criticalityPct}%</code>
           </div>
-          <div class="hover-card-tip">Click card to select &amp; run What-If simulation</div>
+          <div class="hover-card-tip">Click issue card to select &amp; simulate</div>
         `;
                 hoverCard.style.display = 'block';
                 const vpRect = viewportContainer.getBoundingClientRect();
@@ -2997,7 +2648,7 @@ function attachCockpitEventListeners() {
             renderCockpit();
         });
     });
-    // 4. Scope / Resource Toggle: Add Developer (+1 Resource)
+    // 4. Scope / Resource Toggle: Add Developer
     const btnAddDev = document.getElementById('btn-toggle-add-dev');
     if (btnAddDev) {
         btnAddDev.addEventListener('click', () => {
@@ -3044,7 +2695,7 @@ function attachCockpitEventListeners() {
                 // Fallback when clipboard permission is restricted in sandboxed iframe
             }
             state.copiedPromptNotice = true;
-            state.statusBanner = `Copied Rovo Prompt to clipboard — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
+            state.statusBanner = `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
             renderCockpit();
         });
     }
@@ -3079,48 +2730,45 @@ function attachCockpitEventListeners() {
             renderCockpit();
         });
     }
-    // 9. Header Action: Load Demo Scenario (`invoke('loadDemoScenario')`)
-    const btnLoadDemo = document.getElementById('btn-load-demo');
-    if (btnLoadDemo) {
-        btnLoadDemo.addEventListener('click', async () => {
-            state.graph = getChronosSyntheticGraph('CHRON');
-            state.selectedNodeKey = 'CHRON-104';
-            state.delayDays = 10;
-            state.addDeveloper = false;
-            state.decoupleBlockingEdges = false;
-            state.selectedEpochIndex = 2;
-            state.scrubberDayOffset = 0;
-            recomputeSimulation();
-            state.statusBanner =
-                'Loaded "Project Chronos" 18-task multi-team launch scenario with a +10 day simulated delay on CHRON-104.';
+    // 9. Header Action: Sync Jira Project (`invoke('getGraphData')`)
+    const btnSyncJira = document.getElementById('btn-sync-jira');
+    if (btnSyncJira) {
+        btnSyncJira.addEventListener('click', async () => {
+            state.statusBanner = `Syncing live issues from Jira project ${state.graph.projectKey}…`;
             renderCockpit();
-            await invokeForgeResolver('loadDemoScenario', { projectKey: 'CHRON' });
+            await loadJiraProjectGraph(state.graph.projectKey);
         });
     }
-    // 10. Header Action: Seed Jira Issues (`invoke('createRealJiraIssues')`)
+    // 10. Header Action: Add Sample Issues (`invoke('createRealJiraIssues')`)
     const btnCreateIssues = document.getElementById('btn-create-jira-issues');
     if (btnCreateIssues) {
         btnCreateIssues.addEventListener('click', async () => {
-            state.statusBanner =
-                'Creating linked Jira issues in your project via Jira REST API…';
+            state.statusBanner = `Creating linked issues in Jira project ${state.graph.projectKey} via REST API…`;
             renderCockpit();
             const res = await invokeForgeResolver('createRealJiraIssues', { projectKey: state.graph.projectKey });
+            if (res?.graph && res.graph.nodes.length >= 1) {
+                state.graph = res.graph;
+                state.selectedNodeKey = res.graph.nodes[0].key;
+                recomputeSimulation();
+            }
             state.statusBanner =
                 res?.seedReport?.message ??
-                    'Project Chronos 18-task dependency graph synced.';
+                    `Synced issues for project ${state.graph.projectKey}.`;
             renderCockpit();
         });
     }
-    // 11. Header Action: Inspect #1 Blocker
+    // 11. Header Action: Focus Blocker
     const btnBottleneck = document.getElementById('btn-jump-bottleneck');
     if (btnBottleneck) {
         btnBottleneck.addEventListener('click', () => {
-            const topKey = state.activeSim.topBottlenecks[0]?.key ?? 'CHRON-104';
+            const topKey = state.activeSim.topBottlenecks[0]?.key ??
+                state.graph.nodes[0]?.key ??
+                'BLP-7';
             state.selectedNodeKey = topKey;
             if (state.delayDays === 0)
-                state.delayDays = 8;
+                state.delayDays = 5;
             recomputeSimulation();
-            state.statusBanner = `Selected #1 Critical Path Blocker (${topKey}) — showing impact of a +${state.delayDays} day delay.`;
+            state.statusBanner = `Focused #1 Critical Blocker (${topKey}) — simulating a +${state.delayDays} day delay.`;
             renderCockpit();
         });
     }
@@ -3135,7 +2783,7 @@ function attachCockpitEventListeners() {
             state.selectedEpochIndex = 2;
             recomputeSimulation();
             state.statusBanner =
-                'All What-If changes cleared — viewing original baseline project schedule.';
+                'What-If changes cleared — viewing baseline schedule for ' + state.graph.projectName + '.';
             renderCockpit();
             await invokeForgeResolver('resetScenario', { projectKey: state.graph.projectKey });
         });
@@ -3157,7 +2805,7 @@ function attachCockpitEventListeners() {
             if (key) {
                 state.selectedNodeKey = key;
                 if (state.delayDays === 0)
-                    state.delayDays = 7;
+                    state.delayDays = 5;
                 recomputeSimulation();
                 renderCockpit();
             }
@@ -3167,16 +2815,7 @@ function attachCockpitEventListeners() {
 // Initialize on DOM load + sync with Forge Backend Resolver (`getGraphData`)
 document.addEventListener('DOMContentLoaded', async () => {
     renderCockpit();
-    const remoteData = await invokeForgeResolver('getGraphData', {});
-    if (remoteData?.graph && remoteData.graph.nodes?.length >= 5) {
-        state.graph = remoteData.graph;
-        state.selectedNodeKey =
-            remoteData.graph.nodes.find((n) => n.key.endsWith('-104'))?.key ??
-                remoteData.graph.topologicalOrder[3] ??
-                remoteData.graph.nodes[0].key;
-        recomputeSimulation();
-        renderCockpit();
-    }
+    await loadJiraProjectGraph();
 });
 
 })();

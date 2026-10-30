@@ -1,6 +1,6 @@
 /**
  * Zero-dependency Custom UI bundler using TypeScript's compiler API.
- * Bundles `src/engine/*`, `src/twg/syntheticSeeder.ts`, `static/ui/src/components/*.tsx`,
+ * Bundles `src/engine/*`, `static/ui/src/components/*.tsx`,
  * and `static/ui/src/cockpit.ts` into `static/ui/build/app.js`, `styles.css`, and `index.html`.
  */
 
@@ -21,7 +21,7 @@ const modulesToBundle = [
   { id: 'engine/types', file: path.join(repoRoot, 'src/engine/types.ts') },
   { id: 'engine/dag', file: path.join(repoRoot, 'src/engine/dag.ts') },
   { id: 'engine/simulator', file: path.join(repoRoot, 'src/engine/simulator.ts') },
-  { id: 'twg/syntheticSeeder', file: path.join(repoRoot, 'src/twg/syntheticSeeder.ts') },
+  { id: 'ui/components/tooltip', file: path.join(__dirname, 'src/components/tooltip.ts') },
   { id: 'ui/components/HeaderBar', file: path.join(__dirname, 'src/components/HeaderBar.tsx') },
   {
     id: 'ui/components/TimelineScrubber',
@@ -83,7 +83,7 @@ const htmlContent = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Rovo-World-Model (Codegeist 2026)</title>
+  <title>Rovo-World-Model</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
