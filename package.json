@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test src/engine/__tests__/engine.test.ts",
     "build:ui": "npm --prefix static/ui run build",
-    "build": "npm run typecheck && npm run build:ui"
+    "build": "npm run typecheck && npm run build:ui",
+    "forge:lint": "forge lint",
+    "forge:deploy": "npm run build && forge deploy -e development",
+    "forge:tunnel": "forge tunnel"
   },
   "dependencies": {
     "@forge/api": "^4.1.0",

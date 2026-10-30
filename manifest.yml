@@ -39,7 +39,7 @@ modules:
         - analyze-critical-path
         - seed-demo-scenario
 
-  rovo:action:
+  action:
     - key: simulate-delay-impact
       name: Simulate Counterfactual Delay Impact
       function: rovo-simulate-delay-fn
@@ -68,7 +68,7 @@ modules:
 
     - key: analyze-critical-path
       name: Analyze Topological Critical Path & Bottlenecks
-      function: rovo-analyze-critical-path-fn
+      function: rovo-critical-path-fn
       actionVerb: GET
       description: >-
         Performs cycle-safe topological sorting and 500-iteration Monte Carlo
@@ -112,7 +112,7 @@ modules:
       handler: index.uiResolverHandler
     - key: rovo-simulate-delay-fn
       handler: index.simulateDelayImpactHandler
-    - key: rovo-analyze-critical-path-fn
+    - key: rovo-critical-path-fn
       handler: index.analyzeCriticalPathHandler
     - key: rovo-seed-demo-fn
       handler: index.seedDemoScenarioHandler
@@ -126,7 +126,7 @@ resources:
 app:
   id: ari:cloud:ecosystem::app/0087095c-82be-4370-83d9-04e01de63d75
   runtime:
-    name: nodejs20.x
+    name: nodejs22.x
     memoryMB: 512
     architecture: arm64
 
