@@ -1,13 +1,14 @@
 /**
- * Step 4 Component 1: Header Bar & Judge Controls (`static/ui/src/components/HeaderBar.tsx`)
+ * Step 4 Component 1: Executive Header Bar & 4-Card KPI Strip (`static/ui/src/components/HeaderBar.tsx`)
  *
- * - App title: "Rovo World Model — Causal Time Machine"
- * - Active data badge: "Live Jira + TWG Data" or "Demo Scenario: Project Chronos (18 Nodes)"
- * - "Load Demo Scenario" Button (`invoke('loadDemoScenario')`) & "Create Real Jira Issues" Button
- * - KPI Summary Pills:
- *   1. Baseline P85 Completion Date vs. Simulated P85 Date (with Δ days badge in red/green)
- *   2. Active Critical Bottlenecks count
- *   3. Affected Teamwork Graph Goals count
+ * Designed for 3-second executive clarity:
+ * - Human-readable product subtitle (all math/formulas tucked behind `?` tooltips)
+ * - 1-click Judge Actions: Load Demo Scenario, Create Real Jira Issues, Focus Top Blocker, Reset
+ * - 4 High-Impact Executive KPI Cards:
+ *   1. Projected Release Date (with slip/gain pill + hover tooltip for P85 Monte Carlo math)
+ *   2. Delivery Confidence Window (Earliest Likely to Worst-Case + hover tooltip for P50-P95 & CVaR)
+ *   3. Critical Path Blockers (Top gating task + hover tooltip for Criticality Index & DAG math)
+ *   4. Business Goals & Impact (Teamwork Graph Goal status + affected downstream tasks)
  */
 
 import {
@@ -15,6 +16,11 @@ import {
   InterventionResult,
   SimulationResult,
 } from '../../../../src/engine/types';
+import {
+  escapeHtmlText,
+  formatFriendlyDate,
+  renderInfoTooltip,
+} from './tooltip';
 
 export interface HeaderBarProps {
   graph: CausalGraph;
@@ -26,14 +32,6 @@ export interface HeaderBarProps {
   addDeveloper: boolean;
   decoupleBlockingEdges: boolean;
   statusBanner: string | null;
-}
-
-function escapeHtmlHeader(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 export function renderHeaderBar(props: HeaderBarProps): string {
@@ -49,7 +47,6 @@ export function renderHeaderBar(props: HeaderBarProps): string {
     statusBanner,
   } = props;
 
-  const p50Shift = intervention ? intervention.p50ShiftDays : 0;
   const p85Shift = intervention ? intervention.p85ShiftDays : 0;
   const p95Shift = intervention ? intervention.p95ShiftDays : 0;
 
@@ -57,22 +54,30 @@ export function renderHeaderBar(props: HeaderBarProps): string {
     delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
 
   const dataBadgeLabel = graph.isSyntheticDemo
-    ? `Demo Scenario: Project Chronos (${graph.nodes.length} Nodes)`
-    : 'Live Jira + TWG Data';
+    ? `Demo Scenario (${graph.nodes.length} Tasks)`
+    : `Live Jira (${graph.nodes.length} Tasks)`;
 
   const affectedGoalsCount = activeSim.goalImpacts.filter(
     (g) => g.status !== 'On Track' || Math.abs(g.rippleDelayDays) > 0
   ).length;
 
-  const formatDeltaBadge = (shift: number, defaultText: string): string => {
+  const topBlocker = activeSim.topBottlenecks[0];
+  const topBlockerKey = topBlocker?.key ?? 'CHRON-104';
+
+  const formatShiftPill = (shift: number, neutralLabel: string): string => {
     if (shift > 0) {
-      return `<span class="kpi-delta delayed">+${shift}d</span>`;
+      return `<span class="kpi-delta delayed">+${shift}d Slip</span>`;
     }
     if (shift < 0) {
-      return `<span class="kpi-delta baseline">${shift}d</span>`;
+      return `<span class="kpi-delta baseline">${shift}d Faster</span>`;
     }
-    return `<span class="kpi-delta baseline">${defaultText}</span>`;
+    return `<span class="kpi-delta neutral">${neutralLabel}</span>`;
   };
+
+  const windowBufferDays = Math.max(
+    1,
+    Math.round(activeSim.p95Days - activeSim.p50Days)
+  );
 
   return `
     <header class="cockpit-header">
@@ -82,27 +87,32 @@ export function renderHeaderBar(props: HeaderBarProps): string {
           <h1>
             Rovo-World-Model
             <span class="badge-pill ${graph.isSyntheticDemo ? 'cyan' : 'emerald'}">
-              ${escapeHtmlHeader(dataBadgeLabel)}
+              ${escapeHtmlText(dataBadgeLabel)}
             </span>
-            <span class="badge-pill">Codegeist 2026</span>
           </h1>
           <div class="brand-subtitle">
-            Causal AI Digital Twin &amp; Time Machine · Atlassian Teamwork Graph (TWG) · 500-Iteration CRN Monte Carlo ($do$-Calculus)
+            Interactive Delivery Risk Simulator &amp; Project Time Machine
+            ${renderInfoTooltip(
+              'Under the Hood: Causal Digital Twin Engine',
+              'Constructs a Directed Acyclic Graph (DAG) from Jira issues and Teamwork Graph goals, then runs 500 paired Monte Carlo simulations in under 25ms to predict cascading delivery risks before they happen.',
+              'P(Release | do(Task = +Δd)) via 500 Common Random Numbers (CRN) iterations'
+            )}
           </div>
         </div>
       </div>
+
       <div class="header-actions">
-        <button class="btn btn-primary" id="btn-load-demo" title="Load 18-node Project Chronos causal graph">
+        <button class="btn btn-primary" id="btn-load-demo" title="Load the 18-task Project Chronos multi-team launch scenario">
           ⚡ Load Demo Scenario
         </button>
-        <button class="btn" id="btn-create-jira-issues" title="Populate real linked Jira issues via Jira REST API">
-          ➕ Create Real Jira Issues
+        <button class="btn" id="btn-create-jira-issues" title="Create real linked Jira issues in this project via Jira REST API">
+          ➕ Seed Jira Issues
         </button>
-        <button class="btn" id="btn-jump-bottleneck">
-          🎯 Focus Top Bottleneck (${escapeHtmlHeader(activeSim.topBottlenecks[0]?.key ?? 'CHRON-104')})
+        <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path bottleneck task">
+          🎯 Inspect #1 Blocker (${escapeHtmlText(topBlockerKey)})
         </button>
-        <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim">
-          ↺ Reset Scenario
+        <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim" title="Clear all what-if changes and return to baseline">
+          ↺ Reset
         </button>
       </div>
     </header>
@@ -110,92 +120,106 @@ export function renderHeaderBar(props: HeaderBarProps): string {
     ${
       statusBanner
         ? `<div class="status-banner-bar">
-             <span>✨ ${escapeHtmlHeader(statusBanner)}</span>
-             <span style="font-family:var(--font-mono);font-size:11px;color:#67e8f9;">
-               Engine Latency: ${activeSim.executionTimeMs} ms / 500 worlds
+             <div class="status-banner-left">
+               <span class="status-dot"></span>
+               <span>${escapeHtmlText(statusBanner)}</span>
+             </div>
+             <span class="status-latency-pill" title="500 baseline + 500 counterfactual simulations executed in ${activeSim.executionTimeMs} ms">
+               ⚡ Simulated 500 futures in ${activeSim.executionTimeMs} ms
              </span>
            </div>`
         : ''
     }
 
-    <!-- KPI SUMMARY PILLS -->
+    <!-- 4-CARD EXECUTIVE KPI SUMMARY -->
     <section class="kpi-strip">
+      <!-- Card 1: Projected Release Date -->
       <div class="kpi-card ${p85Shift > 0 ? 'highlight-shift' : p85Shift < 0 ? 'highlight-accel' : ''}">
         <div class="kpi-label">
-          <span>Baseline vs. Simulated P85 Date</span>
-          <span class="badge-pill cyan">85% Commit</span>
+          <span>🎯 Projected Release Date</span>
+          ${renderInfoTooltip(
+            '85% Confidence Commit Date (P85)',
+            'In 85 out of 100 simulated project futures, all release tasks finish on or before this date. Compare against the original baseline to see the net impact of your What-If change.',
+            `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d from today) | Baseline P85 = ${baselineSim.p85Date}`
+          )}
         </div>
         <div class="kpi-value">
-          ${escapeHtmlHeader(activeSim.p85Date)}
-          ${formatDeltaBadge(p85Shift, '0d Shift')}
+          <span>${formatFriendlyDate(activeSim.p85Date, true)}</span>
+          ${formatShiftPill(p85Shift, 'On Track')}
         </div>
         <div class="kpi-sub">
-          Baseline P85: <strong>${escapeHtmlHeader(baselineSim.p85Date)}</strong> (+${baselineSim.p85Days}d)
+          Original Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong> (85% confidence)
         </div>
       </div>
 
-      <div class="kpi-card ${p50Shift > 0 ? 'highlight-shift' : p50Shift < 0 ? 'highlight-accel' : ''}">
-        <div class="kpi-label">
-          <span>P50 Median &amp; P95 Tail Cone</span>
-          <span class="badge-pill">P50 / P95</span>
-        </div>
-        <div class="kpi-value">
-          ${escapeHtmlHeader(activeSim.p50Date)}
-          ${formatDeltaBadge(p50Shift, 'Baseline')}
-        </div>
-        <div class="kpi-sub">
-          P95 Tail Envelope: <strong>${escapeHtmlHeader(activeSim.p95Date)}</strong> (${p95Shift >= 0 ? `+${p95Shift}d` : `${p95Shift}d`})
-        </div>
-      </div>
-
+      <!-- Card 2: Delivery Risk Window -->
       <div class="kpi-card">
         <div class="kpi-label">
-          <span>Active Critical Bottlenecks</span>
-          <span class="badge-pill amber">Critical Path</span>
+          <span>📅 Delivery Forecast Range</span>
+          ${renderInfoTooltip(
+            'Probability Cone & Tail Risk (P50 – P95 & CVaR)',
+            'Shows the spread between the Likely Median finish date (50% chance) and the Worst-Case finish date (95% chance), plus the Extreme Tail Risk (worst 5% average).',
+            `P50=${activeSim.p50Date} | P95=${activeSim.p95Date} (${p95Shift >= 0 ? `+${p95Shift}d` : `${p95Shift}d`}) | CVaR₀.₉₅=${activeSim.cvar95Date}`
+          )}
         </div>
         <div class="kpi-value">
-          ${activeSim.criticalPathNodes.length} Bottlenecks
-          <span class="kpi-delta delayed">Top: ${escapeHtmlHeader(activeSim.topBottlenecks[0]?.key ?? 'CHRON-104')}</span>
+          <span>${formatFriendlyDate(activeSim.p50Date)} – ${formatFriendlyDate(activeSim.p95Date)}</span>
+          <span class="kpi-delta neutral">±${windowBufferDays}d Window</span>
         </div>
         <div class="kpi-sub">
-          Max Ripple Weight: <strong>${activeSim.topBottlenecks[0]?.downstreamRippleWeight ?? 9.5}</strong> (${activeSim.topBottlenecks[0]?.downstreamCount ?? 10} downstream tasks)
+          Likely (50%): <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · Worst-Case (95%): <strong>${formatFriendlyDate(activeSim.p95Date)}</strong>
         </div>
       </div>
 
-      <div class="kpi-card ${affectedGoalsCount > 0 && p85Shift > 0 ? 'highlight-shift' : ''}">
+      <!-- Card 3: Critical Bottlenecks -->
+      <div class="kpi-card">
         <div class="kpi-label">
-          <span>Affected Teamwork Graph Goals</span>
-          <span class="badge-pill ${affectedGoalsCount > 0 && p85Shift > 0 ? 'rose' : 'emerald'}">TWG Goals</span>
+          <span>🚧 Critical Path Blockers</span>
+          ${renderInfoTooltip(
+            'Topological Critical Path & Ripple Weight',
+            'Tasks that directly gate the final release date. Any delay on a critical blocker immediately delays downstream teams unless decoupled.',
+            `Critical Path (${activeSim.criticalPathNodes.length} nodes) | Top Blocker ${topBlockerKey} Ripple Weight = ${topBlocker?.downstreamRippleWeight ?? 9.5}`
+          )}
         </div>
         <div class="kpi-value">
-          ${affectedGoalsCount} / ${activeSim.goalImpacts.length} Goals
+          <span>${activeSim.criticalPathNodes.length} Gating Tasks</span>
+          <span class="kpi-delta delayed">#1: ${escapeHtmlText(topBlockerKey)}</span>
+        </div>
+        <div class="kpi-sub">
+          <strong>${escapeHtmlText(topBlockerKey)}</strong> gates <strong>${topBlocker?.downstreamCount ?? 10} downstream tasks</strong> across teams
+        </div>
+      </div>
+
+      <!-- Card 4: Business Goals & Downstream Impact -->
+      <div class="kpi-card ${affectedGoalsCount > 0 && p85Shift > 0 ? 'highlight-shift' : ''}">
+        <div class="kpi-label">
+          <span>🧭 Goals &amp; Downstream Impact</span>
+          ${renderInfoTooltip(
+            'Atlassian Teamwork Graph (TWG) Goal Alignment',
+            'Tracks how task-level delays ripple up into company-level Teamwork Graph Goals and across dependent engineering teams.',
+            `Active What-If on ${selectedNodeKey}: ${activeSim.blastRadiusNodes.length} downstream tasks shifted | Friction E = ${activeSim.quasimetricEnergy}`
+          )}
+        </div>
+        <div class="kpi-value">
+          <span>${
+            hasActiveIntervention
+              ? `${activeSim.blastRadiusNodes.length} Tasks Impacted`
+              : `${activeSim.goalImpacts.length} Goals Tracked`
+          }</span>
           <span class="kpi-delta ${affectedGoalsCount > 0 && p85Shift > 0 ? 'delayed' : 'baseline'}">
-            ${affectedGoalsCount > 0 && p85Shift > 0 ? 'At Risk' : 'Aligned'}
+            ${
+              affectedGoalsCount > 0 && p85Shift > 0
+                ? `${affectedGoalsCount} Goal At Risk`
+                : 'Goals On Track'
+            }
           </span>
         </div>
         <div class="kpi-sub">
-          Goals: ${activeSim.goalImpacts.map((g) => `${escapeHtmlHeader(g.goalName)} (${g.status})`).join(' · ')}
-        </div>
-      </div>
-
-      <div class="kpi-card ${hasActiveIntervention ? 'highlight-shift' : ''}">
-        <div class="kpi-label">
-          <span>Causal Blast Radius</span>
-          <span class="badge-pill cyan">do(${escapeHtmlHeader(selectedNodeKey)})</span>
-        </div>
-        <div class="kpi-value">
-          ${hasActiveIntervention ? `${activeSim.blastRadiusNodes.length} Issues` : '0 Issues'}
-          ${formatDeltaBadge(activeSim.rippleDelayDays, 'No Shock')}
-        </div>
-        <div class="kpi-sub">
-          ${
-            hasActiveIntervention
-              ? `Propagated across ${graph.teams.length} teams`
-              : 'Slide Delay/Accelerate (-5d to +30d) to test'
-          }
+          ${activeSim.goalImpacts
+            .map((g) => `${escapeHtmlText(g.goalName)}: <strong>${g.status}</strong>`)
+            .join(' · ')}
         </div>
       </div>
     </section>
   `;
 }
-

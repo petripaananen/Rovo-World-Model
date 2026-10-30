@@ -1750,42 +1750,38 @@ async function seedProjectChronosScenario(options = {}) {
 
 // === Module: ui/components/HeaderBar ===
 /**
- * Step 4 Component 1: Header Bar & Judge Controls (`static/ui/src/components/HeaderBar.tsx`)
+ * Step 4 Component 1: Executive Header Bar & 4-Card KPI Strip (`static/ui/src/components/HeaderBar.tsx`)
  *
- * - App title: "Rovo World Model — Causal Time Machine"
- * - Active data badge: "Live Jira + TWG Data" or "Demo Scenario: Project Chronos (18 Nodes)"
- * - "Load Demo Scenario" Button (`invoke('loadDemoScenario')`) & "Create Real Jira Issues" Button
- * - KPI Summary Pills:
- *   1. Baseline P85 Completion Date vs. Simulated P85 Date (with Δ days badge in red/green)
- *   2. Active Critical Bottlenecks count
- *   3. Affected Teamwork Graph Goals count
+ * Designed for 3-second executive clarity:
+ * - Human-readable product subtitle (all math/formulas tucked behind `?` tooltips)
+ * - 1-click Judge Actions: Load Demo Scenario, Create Real Jira Issues, Focus Top Blocker, Reset
+ * - 4 High-Impact Executive KPI Cards:
+ *   1. Projected Release Date (with slip/gain pill + hover tooltip for P85 Monte Carlo math)
+ *   2. Delivery Confidence Window (Earliest Likely to Worst-Case + hover tooltip for P50-P95 & CVaR)
+ *   3. Critical Path Blockers (Top gating task + hover tooltip for Criticality Index & DAG math)
+ *   4. Business Goals & Impact (Teamwork Graph Goal status + affected downstream tasks)
  */
-function escapeHtmlHeader(str) {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
 function renderHeaderBar(props) {
     const { graph, baselineSim, activeSim, intervention, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, statusBanner, } = props;
-    const p50Shift = intervention ? intervention.p50ShiftDays : 0;
     const p85Shift = intervention ? intervention.p85ShiftDays : 0;
     const p95Shift = intervention ? intervention.p95ShiftDays : 0;
     const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
     const dataBadgeLabel = graph.isSyntheticDemo
-        ? `Demo Scenario: Project Chronos (${graph.nodes.length} Nodes)`
-        : 'Live Jira + TWG Data';
+        ? `Demo Scenario (${graph.nodes.length} Tasks)`
+        : `Live Jira (${graph.nodes.length} Tasks)`;
     const affectedGoalsCount = activeSim.goalImpacts.filter((g) => g.status !== 'On Track' || Math.abs(g.rippleDelayDays) > 0).length;
-    const formatDeltaBadge = (shift, defaultText) => {
+    const topBlocker = activeSim.topBottlenecks[0];
+    const topBlockerKey = topBlocker?.key ?? 'CHRON-104';
+    const formatShiftPill = (shift, neutralLabel) => {
         if (shift > 0) {
-            return `<span class="kpi-delta delayed">+${shift}d</span>`;
+            return `<span class="kpi-delta delayed">+${shift}d Slip</span>`;
         }
         if (shift < 0) {
-            return `<span class="kpi-delta baseline">${shift}d</span>`;
+            return `<span class="kpi-delta baseline">${shift}d Faster</span>`;
         }
-        return `<span class="kpi-delta baseline">${defaultText}</span>`;
+        return `<span class="kpi-delta neutral">${neutralLabel}</span>`;
     };
+    const windowBufferDays = Math.max(1, Math.round(activeSim.p95Days - activeSim.p50Days));
     return `
     <header class="cockpit-header">
       <div class="brand-cluster">
@@ -1794,113 +1790,111 @@ function renderHeaderBar(props) {
           <h1>
             Rovo-World-Model
             <span class="badge-pill ${graph.isSyntheticDemo ? 'cyan' : 'emerald'}">
-              ${escapeHtmlHeader(dataBadgeLabel)}
+              ${escapeHtmlText(dataBadgeLabel)}
             </span>
-            <span class="badge-pill">Codegeist 2026</span>
           </h1>
           <div class="brand-subtitle">
-            Causal AI Digital Twin &amp; Time Machine · Atlassian Teamwork Graph (TWG) · 500-Iteration CRN Monte Carlo ($do$-Calculus)
+            Interactive Delivery Risk Simulator &amp; Project Time Machine
+            ${renderInfoTooltip('Under the Hood: Causal Digital Twin Engine', 'Constructs a Directed Acyclic Graph (DAG) from Jira issues and Teamwork Graph goals, then runs 500 paired Monte Carlo simulations in under 25ms to predict cascading delivery risks before they happen.', 'P(Release | do(Task = +Δd)) via 500 Common Random Numbers (CRN) iterations')}
           </div>
         </div>
       </div>
+
       <div class="header-actions">
-        <button class="btn btn-primary" id="btn-load-demo" title="Load 18-node Project Chronos causal graph">
+        <button class="btn btn-primary" id="btn-load-demo" title="Load the 18-task Project Chronos multi-team launch scenario">
           ⚡ Load Demo Scenario
         </button>
-        <button class="btn" id="btn-create-jira-issues" title="Populate real linked Jira issues via Jira REST API">
-          ➕ Create Real Jira Issues
+        <button class="btn" id="btn-create-jira-issues" title="Create real linked Jira issues in this project via Jira REST API">
+          ➕ Seed Jira Issues
         </button>
-        <button class="btn" id="btn-jump-bottleneck">
-          🎯 Focus Top Bottleneck (${escapeHtmlHeader(activeSim.topBottlenecks[0]?.key ?? 'CHRON-104')})
+        <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path bottleneck task">
+          🎯 Inspect #1 Blocker (${escapeHtmlText(topBlockerKey)})
         </button>
-        <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim">
-          ↺ Reset Scenario
+        <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim" title="Clear all what-if changes and return to baseline">
+          ↺ Reset
         </button>
       </div>
     </header>
 
     ${statusBanner
         ? `<div class="status-banner-bar">
-             <span>✨ ${escapeHtmlHeader(statusBanner)}</span>
-             <span style="font-family:var(--font-mono);font-size:11px;color:#67e8f9;">
-               Engine Latency: ${activeSim.executionTimeMs} ms / 500 worlds
+             <div class="status-banner-left">
+               <span class="status-dot"></span>
+               <span>${escapeHtmlText(statusBanner)}</span>
+             </div>
+             <span class="status-latency-pill" title="500 baseline + 500 counterfactual simulations executed in ${activeSim.executionTimeMs} ms">
+               ⚡ Simulated 500 futures in ${activeSim.executionTimeMs} ms
              </span>
            </div>`
         : ''}
 
-    <!-- KPI SUMMARY PILLS -->
+    <!-- 4-CARD EXECUTIVE KPI SUMMARY -->
     <section class="kpi-strip">
+      <!-- Card 1: Projected Release Date -->
       <div class="kpi-card ${p85Shift > 0 ? 'highlight-shift' : p85Shift < 0 ? 'highlight-accel' : ''}">
         <div class="kpi-label">
-          <span>Baseline vs. Simulated P85 Date</span>
-          <span class="badge-pill cyan">85% Commit</span>
+          <span>🎯 Projected Release Date</span>
+          ${renderInfoTooltip('85% Confidence Commit Date (P85)', 'In 85 out of 100 simulated project futures, all release tasks finish on or before this date. Compare against the original baseline to see the net impact of your What-If change.', `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d from today) | Baseline P85 = ${baselineSim.p85Date}`)}
         </div>
         <div class="kpi-value">
-          ${escapeHtmlHeader(activeSim.p85Date)}
-          ${formatDeltaBadge(p85Shift, '0d Shift')}
+          <span>${formatFriendlyDate(activeSim.p85Date, true)}</span>
+          ${formatShiftPill(p85Shift, 'On Track')}
         </div>
         <div class="kpi-sub">
-          Baseline P85: <strong>${escapeHtmlHeader(baselineSim.p85Date)}</strong> (+${baselineSim.p85Days}d)
+          Original Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong> (85% confidence)
         </div>
       </div>
 
-      <div class="kpi-card ${p50Shift > 0 ? 'highlight-shift' : p50Shift < 0 ? 'highlight-accel' : ''}">
-        <div class="kpi-label">
-          <span>P50 Median &amp; P95 Tail Cone</span>
-          <span class="badge-pill">P50 / P95</span>
-        </div>
-        <div class="kpi-value">
-          ${escapeHtmlHeader(activeSim.p50Date)}
-          ${formatDeltaBadge(p50Shift, 'Baseline')}
-        </div>
-        <div class="kpi-sub">
-          P95 Tail Envelope: <strong>${escapeHtmlHeader(activeSim.p95Date)}</strong> (${p95Shift >= 0 ? `+${p95Shift}d` : `${p95Shift}d`})
-        </div>
-      </div>
-
+      <!-- Card 2: Delivery Risk Window -->
       <div class="kpi-card">
         <div class="kpi-label">
-          <span>Active Critical Bottlenecks</span>
-          <span class="badge-pill amber">Critical Path</span>
+          <span>📅 Delivery Forecast Range</span>
+          ${renderInfoTooltip('Probability Cone & Tail Risk (P50 – P95 & CVaR)', 'Shows the spread between the Likely Median finish date (50% chance) and the Worst-Case finish date (95% chance), plus the Extreme Tail Risk (worst 5% average).', `P50=${activeSim.p50Date} | P95=${activeSim.p95Date} (${p95Shift >= 0 ? `+${p95Shift}d` : `${p95Shift}d`}) | CVaR₀.₉₅=${activeSim.cvar95Date}`)}
         </div>
         <div class="kpi-value">
-          ${activeSim.criticalPathNodes.length} Bottlenecks
-          <span class="kpi-delta delayed">Top: ${escapeHtmlHeader(activeSim.topBottlenecks[0]?.key ?? 'CHRON-104')}</span>
+          <span>${formatFriendlyDate(activeSim.p50Date)} – ${formatFriendlyDate(activeSim.p95Date)}</span>
+          <span class="kpi-delta neutral">±${windowBufferDays}d Window</span>
         </div>
         <div class="kpi-sub">
-          Max Ripple Weight: <strong>${activeSim.topBottlenecks[0]?.downstreamRippleWeight ?? 9.5}</strong> (${activeSim.topBottlenecks[0]?.downstreamCount ?? 10} downstream tasks)
+          Likely (50%): <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · Worst-Case (95%): <strong>${formatFriendlyDate(activeSim.p95Date)}</strong>
         </div>
       </div>
 
-      <div class="kpi-card ${affectedGoalsCount > 0 && p85Shift > 0 ? 'highlight-shift' : ''}">
+      <!-- Card 3: Critical Bottlenecks -->
+      <div class="kpi-card">
         <div class="kpi-label">
-          <span>Affected Teamwork Graph Goals</span>
-          <span class="badge-pill ${affectedGoalsCount > 0 && p85Shift > 0 ? 'rose' : 'emerald'}">TWG Goals</span>
+          <span>🚧 Critical Path Blockers</span>
+          ${renderInfoTooltip('Topological Critical Path & Ripple Weight', 'Tasks that directly gate the final release date. Any delay on a critical blocker immediately delays downstream teams unless decoupled.', `Critical Path (${activeSim.criticalPathNodes.length} nodes) | Top Blocker ${topBlockerKey} Ripple Weight = ${topBlocker?.downstreamRippleWeight ?? 9.5}`)}
         </div>
         <div class="kpi-value">
-          ${affectedGoalsCount} / ${activeSim.goalImpacts.length} Goals
+          <span>${activeSim.criticalPathNodes.length} Gating Tasks</span>
+          <span class="kpi-delta delayed">#1: ${escapeHtmlText(topBlockerKey)}</span>
+        </div>
+        <div class="kpi-sub">
+          <strong>${escapeHtmlText(topBlockerKey)}</strong> gates <strong>${topBlocker?.downstreamCount ?? 10} downstream tasks</strong> across teams
+        </div>
+      </div>
+
+      <!-- Card 4: Business Goals & Downstream Impact -->
+      <div class="kpi-card ${affectedGoalsCount > 0 && p85Shift > 0 ? 'highlight-shift' : ''}">
+        <div class="kpi-label">
+          <span>🧭 Goals &amp; Downstream Impact</span>
+          ${renderInfoTooltip('Atlassian Teamwork Graph (TWG) Goal Alignment', 'Tracks how task-level delays ripple up into company-level Teamwork Graph Goals and across dependent engineering teams.', `Active What-If on ${selectedNodeKey}: ${activeSim.blastRadiusNodes.length} downstream tasks shifted | Friction E = ${activeSim.quasimetricEnergy}`)}
+        </div>
+        <div class="kpi-value">
+          <span>${hasActiveIntervention
+        ? `${activeSim.blastRadiusNodes.length} Tasks Impacted`
+        : `${activeSim.goalImpacts.length} Goals Tracked`}</span>
           <span class="kpi-delta ${affectedGoalsCount > 0 && p85Shift > 0 ? 'delayed' : 'baseline'}">
-            ${affectedGoalsCount > 0 && p85Shift > 0 ? 'At Risk' : 'Aligned'}
+            ${affectedGoalsCount > 0 && p85Shift > 0
+        ? `${affectedGoalsCount} Goal At Risk`
+        : 'Goals On Track'}
           </span>
         </div>
         <div class="kpi-sub">
-          Goals: ${activeSim.goalImpacts.map((g) => `${escapeHtmlHeader(g.goalName)} (${g.status})`).join(' · ')}
-        </div>
-      </div>
-
-      <div class="kpi-card ${hasActiveIntervention ? 'highlight-shift' : ''}">
-        <div class="kpi-label">
-          <span>Causal Blast Radius</span>
-          <span class="badge-pill cyan">do(${escapeHtmlHeader(selectedNodeKey)})</span>
-        </div>
-        <div class="kpi-value">
-          ${hasActiveIntervention ? `${activeSim.blastRadiusNodes.length} Issues` : '0 Issues'}
-          ${formatDeltaBadge(activeSim.rippleDelayDays, 'No Shock')}
-        </div>
-        <div class="kpi-sub">
-          ${hasActiveIntervention
-        ? `Propagated across ${graph.teams.length} teams`
-        : 'Slide Delay/Accelerate (-5d to +30d) to test'}
+          ${activeSim.goalImpacts
+        .map((g) => `${escapeHtmlText(g.goalName)}: <strong>${g.status}</strong>`)
+        .join(' · ')}
         </div>
       </div>
     </section>
@@ -1912,9 +1906,11 @@ function renderHeaderBar(props) {
 /**
  * Step 4 Component 3: Time Machine Scrubber (`static/ui/src/components/TimelineScrubber.tsx`)
  *
- * - Horizontal timeline slider spanning Past Sprints -> Today (State t₀) -> Future Probability Cones (P50, P85, P95).
- * - Dragging the scrubber forward in time dynamically highlights which nodes are expected to be
- *   Done, In Progress, or At Risk / Blocked on that specific future date.
+ * Human-first Timeline Scrubber:
+ * - Clean milestone buttons with human dates (no raw `t₀` notation in primary labels).
+ * - Dragging the slider updates the DAG canvas in real time to show which tasks are
+ *   Done, In Progress, At Risk, or Scheduled on that exact calendar date.
+ * - Sleek Delivery Confidence Bar (with hover tooltip revealing the full 500-run Monte Carlo distribution).
  */
 /**
  * Evaluates a node's expected state on any scrubbed day offset `t` (-28d to +65d).
@@ -1946,7 +1942,7 @@ function evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveInter
         }
         return 'Scheduled';
     }
-    // Future Probability Cone (t > 0)
+    // Future Forecast Window (t > 0)
     if (statusLower === 'done')
         return 'Done';
     const p50Start = stat?.p50StartDay ?? 0;
@@ -1956,7 +1952,6 @@ function evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveInter
         return 'Done';
     }
     if (scrubberDayOffset >= p50End && scrubberDayOffset < p85End) {
-        // Between P50 and P85 completion window — tail risk / at risk if high sigma or shifted
         if ((stat?.rippleDelayDays ?? 0) > 0 || node.uncertaintySigma >= 1.8 || statusLower === 'blocked') {
             return 'At Risk / Blocked';
         }
@@ -1970,19 +1965,18 @@ function evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveInter
     }
     return 'Scheduled';
 }
-function escapeHtmlScrubber(str) {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
+const HUMAN_EPOCH_LABELS = {
+    0: { title: 'Sprint -2 (Kickoff)', badge: '4 Weeks Ago' },
+    1: { title: 'Sprint -1 (Integration)', badge: '2 Weeks Ago' },
+    2: { title: 'Today (Current Sprint)', badge: 'Live State' },
+    3: { title: 'Likely Finish (50%)', badge: 'Median Target' },
+    4: { title: 'Commit Target (85%)', badge: 'Recommended' },
+    5: { title: 'Worst-Case Buffer (95%)', badge: 'Safe Cutoff' },
+};
 function renderTimelineScrubber(props) {
     const { graph, activeSim, selectedEpochIndex, scrubberDayOffset, hasActiveIntervention, } = props;
     const epochs = activeSim.timeMachineEpochs;
-    const currentEpoch = epochs[selectedEpochIndex] ?? epochs[2];
     const scrubbedDate = addCalendarDays(graph.referenceDate, scrubberDayOffset);
-    // Dynamically tally node states at the exact `scrubberDayOffset`
     let dynamicDone = 0;
     let dynamicInProgress = 0;
     let dynamicAtRisk = 0;
@@ -1999,38 +1993,57 @@ function renderTimelineScrubber(props) {
         else
             dynamicScheduled++;
     }
+    const relativeOffsetLabel = scrubberDayOffset === 0
+        ? 'Today'
+        : scrubberDayOffset > 0
+            ? `In ${scrubberDayOffset} Days`
+            : `${Math.abs(scrubberDayOffset)} Days Ago`;
     const maxBucketProb = Math.max(0.05, ...activeSim.distributionBuckets.map((b) => b.probability));
     return `
     <section class="time-machine-panel">
       <div class="tm-header">
         <div class="tm-title">
-          ⏱️ Time Machine Scrubber — Past Sprints → Today (State t₀) → Future Probability Cones (P50 / P85 / P95)
+          <span>⏱️ Project Time Machine — Scrub Past Sprints to Future Delivery Dates</span>
+          ${renderInfoTooltip('Temporal State & Probability Cone Scrubber', 'Click any milestone or drag the timeline slider to inspect the exact state of every task on that calendar date. Hover over the mini histogram on the right to inspect the 500-world Monte Carlo completion density.', `Reference t₀ = ${graph.referenceDate} | Viewing t = ${scrubberDayOffset >= 0 ? `+${scrubberDayOffset}d` : `${scrubberDayOffset}d`} (${scrubbedDate})`)}
         </div>
-        <div style="font-size:11.5px;font-family:var(--font-mono);color:#67e8f9;">
-          Scrubbed Date: <strong>${escapeHtmlScrubber(scrubbedDate)}</strong>
-          (${scrubberDayOffset >= 0 ? `t₀ + ${scrubberDayOffset}d` : `t₀ ${scrubberDayOffset}d`}) ·
-          Epoch: <strong>${escapeHtmlScrubber(currentEpoch.label)}</strong>
+        <div class="tm-date-readout">
+          <span class="tm-date-pill">
+            📅 Viewing Date: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
+            <span class="tm-offset-tag">${relativeOffsetLabel}</span>
+          </span>
         </div>
       </div>
 
+      <!-- Clean Milestone Buttons -->
       <div class="epoch-track">
         ${epochs
-        .map((ep, idx) => `
-            <button class="epoch-node ${idx === selectedEpochIndex ? 'active' : ''}" data-epoch-idx="${idx}">
-              <div class="epoch-node-top">
-                <span>${ep.dayOffset >= 0 ? `t₀+${ep.dayOffset}d` : `t₀${ep.dayOffset}d`}</span>
-                <span>${escapeHtmlScrubber(ep.date)}</span>
-              </div>
-              <div class="epoch-node-label">${escapeHtmlScrubber(ep.label)}</div>
-            </button>
-          `)
+        .map((ep, idx) => {
+        const meta = HUMAN_EPOCH_LABELS[idx] ?? {
+            title: ep.label,
+            badge: `${ep.dayOffset >= 0 ? `+${ep.dayOffset}d` : `${ep.dayOffset}d`}`,
+        };
+        const isFutureShift = idx >= 3 && ep.dayOffset > 0;
+        return `
+              <button
+                class="epoch-node ${idx === selectedEpochIndex ? 'active' : ''}"
+                data-epoch-idx="${idx}"
+                title="${escapeHtmlText(ep.narrative)} (Offset: ${ep.dayOffset >= 0 ? `+${ep.dayOffset}d` : `${ep.dayOffset}d`})"
+              >
+                <div class="epoch-node-top">
+                  <span class="epoch-badge-tag ${idx === 2 ? 'today-tag' : isFutureShift ? 'future-tag' : ''}">${escapeHtmlText(meta.badge)}</span>
+                  <span class="epoch-date-str">${formatFriendlyDate(ep.date)}</span>
+                </div>
+                <div class="epoch-node-label">${escapeHtmlText(meta.title)}</div>
+              </button>
+            `;
+    })
         .join('')}
       </div>
 
       <div class="tm-scrubber-row">
         <div class="tm-narrative-box">
           <div class="tm-slider-wrap">
-            <span style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted);">Past (-28d)</span>
+            <span class="tm-slider-bound">◀ 4 Weeks Ago</span>
             <input
               type="range"
               min="-28"
@@ -2038,34 +2051,39 @@ function renderTimelineScrubber(props) {
               value="${scrubberDayOffset}"
               class="tm-slider"
               id="time-machine-range"
+              title="Drag to scrub across project history and simulated future completion dates"
             />
-            <span style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted);">P95 (+${Math.ceil(activeSim.p95Days)}d)</span>
+            <span class="tm-slider-bound">Worst-Case (${formatFriendlyDate(activeSim.p95Date)}) ▶</span>
           </div>
-          <div style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span><strong>State on ${escapeHtmlScrubber(scrubbedDate)}:</strong></span>
-            <span class="badge-pill emerald">Done: ${dynamicDone}</span>
-            <span class="badge-pill cyan">In Progress: ${dynamicInProgress}</span>
-            <span class="badge-pill rose">At Risk / Blocked: ${dynamicAtRisk}</span>
-            <span class="badge-pill">Scheduled: ${dynamicScheduled}</span>
-            <span style="color:var(--text-muted);">— ${escapeHtmlScrubber(currentEpoch.narrative)}</span>
+
+          <div class="tm-status-summary">
+            <span class="tm-status-prefix">Project Snapshot on <strong>${formatFriendlyDate(scrubbedDate)}</strong>:</span>
+            <span class="badge-pill emerald">✓ ${dynamicDone} Done</span>
+            <span class="badge-pill cyan">● ${dynamicInProgress} In Progress</span>
+            <span class="badge-pill ${dynamicAtRisk > 0 ? 'rose' : ''}">⚠ ${dynamicAtRisk} At Risk / Blocked</span>
+            <span class="badge-pill">⏳ ${dynamicScheduled} Scheduled</span>
           </div>
         </div>
 
-        <div>
-          <div style="font-size:10.5px;color:var(--text-secondary);margin-bottom:4px;display:flex;justify-content:space-between;">
-            <span>Future Probability Cone (500 Worlds)</span>
-            <span style="font-family:var(--font-mono);color:#fcd34d;">P85: ${escapeHtmlScrubber(activeSim.p85Date)}</span>
+        <!-- Compact Forecast Distribution Preview (Math details on hover) -->
+        <div class="cone-box-wrap" title="Hover individual bars to see exact Monte Carlo completion probability and cumulative confidence (CDF)">
+          <div class="cone-box-header">
+            <span>Release Probability Curve</span>
+            <strong style="color:#fcd34d;">85% Target: ${formatFriendlyDate(activeSim.p85Date)}</strong>
           </div>
           <div class="cone-mini-chart">
             ${activeSim.distributionBuckets
         .map((b) => {
-        const heightPct = Math.max(8, Math.round((b.probability / maxBucketProb) * 100));
-        const isNearP85 = Math.abs(b.dayOffset - activeSim.p85Days) <= 3;
+        const heightPct = Math.max(10, Math.round((b.probability / maxBucketProb) * 100));
+        const isNearP85 = Math.abs(b.dayOffset - activeSim.p85Days) <= 2.5;
         const isNearScrub = Math.abs(b.dayOffset - scrubberDayOffset) <= 2;
         return `
-                  <div class="cone-bar-col" title="${b.date} (+${b.dayOffset}d): ${Math.round(b.probability * 100)}% density | CDF: ${Math.round(b.cumulativeProbability * 100)}%">
+                  <div
+                    class="cone-bar-col"
+                    title="${formatFriendlyDate(b.date, true)} (+${b.dayOffset}d): ${Math.round(b.probability * 100)}% finish probability | Cumulative Confidence: ${Math.round(b.cumulativeProbability * 100)}%"
+                  >
                     <div class="cone-bar ${isNearP85 ? 'p85-marker' : ''} ${isNearScrub ? 'scrub-marker' : ''}" style="height:${heightPct}%;"></div>
-                    <span class="cone-bar-label">+${b.dayOffset}d</span>
+                    <span class="cone-bar-label">${formatFriendlyDate(b.date)}</span>
                   </div>
                 `;
     })
@@ -2080,22 +2098,20 @@ function renderTimelineScrubber(props) {
 
 // === Module: ui/components/DagCanvas ===
 /**
- * Step 4 Component 2: Interactive Causal DAG Canvas (`static/ui/src/components/DagCanvas.tsx`)
+ * Step 4 Component 2: Interactive Dependency Graph Canvas (`static/ui/src/components/DagCanvas.tsx`)
  *
- * - Renders an interactive left-to-right Directed Acyclic Graph (SVG + HTML overlay) grouped by Team / Stage.
- * - Color-codes nodes:
- *   1. Critical Path Nodes: Highlighted with an amber/crimson border.
- *   2. Selected / Intervened Node: Glowing cyan/blue indicator (`do(Delay = +X days)`).
- *   3. Downstream Blast Radius Nodes: Pulsing orange/red badge showing exact propagated delay (`+X.X days`).
- * - Dynamically reflects node temporal status when the Time Machine Scrubber is dragged across Past/Today/Future dates.
+ * Designed for instant visual comprehension:
+ * - Spacious 164x66px cards aligned cleanly across 3 team swimlanes.
+ * - Zero raw math or Greek symbols on the cards:
+ *   Line 1: Issue Key (`CHRON-104`) + Top Impact Badge (`+8d Delay`, `+7.7d`, or `Blocker`)
+ *   Line 2: Readable Task Title
+ *   Line 3: Clean Status Dot + Status Name (`In Progress`, `Done`, `At Risk`) + Estimate (`7d est.`)
+ * - Strong Edge Hierarchy:
+ *   Background edges are subtle; Active Downstream Impact path glows with animated crimson arrows.
+ * - Rich Floating Hover Inspector Card:
+ *   Hovering over any task displays full task summary, assignee, linked Teamwork Graph Goal,
+ *   Confluence ADR, and statistical metrics (Uncertainty ±σ, Criticality %, Ripple Weight).
  */
-function escapeHtmlDag(str) {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
 function computeNodeCoordinates(graph) {
     const coords = {};
     const teamOrder = graph.teams.map((t) => t.name);
@@ -2112,13 +2128,14 @@ function computeNodeCoordinates(graph) {
             laneIdx = 0;
         laneGroups.get(laneIdx).push(key);
     }
-    const laneYCenters = [105, 295, 485];
-    const xStart = 88;
-    const xGap = 148;
+    const laneYCenters = [115, 315, 515];
+    const xStart = 112;
+    const xGap = 186;
     for (const [laneIdx, keys] of laneGroups.entries()) {
         keys.forEach((key, colIdx) => {
             const yBase = laneYCenters[laneIdx % laneYCenters.length];
-            const yOffset = colIdx % 2 === 0 ? -12 : 12;
+            // Subtle vertical stagger so horizontal edges never collide with intermediate text
+            const yOffset = colIdx % 2 === 0 ? -8 : 8;
             coords[key] = {
                 x: xStart + colIdx * xGap,
                 y: yBase + yOffset,
@@ -2136,25 +2153,25 @@ function renderDagCanvas(props) {
     const criticalSet = new Set(activeSim.criticalPathNodes);
     const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
     const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
-    const nodeW = 122;
-    const nodeH = 58;
+    const nodeW = 160;
+    const nodeH = 66;
     // Swimlane background bands
     const laneBands = graph.teams
         .map((team, idx) => {
-        const yTop = idx * 190 + 18;
+        const yTop = idx * 200 + 18;
         return `
         <g>
-          <rect x="12" y="${yTop}" width="965" height="174" rx="10"
-            fill="rgba(15, 23, 42, 0.45)" stroke="rgba(148, 163, 184, 0.12)" />
-          <rect x="12" y="${yTop}" width="5" height="174" rx="2.5" fill="${team.color}" />
-          <text x="26" y="${yTop + 20}" fill="${team.color}" font-size="11" font-weight="700" letter-spacing="0.05em">
-            TEAM SWIMLANE ${idx + 1}: ${escapeHtmlDag(team.name.toUpperCase())} (Lead: ${escapeHtmlDag(team.lead)})
+          <rect x="14" y="${yTop}" width="1152" height="184" rx="12"
+            fill="rgba(15, 23, 42, 0.52)" stroke="rgba(148, 163, 184, 0.13)" />
+          <rect x="14" y="${yTop}" width="6" height="184" rx="3" fill="${team.color}" />
+          <text x="32" y="${yTop + 24}" fill="${team.color}" font-size="11.5" font-weight="700" letter-spacing="0.04em">
+            ${escapeHtmlText(team.name.toUpperCase())} TEAM · Lead: ${escapeHtmlText(team.lead)}
           </text>
         </g>
       `;
     })
         .join('');
-    // Render directed causal edges
+    // Render directed dependency edges
     const edgePaths = graph.edges
         .map((edge) => {
         const fromPos = coords[edge.from];
@@ -2165,7 +2182,7 @@ function renderDagCanvas(props) {
         const y1 = fromPos.y;
         const x2 = toPos.x - nodeW / 2;
         const y2 = toPos.y;
-        const dx = Math.max(40, Math.abs(x2 - x1) * 0.48);
+        const dx = Math.max(46, Math.abs(x2 - x1) * 0.46);
         const pathD = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
         const isDecoupledEdge = decoupleBlockingEdges && edge.from === selectedNodeKey;
         const isBlastEdge = intervenedKey !== '' &&
@@ -2186,10 +2203,11 @@ function renderDagCanvas(props) {
             edgeClass += ' critical-edge';
             markerId = 'url(#arrow-critical)';
         }
-        return `<path d="${pathD}" class="${edgeClass}" marker-end="${markerId}" />`;
+        const edgeTooltip = `${edge.from} ${edge.dependencyType} ${edge.to} (Propagation weight: ${Math.round(edge.propagationWeight * 100)}%)`;
+        return `<path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>`;
     })
         .join('');
-    // Render nodes
+    // Render spacious, easy-to-read task cards
     const nodeElements = graph.nodes
         .map((node) => {
         const pos = coords[node.key];
@@ -2213,40 +2231,48 @@ function renderDagCanvas(props) {
         const xLeft = pos.x - nodeW / 2;
         const yTop = pos.y - nodeH / 2;
         let statusColor = '#64748b';
-        if (temporalState === 'Done')
+        let statusShort = 'Scheduled';
+        if (temporalState === 'Done') {
             statusColor = '#10b981';
-        else if (temporalState === 'At Risk / Blocked')
+            statusShort = 'Done';
+        }
+        else if (temporalState === 'At Risk / Blocked') {
             statusColor = '#f43f5e';
-        else if (temporalState === 'In Progress')
+            statusShort = 'At Risk';
+        }
+        else if (temporalState === 'In Progress') {
             statusColor = '#38bdf8';
+            statusShort = 'In Progress';
+        }
         const rippleShift = stat?.rippleDelayDays ?? 0;
-        // Badge on top-right of node
+        const goalObj = graph.goals.find((g) => g.id === node.goalId);
+        // Human-friendly badge on top-right of card (Zero `do(...)` notation)
         let topBadge = '';
         if (isSelected && hasActiveIntervention) {
             const labelText = delayDays > 0
-                ? `do(Delay=+${delayDays}d)`
+                ? `+${delayDays}d Delay`
                 : delayDays < 0
-                    ? `do(Accel=${delayDays}d)`
+                    ? `${delayDays}d Faster`
                     : addDeveloper
-                        ? 'do(+1 Dev)'
-                        : 'do(Decouple)';
+                        ? '+1 Dev Added'
+                        : 'Decoupled';
             topBadge = `
           <g transform="translate(${xLeft + nodeW - 76}, ${yTop - 11})">
-            <rect width="78" height="17" rx="4" fill="#0284c7" stroke="#38bdf8" stroke-width="1" />
-            <text x="39" y="12" text-anchor="middle" fill="#fff" font-size="8.8" font-weight="800" font-family="monospace">
-              ${escapeHtmlDag(labelText)}
+            <rect width="78" height="19" rx="5" fill="#0284c7" stroke="#7dd3fc" stroke-width="1.2" />
+            <text x="39" y="13" text-anchor="middle" fill="#fff" font-size="9.5" font-weight="700" font-family="Inter, sans-serif">
+              ${escapeHtmlText(labelText)}
             </text>
           </g>
         `;
         }
         else if (isInBlast && Math.abs(rippleShift) > 0) {
-            const signText = rippleShift > 0 ? `+${rippleShift.toFixed(1)}d` : `${rippleShift.toFixed(1)}d`;
-            const fillCol = rippleShift > 0 ? '#9f1239' : '#065f46';
-            const strokeCol = rippleShift > 0 ? '#fb7185' : '#34d399';
+            const signText = rippleShift > 0 ? `+${rippleShift.toFixed(1)}d Slip` : `${rippleShift.toFixed(1)}d`;
+            const fillCol = rippleShift > 0 ? '#be123c' : '#047857';
+            const strokeCol = rippleShift > 0 ? '#fda4af' : '#6ee7b7';
             topBadge = `
-          <g transform="translate(${xLeft + nodeW - 48}, ${yTop - 10})">
-            <rect width="48" height="17" rx="4" fill="${fillCol}" stroke="${strokeCol}" stroke-width="1" />
-            <text x="24" y="12" text-anchor="middle" fill="#fff" font-size="9.2" font-weight="700" font-family="monospace">
+          <g transform="translate(${xLeft + nodeW - 64}, ${yTop - 11})">
+            <rect width="66" height="19" rx="5" fill="${fillCol}" stroke="${strokeCol}" stroke-width="1.1" />
+            <text x="33" y="13" text-anchor="middle" fill="#fff" font-size="9.5" font-weight="700" font-family="Inter, sans-serif">
               ${signText}
             </text>
           </g>
@@ -2254,27 +2280,53 @@ function renderDagCanvas(props) {
         }
         else if (isCritical) {
             topBadge = `
-          <g transform="translate(${xLeft + nodeW - 40}, ${yTop - 9})">
-            <rect width="40" height="15" rx="3" fill="rgba(245, 158, 11, 0.25)" stroke="#f59e0b" stroke-width="0.9" />
-            <text x="20" y="10.5" text-anchor="middle" fill="#fcd34d" font-size="8.5" font-weight="700" font-family="monospace">
-              CRIT
+          <g transform="translate(${xLeft + nodeW - 56}, ${yTop - 10})">
+            <rect width="56" height="17" rx="4" fill="rgba(245, 158, 11, 0.25)" stroke="#fbbf24" stroke-width="1" />
+            <text x="28" y="12" text-anchor="middle" fill="#fde68a" font-size="9" font-weight="700" font-family="Inter, sans-serif">
+              Blocker
             </text>
           </g>
         `;
         }
-        const shortSummary = node.summary.length > 21 ? `${node.summary.slice(0, 20)}…` : node.summary;
+        const shortSummary = node.summary.length > 26 ? `${node.summary.slice(0, 25)}…` : node.summary;
+        const hoverJson = JSON.stringify({
+            key: node.key,
+            summary: node.summary,
+            team: node.team,
+            assignee: node.assignee,
+            status: temporalState,
+            estimateDays: node.baseEstimateDays,
+            sigma: node.uncertaintySigma,
+            goalName: goalObj?.name ?? node.goalId,
+            p85Date: stat ? formatFriendlyDate(stat.p85CompletionDate, true) : 'N/A',
+            rippleShift: rippleShift,
+            criticalityPct: Math.round((stat?.criticalityIndex ?? 0) * 100),
+            adr: node.confluenceDecision
+                ? `${node.confluenceDecision.title} (${node.confluenceDecision.spaceKey})`
+                : '',
+        });
         return `
-        <g class="${groupClass}" data-node-key="${escapeHtmlDag(node.key)}">
+        <g
+          class="${groupClass}"
+          data-node-key="${escapeHtmlText(node.key)}"
+          data-node-hover="${escapeHtmlText(hoverJson)}"
+        >
           <rect x="${xLeft}" y="${yTop}" width="${nodeW}" height="${nodeH}" class="dag-node-rect" />
-          <circle cx="${xLeft + 11}" cy="${yTop + 14}" r="4.5" fill="${statusColor}" />
-          <text x="${xLeft + 20}" y="${yTop + 17}" fill="#f8fafc" font-size="10.5" font-weight="700" font-family="monospace">
-            ${escapeHtmlDag(node.key)}
+          <!-- Line 1: Issue Key -->
+          <text x="${xLeft + 12}" y="${yTop + 19}" fill="#f8fafc" font-size="11.5" font-weight="700" font-family="JetBrains Mono, monospace">
+            ${escapeHtmlText(node.key)}
           </text>
-          <text x="${xLeft + 9}" y="${yTop + 33}" fill="#cbd5e1" font-size="10">
-            ${escapeHtmlDag(shortSummary)}
+          <!-- Line 2: Human Task Title -->
+          <text x="${xLeft + 12}" y="${yTop + 37}" fill="#e2e8f0" font-size="11" font-weight="500">
+            ${escapeHtmlText(shortSummary)}
           </text>
-          <text x="${xLeft + 9}" y="${yTop + 48}" fill="#94a3b8" font-size="8.8" font-family="monospace">
-            ${escapeHtmlDag(temporalState.split(' ')[0])} · ${node.baseEstimateDays}d±${node.uncertaintySigma}
+          <!-- Line 3: Clean Status Pill + Duration Estimate (Zero Greek symbols) -->
+          <circle cx="${xLeft + 16}" cy="${yTop + 53}" r="4.5" fill="${statusColor}" />
+          <text x="${xLeft + 25}" y="${yTop + 56}" fill="#94a3b8" font-size="10" font-weight="600">
+            ${escapeHtmlText(statusShort)}
+          </text>
+          <text x="${xLeft + nodeW - 12}" y="${yTop + 56}" text-anchor="end" fill="#64748b" font-size="10" font-family="JetBrains Mono, monospace">
+            ${node.baseEstimateDays}d est.
           </text>
           ${topBadge}
         </g>
@@ -2282,23 +2334,25 @@ function renderDagCanvas(props) {
     })
         .join('');
     return `
-    <div class="panel-card">
+    <div class="panel-card dag-panel-card">
       <div class="panel-header">
         <div class="panel-title">
-          🕸️ Interactive Causal DAG Canvas — Grouped by Team &amp; Topological Stage
+          <span>🕸️ Cross-Team Dependency Map — Click Any Task to Simulate Delays</span>
+          ${renderInfoTooltip('Directed Acyclic Graph (DAG) & Ripple Propagation', 'Shows how tasks across Core Engine, Cloud Infra, and Client UI depend on one another. Click any task card to test a What-If delay or resource change, or hover over any card for full technical details.', `Kahn Topological Sort (${graph.nodes.length} nodes, ${graph.edges.length} directed edges, ${graph.brokenCycles.length} cycles auto-broken)`)}
         </div>
         <div class="dag-legend">
-          <span class="legend-item"><span class="legend-dot" style="background:#38bdf8;"></span>Selected / Intervened</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span>Critical Path</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#f43f5e;"></span>Blast Radius (+Δd)</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#10b981;"></span>Done at Scrub Date</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#38bdf8;"></span>Selected Task</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span>Critical Blocker</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#f43f5e;"></span>Delayed Downstream</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#10b981;"></span>Completed</span>
         </div>
       </div>
-      <div class="dag-viewport">
-        <svg viewBox="0 0 990 580" class="dag-svg" id="pwm-dag-svg">
+
+      <div class="dag-viewport" id="dag-viewport-container">
+        <svg viewBox="0 0 1180 620" class="dag-svg" id="pwm-dag-svg">
           <defs>
             <marker id="arrow-default" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="rgba(148, 163, 184, 0.55)" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="rgba(148, 163, 184, 0.45)" />
             </marker>
             <marker id="arrow-critical" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
               <path d="M 0 1 L 7 4 L 0 7 z" fill="#f59e0b" />
@@ -2311,6 +2365,9 @@ function renderDagCanvas(props) {
           ${edgePaths}
           ${nodeElements}
         </svg>
+
+        <!-- Floating Hover Inspector Card (Populated on Node Mouseover) -->
+        <div id="dag-node-hover-card" class="dag-hover-card" style="display:none;"></div>
       </div>
     </div>
   `;
@@ -2319,35 +2376,30 @@ function renderDagCanvas(props) {
 
 // === Module: ui/components/ScenarioPanel ===
 /**
- * Step 4 Component 4: Counterfactual Intervention Panel (`static/ui/src/components/ScenarioPanel.tsx`)
+ * Step 4 Component 4: What-If Scenario Simulator Panel (`static/ui/src/components/ScenarioPanel.tsx`)
  *
- * - Displays details of the currently selected node (Key, Summary, Team, Linked Goal, Base Estimate, Uncertainty σ).
- * - "What-If" Intervention Controls ($do$-calculus):
- *   1. Delay / Accelerate Slider: `-5 days` to `+30 days` (triggers instant `runWhatIfSimulation` calculation).
- *   2. Scope / Resource Toggle: Simulate adding a developer (+1 Swarm Resource) or decoupling a blocking edge.
- * - Causal Impact Readout:
- *   1. Side-by-side comparison of Baseline vs. Counterfactual P50 / P85 / P95 completion distribution bars.
- *   2. Top downstream affected tickets + "Copy Rovo Mitigation Prompt" button.
+ * Redesigned around Progressive Disclosure & 3-Second Usability:
+ * - Zero raw math or Greek letters in primary labels (`What-If Scenario Simulator` instead of `$do$-Calculus`).
+ * - Step 1: Selected Task & What-If Sliders (`Delay / Accelerate` + `Add Developer` + `Break Dependency`).
+ * - Step 2: Immediate Release Forecast Comparison (Likely Target, 85% Commit Target, Worst-Case Buffer)
+ *   with hover tooltips for CVaR_0.95, Quasimetric Energy E, and 500 CRN Monte Carlo runs.
+ * - Step 3: One-click Rovo Agent Action button (`Copy Rovo AI Action Prompt`).
+ * - Step 4: Clean Inspector Tabs (`Impacted Tasks`, `Top Blockers`, `Goals & Math Spec`).
  */
-function escapeHtmlScenario(str) {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
 function buildRovoMitigationPrompt(props) {
     const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, activeSim } = props;
     const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
     const goal = graph.goals.find((g) => g.id === node.goalId) ?? graph.goals[0];
-    const shiftStr = delayDays >= 0 ? `delayed by ${delayDays} days` : `accelerated by ${Math.abs(delayDays)} days`;
+    const shiftStr = delayDays >= 0
+        ? `delayed by ${delayDays} days`
+        : `accelerated by ${Math.abs(delayDays)} days`;
     const modifiers = [];
     if (addDeveloper)
-        modifiers.push('adding +1 swarm developer');
+        modifiers.push('adding +1 developer');
     if (decoupleBlockingEdges)
-        modifiers.push('decoupling outgoing blocking edges');
+        modifiers.push('decoupling outgoing blocking dependencies');
     const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
-    return `@Rovo-World-Model Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current simulated P85 date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} downstream blast-radius issues. Recommend the top dependency to decouple to ship on time with 85% confidence.`;
+    return `@Rovo-World-Model Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream tasks. Recommend the top dependency to decouple so we ship on time.`;
 }
 function renderTabBody(props) {
     const { activeRightTab, activeSim, intervention, graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, } = props;
@@ -2356,8 +2408,8 @@ function renderTabBody(props) {
         const deltas = intervention?.nodeDeltas.filter((d) => d.key !== selectedNodeKey && Math.abs(d.shiftDays) > 0) ?? [];
         if (!hasActiveIntervention || deltas.length === 0) {
             return `
-        <div style="padding: 12px 6px; color: var(--text-secondary); font-size: 12px;">
-          Adjust the <strong>Delay / Accelerate Slider (-5d to +30d)</strong> or toggle <strong>Add Developer / Decouple Edge</strong> above to inspect downstream ticket shifts across teams.
+        <div class="empty-tab-notice">
+          Drag the <strong>Schedule Change Slider</strong> above or toggle <strong>Add Developer / Break Dependency</strong> to see which downstream tasks shift across teams.
         </div>
       `;
         }
@@ -2366,11 +2418,11 @@ function renderTabBody(props) {
             const signStr = d.shiftDays > 0 ? `+${d.shiftDays}d` : `${d.shiftDays}d`;
             const deltaClass = d.shiftDays > 0 ? 'delayed' : 'baseline';
             return `
-          <tr data-select-node="${escapeHtmlScenario(d.key)}" style="cursor:pointer;">
-            <td><strong style="font-family:var(--font-mono);color:#38bdf8;">${escapeHtmlScenario(d.key)}</strong></td>
-            <td>${escapeHtmlScenario(d.summary.slice(0, 30))}${d.summary.length > 30 ? '…' : ''}</td>
-            <td><span class="badge-pill">${escapeHtmlScenario(d.team)}</span></td>
-            <td style="font-family:var(--font-mono);">${escapeHtmlScenario(d.intervenedP85Date)}</td>
+          <tr data-select-node="${escapeHtmlText(d.key)}" style="cursor:pointer;" title="Click to select ${escapeHtmlText(d.key)} (${escapeHtmlText(d.summary)})">
+            <td><strong style="font-family:var(--font-mono);color:#38bdf8;">${escapeHtmlText(d.key)}</strong></td>
+            <td>${escapeHtmlText(d.summary.slice(0, 32))}${d.summary.length > 32 ? '…' : ''}</td>
+            <td><span class="badge-pill">${escapeHtmlText(d.team)}</span></td>
+            <td style="font-family:var(--font-mono);">${formatFriendlyDate(d.intervenedP85Date)}</td>
             <td><span class="kpi-delta ${deltaClass}">${signStr}</span></td>
           </tr>
         `;
@@ -2380,11 +2432,11 @@ function renderTabBody(props) {
       <table class="cascade-table">
         <thead>
           <tr>
-            <th>Ticket</th>
-            <th>Downstream Summary</th>
+            <th>Task</th>
+            <th>Summary</th>
             <th>Team</th>
-            <th>Sim P85</th>
-            <th>Causal Δ</th>
+            <th>New Finish</th>
+            <th>Shift</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -2395,19 +2447,19 @@ function renderTabBody(props) {
         return activeSim.topBottlenecks
             .slice(0, 5)
             .map((b, idx) => `
-        <div class="bottleneck-item" data-select-node="${escapeHtmlScenario(b.key)}">
+        <div class="bottleneck-item" data-select-node="${escapeHtmlText(b.key)}" title="Click to test interventions on ${escapeHtmlText(b.key)} | Ripple Weight: ${b.downstreamRippleWeight} | Criticality: ${Math.round(b.criticalityIndex * 100)}%">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <span>
-              <strong style="font-family:var(--font-mono);color:#a5b4fc;">#${idx + 1} ${escapeHtmlScenario(b.key)}</strong>
-              — <strong style="font-size:12px;">${escapeHtmlScenario(b.summary)}</strong>
+              <strong style="font-family:var(--font-mono);color:#a5b4fc;">#${idx + 1} ${escapeHtmlText(b.key)}</strong>
+              — <strong style="font-size:12px;">${escapeHtmlText(b.summary)}</strong>
             </span>
-            <span class="badge-pill rose">Ripple Wt: ${b.downstreamRippleWeight}</span>
+            <span class="badge-pill rose">Blocks ${b.downstreamCount} Tasks</span>
           </div>
-          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;font-family:var(--font-mono);">
-            Team: ${escapeHtmlScenario(b.team)} · Criticality: ${Math.round(b.criticalityIndex * 100)}% · Fanout: ${b.downstreamCount} · Risk: ${b.riskScore}/100
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+            Team: <strong>${escapeHtmlText(b.team)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong>
           </div>
           <div style="font-size:11px;color:#67e8f9;margin-top:4px;">
-            💡 ${escapeHtmlScenario(b.recommendation)}
+            💡 ${escapeHtmlText(b.recommendation)}
           </div>
         </div>
       `)
@@ -2426,21 +2478,34 @@ function renderTabBody(props) {
                 decoupleBlockingEdges,
             },
         },
-        resultPreview: {
-            p50Date: activeSim.p50Date,
-            p85Date: activeSim.p85Date,
-            p95Date: activeSim.p95Date,
-            rippleDelayDays: activeSim.rippleDelayDays,
-            blastRadiusCount: activeSim.blastRadiusNodes.length,
+        advancedMathMetrics: {
+            cvar95TailRiskDate: `${activeSim.cvar95Date} (+${activeSim.cvar95Days}d)`,
+            quasimetricLatentEnergyE: activeSim.quasimetricEnergy,
+            estimatedReworkHours: `${activeSim.estimatedReworkHours}h`,
+            monteCarloIterations: 500,
             registeredMcpTools: MCP_TOOLS_MANIFEST.map((t) => t.name),
         },
     };
     return `
-    <div style="display:flex;flex-direction:column;gap:8px;">
-      <div style="font-size:11.5px;color:var(--text-secondary);">
-        <strong>Rovo-World-Model Agent (<code>rovo-world-model-agent</code>)</strong> &amp; <strong>MCP Endpoint (<code>mcp-world-model-endpoint</code>)</strong> live JSON-RPC payload:
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="advanced-math-grid">
+        <div class="math-stat-box" title="Conditional Value-at-Risk (CVaR 0.95): Expected finish date across the worst 5% tail-risk simulation runs">
+          <span>Worst 5% Tail Date (CVaR₀.₉₅)</span>
+          <strong style="color:#fda4af;">${formatFriendlyDate(activeSim.cvar95Date, true)}</strong>
+        </div>
+        <div class="math-stat-box" title="Quasimetric Latent Energy E(s -> s'): Measures asymmetric schedule friction required to recover baseline dates">
+          <span>Schedule Friction (Latent E)</span>
+          <strong style="color:#67e8f9;">${activeSim.quasimetricEnergy}</strong>
+        </div>
+        <div class="math-stat-box" title="Expected downstream context-switching & interface rework hours caused by schedule shift">
+          <span>Est. Rework Overhead</span>
+          <strong style="color:#fcd34d;">${activeSim.estimatedReworkHours} hrs</strong>
+        </div>
       </div>
-      <pre class="code-console">${escapeHtmlScenario(JSON.stringify(mcpRpcSample, null, 2))}</pre>
+      <div style="font-size:11px;color:var(--text-secondary);">
+        <strong>Live MCP Endpoint &amp; Rovo Action Payload:</strong>
+      </div>
+      <pre class="code-console">${escapeHtmlText(JSON.stringify(mcpRpcSample, null, 2))}</pre>
     </div>
   `;
 }
@@ -2452,61 +2517,102 @@ function renderScenarioPanel(props) {
     const maxTimelineScale = Math.max(65, baselineSim.p95Days + 10, activeSim.p95Days + 10);
     const pct = (days) => Math.min(100, Math.max(6, Math.round((days / maxTimelineScale) * 100)));
     const delaySignLabel = delayDays > 0
-        ? `+${delayDays} Days (Delay)`
+        ? `+${delayDays} Days Delay`
         : delayDays < 0
-            ? `${delayDays} Days (Accelerate)`
-            : '0 Days (Baseline)';
+            ? `${delayDays} Days Faster`
+            : 'No Change (Baseline)';
+    const activeBadgeText = delayDays > 0
+        ? `Simulated: +${delayDays}d Delay`
+        : delayDays < 0
+            ? `Simulated: ${delayDays}d Faster`
+            : addDeveloper || decoupleBlockingEdges
+                ? 'Mitigation Active'
+                : 'Baseline';
+    const uncertaintyLabel = selectedNode.uncertaintySigma >= 1.8
+        ? 'High Variance'
+        : selectedNode.uncertaintySigma >= 1.0
+            ? 'Moderate'
+            : 'Low Variance';
+    const forecastRows = [
+        {
+            label: 'Likely Finish (50%)',
+            tooltip: 'Median P50 Forecast: 50% of simulated runs finish on or before this date.',
+            baseDays: baselineSim.p50Days,
+            intDays: activeSim.p50Days,
+            baseDate: baselineSim.p50Date,
+            intDate: activeSim.p50Date,
+        },
+        {
+            label: 'Commit Target (85%)',
+            tooltip: 'Recommended P85 Commitment Date: 85% probability of shipping on or before this date.',
+            baseDays: baselineSim.p85Days,
+            intDays: activeSim.p85Days,
+            baseDate: baselineSim.p85Date,
+            intDate: activeSim.p85Date,
+        },
+        {
+            label: 'Worst-Case (95%)',
+            tooltip: `Conservative P95 Buffer Date. Extreme 5% tail risk (CVaR₀.₉₅) = ${activeSim.cvar95Date}.`,
+            baseDays: baselineSim.p95Days,
+            intDays: activeSim.p95Days,
+            baseDate: baselineSim.p95Date,
+            intDate: activeSim.p95Date,
+        },
+    ];
     return `
     <div class="right-column">
-      <!-- Counterfactual Intervention Controls Card -->
+      <!-- What-If Simulator Controls Card -->
       <div class="panel-card">
         <div class="panel-header">
           <div class="panel-title">
-            🎛️ Scenario Intervention Panel ($do$-Calculus)
+            <span>🎛️ What-If Scenario Simulator</span>
+            ${renderInfoTooltip('Counterfactual Intervention Engine (do-Calculus)', 'Test schedule slips, extra engineering capacity, or dependency decoupling on any selected task. All downstream tasks and Teamwork Graph goals recalculate immediately.', `Active Intervention: do(${selectedNode.key} = ${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`}, addDev=${addDeveloper}, decouple=${decoupleBlockingEdges})`)}
           </div>
           <span class="badge-pill ${delayDays > 0 ? 'rose' : delayDays < 0 ? 'emerald' : 'cyan'}">
-            do(${escapeHtmlScenario(selectedNode.key)} = ${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`})
+            ${escapeHtmlText(activeBadgeText)}
           </span>
         </div>
 
         <div class="intervention-box">
-          <!-- Selected Node Details -->
+          <!-- Selected Task Summary Card -->
           <div class="selected-node-banner">
             <div class="node-banner-top">
-              <span class="node-key-tag">${escapeHtmlScenario(selectedNode.key)} · ${escapeHtmlScenario(selectedNode.status)}</span>
-              <span class="badge-pill">${escapeHtmlScenario(selectedNode.team)}</span>
+              <span class="node-key-tag">${escapeHtmlText(selectedNode.key)} · ${escapeHtmlText(selectedNode.status)}</span>
+              <span class="badge-pill">${escapeHtmlText(selectedNode.team)} · ${escapeHtmlText(selectedNode.assignee)}</span>
             </div>
-            <div class="node-summary-text">${escapeHtmlScenario(selectedNode.summary)}</div>
+            <div class="node-summary-text">${escapeHtmlText(selectedNode.summary)}</div>
             <div class="node-meta-grid">
               <div class="meta-cell">
-                <span>Linked Goal</span>
-                <strong>${escapeHtmlScenario(linkedGoal?.name ?? selectedNode.goalId)}</strong>
+                <span>Teamwork Goal</span>
+                <strong>${escapeHtmlText(linkedGoal?.name ?? selectedNode.goalId)}</strong>
               </div>
               <div class="meta-cell">
-                <span>Base Estimate</span>
+                <span>Estimated Effort</span>
                 <strong>${selectedNode.baseEstimateDays} Days</strong>
               </div>
-              <div class="meta-cell">
-                <span>Uncertainty σ</span>
-                <strong>±${selectedNode.uncertaintySigma} Days</strong>
+              <div class="meta-cell" title="Log-normal uncertainty standard deviation σ = ±${selectedNode.uncertaintySigma} days">
+                <span>Risk Spread ⓘ</span>
+                <strong>${uncertaintyLabel}</strong>
               </div>
-              <div class="meta-cell">
-                <span>Criticality</span>
-                <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}%</strong>
+              <div class="meta-cell" title="Criticality Index: ${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% of Monte Carlo simulations have this task on the critical path">
+                <span>Path Impact ⓘ</span>
+                <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% Critical</strong>
               </div>
             </div>
             ${selectedNode.confluenceDecision
-        ? `<div style="margin-top:7px;padding-top:6px;border-top:1px dashed var(--border-subtle);font-size:10.5px;color:#a5b4fc;font-family:var(--font-mono);">
-                     📄 TWG Confluence Decision: <strong>${escapeHtmlScenario(selectedNode.confluenceDecision.title)}</strong> (${escapeHtmlScenario(selectedNode.confluenceDecision.spaceKey)})
+        ? `<div class="confluence-adr-pill" title="Linked Confluence Architecture Decision Record via Atlassian Teamwork Graph">
+                     📄 Linked Decision: <strong>${escapeHtmlText(selectedNode.confluenceDecision.title)}</strong>
                    </div>`
         : ''}
           </div>
 
-          <!-- Delay / Accelerate Slider (-5d to +30d) -->
+          <!-- Step 1: Schedule & Mitigation Controls -->
           <div class="delay-slider-card">
             <div class="slider-header">
-              <span class="slider-title">Delay / Accelerate Slider (-5d to +30d)</span>
-              <span class="slider-readout ${delayDays < 0 ? 'accel-text' : ''}">${delaySignLabel}</span>
+              <span class="slider-title">1. Simulate Task Delay or Speedup</span>
+              <span class="slider-readout ${delayDays < 0 ? 'accel-text' : delayDays === 0 ? 'neutral-text' : ''}">
+                ${delaySignLabel}
+              </span>
             </div>
             <input
               type="range"
@@ -2521,79 +2627,61 @@ function renderScenarioPanel(props) {
               ${[-5, -3, 0, 5, 10, 18, 30]
         .map((val) => `
                   <button class="preset-btn ${delayDays === val ? 'active' : ''}" data-preset-delay="${val}">
-                    ${val === 0 ? '0d' : val > 0 ? `+${val}d` : `${val}d`}
+                    ${val === 0 ? 'Reset (0d)' : val > 0 ? `+${val}d` : `${val}d`}
                   </button>
                 `)
         .join('')}
             </div>
 
-            <!-- Scope / Resource Toggles -->
+            <div class="mitigation-label">2. Test Recovery Mitigations</div>
             <div class="scope-toggles-row">
               <button
                 class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
                 id="btn-toggle-add-dev"
-                title="Simulate swarming +1 developer (-35% base duration, -40% uncertainty σ)"
+                title="Math: Compresses base task estimate by 35% and reduces uncertainty variance σ by 40%"
               >
-                👩‍💻 ${addDeveloper ? '✓ Added Swarm Developer (-35% Est)' : 'Add Developer (+1 Resource)'}
+                👩‍💻 ${addDeveloper ? '✓ Developer Added (-35% Time)' : 'Add +1 Developer'}
               </button>
               <button
                 class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
                 id="btn-toggle-decouple-edge"
-                title="Simulate decoupling outgoing blocking edges (reduces propagation weight to 0.25)"
+                title="Math: Inserts an interface mock contract, reducing outgoing dependency propagation weight to 0.25"
               >
-                ✂️ ${decoupleBlockingEdges ? '✓ Blocking Edge Decoupled' : 'Decouple Blocking Edge'}
+                ✂️ ${decoupleBlockingEdges ? '✓ Dependency Decoupled' : 'Decouple Dependency'}
               </button>
             </div>
           </div>
 
-          <!-- Side-by-Side Baseline vs Counterfactual P50 / P85 / P95 Distribution Bars -->
+          <!-- Step 3: Side-by-Side Release Date Comparison -->
           <div class="comparison-bars-card">
-            <div style="font-size:11.5px;font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between;">
-              <span>📊 Baseline vs. Counterfactual Distribution (P50 / P85 / P95)</span>
-              <span style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-secondary);">500 CRN Worlds</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:6px;font-size:10px;font-family:var(--font-mono);color:#94a3b8;background:rgba(30,41,59,0.55);padding:5px 8px;border-radius:6px;">
-              <span>CVaR₀.₉₅: <strong style="color:#fda4af;">${escapeHtmlScenario(activeSim.cvar95Date)} (+${activeSim.cvar95Days}d)</strong></span>
-              <span>Latent Energy E: <strong style="color:#67e8f9;">${activeSim.quasimetricEnergy}</strong></span>
-              <span>Rework Risk: <strong style="color:#fcd34d;">${activeSim.estimatedReworkHours}h</strong></span>
+            <div style="font-size:12px;font-weight:700;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+              <span>📊 Release Date Impact (Original vs. Simulated)</span>
+              ${renderInfoTooltip('Baseline vs. Counterfactual Forecast', `Compares your original baseline schedule against the simulated What-If scenario across 500 paired runs. Extreme 5% Tail Date (CVaR₀.₉₅): ${formatFriendlyDate(activeSim.cvar95Date, true)} | Friction E: ${activeSim.quasimetricEnergy} | Est. Rework: ${activeSim.estimatedReworkHours}h.`, `ΔP85 = ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | CVaR₀.₉₅ = ${activeSim.cvar95Date}`)}
             </div>
 
-            ${['P50', 'P85', 'P95']
-        .map((metric) => {
-        const baseDays = metric === 'P50'
-            ? baselineSim.p50Days
-            : metric === 'P85'
-                ? baselineSim.p85Days
-                : baselineSim.p95Days;
-        const intDays = metric === 'P50'
-            ? activeSim.p50Days
-            : metric === 'P85'
-                ? activeSim.p85Days
-                : activeSim.p95Days;
-        const baseDate = metric === 'P50'
-            ? baselineSim.p50Date
-            : metric === 'P85'
-                ? baselineSim.p85Date
-                : baselineSim.p95Date;
-        const intDate = metric === 'P50'
-            ? activeSim.p50Date
-            : metric === 'P85'
-                ? activeSim.p85Date
-                : activeSim.p95Date;
-        const diff = Number((intDays - baseDays).toFixed(1));
+            ${forecastRows
+        .map((row) => {
+        const diff = Number((row.intDays - row.baseDays).toFixed(1));
         const intBarColor = diff > 0 ? '#f43f5e' : diff < 0 ? '#10b981' : '#38bdf8';
+        const diffBadge = diff > 0
+            ? `<span style="color:#fb7185;font-weight:700;">(+${diff}d)</span>`
+            : diff < 0
+                ? `<span style="color:#34d399;font-weight:700;">(${diff}d)</span>`
+                : `<span style="color:#94a3b8;">(No change)</span>`;
         return `
-                  <div class="dist-compare-group">
+                  <div class="dist-compare-group" title="${escapeHtmlText(row.tooltip)}">
                     <div class="dist-compare-label">
-                      <strong>${metric}</strong>
-                      <span>Base: ${baseDate} (${baseDays}d) vs. Sim: <strong>${intDate} (${intDays}d)</strong></span>
+                      <strong>${escapeHtmlText(row.label)}</strong>
+                      <span>
+                        ${formatFriendlyDate(row.baseDate)} → <strong>${formatFriendlyDate(row.intDate)}</strong> ${diffBadge}
+                      </span>
                     </div>
                     <div class="dual-bar-stack">
                       <div class="bar-track-line">
-                        <div class="bar-fill-base" style="width:${pct(baseDays)}%;"></div>
+                        <div class="bar-fill-base" style="width:${pct(row.baseDays)}%;"></div>
                       </div>
                       <div class="bar-track-line">
-                        <div class="bar-fill-sim" style="width:${pct(intDays)}%;background:${intBarColor};"></div>
+                        <div class="bar-fill-sim" style="width:${pct(row.intDays)}%;background:${intBarColor};"></div>
                       </div>
                     </div>
                   </div>
@@ -2601,20 +2689,21 @@ function renderScenarioPanel(props) {
     })
         .join('')}
 
-            <button class="btn btn-rovo-copy" id="btn-copy-rovo-prompt">
-              ${copiedPromptNotice ? '✓ Copied Rovo Mitigation Prompt to Clipboard!' : '📋 Copy Rovo Mitigation Prompt'}
+            <button class="btn btn-rovo-copy" id="btn-copy-rovo-prompt" title="Copy a ready-to-paste prompt for @Rovo-World-Model Agent in Jira Rovo Chat">
+              ${copiedPromptNotice ? '✓ Copied Prompt for @Rovo-World-Model Agent!' : '🤖 Ask @Rovo-World-Model Agent for Mitigation Plan'}
             </button>
           </div>
         </div>
       </div>
 
-      <!-- Atlassian Teamwork Graph (TWG) Goals Impact Card -->
+      <!-- Atlassian Teamwork Graph (TWG) Goals Status Card -->
       <div class="panel-card">
         <div class="panel-header">
           <div class="panel-title">
-            🧭 Atlassian Teamwork Graph (TWG) Goals
+            <span>🧭 Business Goals (Atlassian Teamwork Graph)</span>
+            ${renderInfoTooltip('Teamwork Graph Goal Alignment', 'Shows how engineering task changes affect high-level company goals and their probability of finishing on or before the target deadline.')}
           </div>
-          <span class="badge-pill cyan">${activeSim.goalImpacts.length} Goals</span>
+          <span class="badge-pill cyan">${activeSim.goalImpacts.length} Linked Goals</span>
         </div>
         <div class="goals-list">
           ${activeSim.goalImpacts
@@ -2636,25 +2725,25 @@ function renderScenarioPanel(props) {
                 ? '#f59e0b'
                 : '#10b981';
         const shiftSign = goal.rippleDelayDays > 0
-            ? `+${goal.rippleDelayDays}d`
+            ? `+${goal.rippleDelayDays}d slip`
             : goal.rippleDelayDays < 0
-                ? `${goal.rippleDelayDays}d`
+                ? `${goal.rippleDelayDays}d faster`
                 : '';
         return `
-                <div class="goal-card ${statusClass}">
+                <div class="goal-card ${statusClass}" title="Goal ID: ${escapeHtmlText(goal.goalKey)} | Owner Team: ${escapeHtmlText(goal.ownerTeam)}">
                   <div class="goal-top">
                     <div>
-                      <div style="font-size:10.5px;font-family:var(--font-mono);color:var(--text-secondary);">
-                        ${escapeHtmlScenario(goal.goalKey)} · Team: ${escapeHtmlScenario(goal.ownerTeam)}
+                      <div class="goal-name">${escapeHtmlText(goal.goalName)}</div>
+                      <div style="font-size:11px;color:var(--text-secondary);">
+                        Owner: ${escapeHtmlText(goal.ownerTeam)}
                       </div>
-                      <div class="goal-name">${escapeHtmlScenario(goal.goalName)}</div>
                     </div>
-                    <span class="badge-pill ${pillVariant}">${escapeHtmlScenario(goal.status)}</span>
+                    <span class="badge-pill ${pillVariant}">${escapeHtmlText(goal.status)}</span>
                   </div>
                   <div class="goal-dates-row">
-                    <span>Target: <strong>${escapeHtmlScenario(goal.targetDate)}</strong></span>
-                    <span>Sim P85: <strong>${escapeHtmlScenario(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em style="color:${goal.rippleDelayDays > 0 ? '#fb7185' : '#34d399'};">(${shiftSign})</em>` : ''}</span>
-                    <span>On-Time: <strong>${probPct}%</strong></span>
+                    <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
+                    <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em style="color:${goal.rippleDelayDays > 0 ? '#fb7185' : '#34d399'};">(${shiftSign})</em>` : ''}</span>
+                    <span>On-Time Chance: <strong>${probPct}%</strong></span>
                   </div>
                   <div class="prob-bar-track">
                     <div class="prob-bar-fill" style="width:${probPct}%;background:${barColor};"></div>
@@ -2666,17 +2755,17 @@ function renderScenarioPanel(props) {
         </div>
       </div>
 
-      <!-- Downstream Affected Tickets & Bottlenecks & Rovo/MCP Tabs -->
+      <!-- Downstream Impact / Bottlenecks / Math & MCP Inspector Tabs -->
       <div class="panel-card">
         <div class="tab-bar">
           <button class="tab-btn ${activeRightTab === 'cascade' ? 'active' : ''}" data-tab="cascade">
-            🌊 Downstream Tickets (${activeSim.blastRadiusNodes.length})
+            🌊 Impacted Tasks (${activeSim.blastRadiusNodes.length})
           </button>
           <button class="tab-btn ${activeRightTab === 'bottlenecks' ? 'active' : ''}" data-tab="bottlenecks">
-            🚧 Top Bottlenecks (${activeSim.topBottlenecks.length})
+            🚧 Top Blockers (${activeSim.topBottlenecks.length})
           </button>
           <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
-            🤖 Rovo &amp; MCP Spec
+            ⚙️ Math &amp; MCP Spec
           </button>
         </div>
         <div class="tab-body">
@@ -2690,7 +2779,7 @@ function renderScenarioPanel(props) {
 
 // === Module: ui/cockpit ===
 /**
- * Project World Model (PWM) × Jira Time Machine — Main Custom UI Cockpit Controller
+ * Rovo-World-Model — Main Custom UI Cockpit Controller (`static/ui/src/cockpit.ts`)
  *
  * Composes:
  * 1. `HeaderBar.tsx` (`renderHeaderBar`)
@@ -2698,9 +2787,8 @@ function renderScenarioPanel(props) {
  * 3. `DagCanvas.tsx` (`renderDagCanvas`)
  * 4. `ScenarioPanel.tsx` (`renderScenarioPanel`, `buildRovoMitigationPrompt`)
  *
- * Communicates with Atlassian Forge via `@forge/bridge` (`invoke`) for `getGraphData`,
- * `runWhatIfSimulation`, `loadDemoScenario`, `resetScenario`, and `createRealJiraIssues`,
- * with instant 500-iteration client-side CRN Monte Carlo computation for zero-latency interactivity.
+ * Includes interactive floating hover card inspector for DAG nodes so technical math
+ * and metadata appear smoothly on mouseover without cluttering the canvas.
  */
 /**
  * Helper to invoke Atlassian Forge Custom UI resolver (`@forge/bridge`) when running inside Jira Cloud,
@@ -2732,11 +2820,11 @@ const state = {
     delayDays: 8,
     addDeveloper: false,
     decoupleBlockingEdges: false,
-    selectedEpochIndex: 2, // Today (State t_0)
+    selectedEpochIndex: 2, // Today
     scrubberDayOffset: 0,
     activeRightTab: 'cascade',
     copiedPromptNotice: false,
-    statusBanner: 'Active Scenario: "Project Chronos: Next-Gen Platform Launch" (18 Nodes across Core Engine, Cloud Infra, Client UI · 2 TWG Goals: Zero-Downtime Migration & Q4 Global Launch)',
+    statusBanner: 'Viewing "Project Chronos: Next-Gen Platform Launch" — Click any task card on the map or drag the What-If slider on the right to simulate schedule changes.',
 };
 function recomputeSimulation() {
     state.baselineSim = runMonteCarloSimulation(state.graph, { iterations: 500 });
@@ -2819,7 +2907,9 @@ function attachCockpitEventListeners() {
             decoupleBlockingEdges: state.decoupleBlockingEdges,
         });
     };
-    // 1. Node click on SVG DAG
+    // 1. Node click + hover inspector on SVG DAG
+    const hoverCard = document.getElementById('dag-node-hover-card');
+    const viewportContainer = document.getElementById('dag-viewport-container');
     document.querySelectorAll('.dag-node-group').forEach((el) => {
         el.addEventListener('click', () => {
             const key = el.getAttribute('data-node-key');
@@ -2829,6 +2919,58 @@ function attachCockpitEventListeners() {
                 recomputeSimulation();
                 triggerRemoteWhatIf();
                 renderCockpit();
+            }
+        });
+        el.addEventListener('mouseenter', (evt) => {
+            if (!hoverCard || !viewportContainer)
+                return;
+            const rawHover = el.getAttribute('data-node-hover');
+            if (!rawHover)
+                return;
+            try {
+                const info = JSON.parse(rawHover);
+                const shiftLine = info.rippleShift > 0
+                    ? `<span style="color:#fda4af;font-weight:700;">+${info.rippleShift.toFixed(1)}d downstream slip</span>`
+                    : info.rippleShift < 0
+                        ? `<span style="color:#6ee7b7;font-weight:700;">${info.rippleShift.toFixed(1)}d faster</span>`
+                        : `<span style="color:#94a3b8;">On Baseline Schedule</span>`;
+                hoverCard.innerHTML = `
+          <div class="hover-card-header">
+            <span class="hover-card-key">${escapeHtmlText(info.key)}</span>
+            <span class="badge-pill">${escapeHtmlText(info.team)}</span>
+          </div>
+          <div class="hover-card-title">${escapeHtmlText(info.summary)}</div>
+          <div class="hover-card-meta">
+            <div><span>Assignee:</span> <strong>${escapeHtmlText(info.assignee)}</strong></div>
+            <div><span>Status:</span> <strong>${escapeHtmlText(info.status)}</strong></div>
+            <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
+            <div><span>Schedule Impact:</span> ${shiftLine}</div>
+            <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
+          </div>
+          ${info.adr
+                    ? `<div class="hover-card-adr">📄 ${escapeHtmlText(info.adr)}</div>`
+                    : ''}
+          <div class="hover-card-math">
+            📐 <code>Est = ${info.estimateDays}d (σ = ±${info.sigma}d) | Criticality = ${info.criticalityPct}%</code>
+          </div>
+          <div class="hover-card-tip">Click card to select &amp; run What-If simulation</div>
+        `;
+                hoverCard.style.display = 'block';
+                const vpRect = viewportContainer.getBoundingClientRect();
+                const mouseX = evt.clientX - vpRect.left + viewportContainer.scrollLeft;
+                const mouseY = evt.clientY - vpRect.top + viewportContainer.scrollTop;
+                const leftPos = Math.min(Math.max(12, mouseX + 16), viewportContainer.scrollWidth - 310);
+                const topPos = Math.max(12, mouseY - 24);
+                hoverCard.style.left = `${leftPos}px`;
+                hoverCard.style.top = `${topPos}px`;
+            }
+            catch {
+                // Ignore parse issues
+            }
+        });
+        el.addEventListener('mouseleave', () => {
+            if (hoverCard) {
+                hoverCard.style.display = 'none';
             }
         });
     });
@@ -2855,7 +2997,7 @@ function attachCockpitEventListeners() {
             renderCockpit();
         });
     });
-    // 4. Scope / Resource Toggle: Add Developer (+1 Swarm Resource)
+    // 4. Scope / Resource Toggle: Add Developer (+1 Resource)
     const btnAddDev = document.getElementById('btn-toggle-add-dev');
     if (btnAddDev) {
         btnAddDev.addEventListener('click', () => {
@@ -2866,7 +3008,7 @@ function attachCockpitEventListeners() {
             renderCockpit();
         });
     }
-    // 5. Scope / Resource Toggle: Decouple Blocking Edge
+    // 5. Scope / Resource Toggle: Decouple Dependency
     const btnDecouple = document.getElementById('btn-toggle-decouple-edge');
     if (btnDecouple) {
         btnDecouple.addEventListener('click', () => {
@@ -2902,7 +3044,7 @@ function attachCockpitEventListeners() {
                 // Fallback when clipboard permission is restricted in sandboxed iframe
             }
             state.copiedPromptNotice = true;
-            state.statusBanner = `Copied Rovo Mitigation Prompt: "${promptText.slice(0, 95)}…"`;
+            state.statusBanner = `Copied Rovo Prompt to clipboard — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
             renderCockpit();
         });
     }
@@ -2950,26 +3092,26 @@ function attachCockpitEventListeners() {
             state.scrubberDayOffset = 0;
             recomputeSimulation();
             state.statusBanner =
-                'Loaded "Project Chronos: Next-Gen Platform Launch" (18 nodes across Core Engine, Cloud Infra, Client UI) with +10d shock on CHRON-104.';
+                'Loaded "Project Chronos" 18-task multi-team launch scenario with a +10 day simulated delay on CHRON-104.';
             renderCockpit();
             await invokeForgeResolver('loadDemoScenario', { projectKey: 'CHRON' });
         });
     }
-    // 10. Header Action: Create Real Jira Issues (`invoke('createRealJiraIssues')`)
+    // 10. Header Action: Seed Jira Issues (`invoke('createRealJiraIssues')`)
     const btnCreateIssues = document.getElementById('btn-create-jira-issues');
     if (btnCreateIssues) {
         btnCreateIssues.addEventListener('click', async () => {
             state.statusBanner =
-                'Executing seedJiraProject("CHRON") via api.asApp().requestJira(route`/rest/api/3/issue`)…';
+                'Creating linked Jira issues in your project via Jira REST API…';
             renderCockpit();
             const res = await invokeForgeResolver('createRealJiraIssues', { projectKey: state.graph.projectKey });
             state.statusBanner =
                 res?.seedReport?.message ??
-                    'Project Chronos 18-node graph synced (in-memory snapshot active for local/sandbox environment).';
+                    'Project Chronos 18-task dependency graph synced.';
             renderCockpit();
         });
     }
-    // 11. Header Action: Focus Top Bottleneck
+    // 11. Header Action: Inspect #1 Blocker
     const btnBottleneck = document.getElementById('btn-jump-bottleneck');
     if (btnBottleneck) {
         btnBottleneck.addEventListener('click', () => {
@@ -2978,11 +3120,11 @@ function attachCockpitEventListeners() {
             if (state.delayDays === 0)
                 state.delayDays = 8;
             recomputeSimulation();
-            state.statusBanner = `Focused #1 Critical Bottleneck ${topKey} — simulating +${state.delayDays}d counterfactual delay.`;
+            state.statusBanner = `Selected #1 Critical Path Blocker (${topKey}) — showing impact of a +${state.delayDays} day delay.`;
             renderCockpit();
         });
     }
-    // 12. Header Action: Reset Scenario (`invoke('resetScenario')`)
+    // 12. Header Action: Reset (`invoke('resetScenario')`)
     const btnReset = document.getElementById('btn-reset-sim');
     if (btnReset) {
         btnReset.addEventListener('click', async () => {
@@ -2993,7 +3135,7 @@ function attachCockpitEventListeners() {
             state.selectedEpochIndex = 2;
             recomputeSimulation();
             state.statusBanner =
-                'Scenario reset — viewing unperturbed 500-iteration baseline forecast.';
+                'All What-If changes cleared — viewing original baseline project schedule.';
             renderCockpit();
             await invokeForgeResolver('resetScenario', { projectKey: state.graph.projectKey });
         });

@@ -1,13 +1,13 @@
 /**
- * Step 4 Component 4: Counterfactual Intervention Panel (`static/ui/src/components/ScenarioPanel.tsx`)
+ * Step 4 Component 4: What-If Scenario Simulator Panel (`static/ui/src/components/ScenarioPanel.tsx`)
  *
- * - Displays details of the currently selected node (Key, Summary, Team, Linked Goal, Base Estimate, Uncertainty σ).
- * - "What-If" Intervention Controls ($do$-calculus):
- *   1. Delay / Accelerate Slider: `-5 days` to `+30 days` (triggers instant `runWhatIfSimulation` calculation).
- *   2. Scope / Resource Toggle: Simulate adding a developer (+1 Swarm Resource) or decoupling a blocking edge.
- * - Causal Impact Readout:
- *   1. Side-by-side comparison of Baseline vs. Counterfactual P50 / P85 / P95 completion distribution bars.
- *   2. Top downstream affected tickets + "Copy Rovo Mitigation Prompt" button.
+ * Redesigned around Progressive Disclosure & 3-Second Usability:
+ * - Zero raw math or Greek letters in primary labels (`What-If Scenario Simulator` instead of `$do$-Calculus`).
+ * - Step 1: Selected Task & What-If Sliders (`Delay / Accelerate` + `Add Developer` + `Break Dependency`).
+ * - Step 2: Immediate Release Forecast Comparison (Likely Target, 85% Commit Target, Worst-Case Buffer)
+ *   with hover tooltips for CVaR_0.95, Quasimetric Energy E, and 500 CRN Monte Carlo runs.
+ * - Step 3: One-click Rovo Agent Action button (`Copy Rovo AI Action Prompt`).
+ * - Step 4: Clean Inspector Tabs (`Impacted Tasks`, `Top Blockers`, `Goals & Math Spec`).
  */
 
 import {
@@ -16,6 +16,11 @@ import {
   SimulationResult,
 } from '../../../../src/engine/types';
 import { MCP_TOOLS_MANIFEST } from '../../../../src/mcp/server';
+import {
+  escapeHtmlText,
+  formatFriendlyDate,
+  renderInfoTooltip,
+} from './tooltip';
 
 export interface ScenarioPanelProps {
   graph: CausalGraph;
@@ -30,26 +35,21 @@ export interface ScenarioPanelProps {
   copiedPromptNotice: boolean;
 }
 
-function escapeHtmlScenario(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, activeSim } =
     props;
   const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
   const goal = graph.goals.find((g) => g.id === node.goalId) ?? graph.goals[0];
-  const shiftStr = delayDays >= 0 ? `delayed by ${delayDays} days` : `accelerated by ${Math.abs(delayDays)} days`;
+  const shiftStr =
+    delayDays >= 0
+      ? `delayed by ${delayDays} days`
+      : `accelerated by ${Math.abs(delayDays)} days`;
   const modifiers: string[] = [];
-  if (addDeveloper) modifiers.push('adding +1 swarm developer');
-  if (decoupleBlockingEdges) modifiers.push('decoupling outgoing blocking edges');
+  if (addDeveloper) modifiers.push('adding +1 developer');
+  if (decoupleBlockingEdges) modifiers.push('decoupling outgoing blocking dependencies');
   const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
 
-  return `@Rovo-World-Model Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current simulated P85 date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} downstream blast-radius issues. Recommend the top dependency to decouple to ship on time with 85% confidence.`;
+  return `@Rovo-World-Model Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream tasks. Recommend the top dependency to decouple so we ship on time.`;
 }
 
 function renderTabBody(props: ScenarioPanelProps): string {
@@ -75,8 +75,8 @@ function renderTabBody(props: ScenarioPanelProps): string {
 
     if (!hasActiveIntervention || deltas.length === 0) {
       return `
-        <div style="padding: 12px 6px; color: var(--text-secondary); font-size: 12px;">
-          Adjust the <strong>Delay / Accelerate Slider (-5d to +30d)</strong> or toggle <strong>Add Developer / Decouple Edge</strong> above to inspect downstream ticket shifts across teams.
+        <div class="empty-tab-notice">
+          Drag the <strong>Schedule Change Slider</strong> above or toggle <strong>Add Developer / Break Dependency</strong> to see which downstream tasks shift across teams.
         </div>
       `;
     }
@@ -86,11 +86,11 @@ function renderTabBody(props: ScenarioPanelProps): string {
         const signStr = d.shiftDays > 0 ? `+${d.shiftDays}d` : `${d.shiftDays}d`;
         const deltaClass = d.shiftDays > 0 ? 'delayed' : 'baseline';
         return `
-          <tr data-select-node="${escapeHtmlScenario(d.key)}" style="cursor:pointer;">
-            <td><strong style="font-family:var(--font-mono);color:#38bdf8;">${escapeHtmlScenario(d.key)}</strong></td>
-            <td>${escapeHtmlScenario(d.summary.slice(0, 30))}${d.summary.length > 30 ? '…' : ''}</td>
-            <td><span class="badge-pill">${escapeHtmlScenario(d.team)}</span></td>
-            <td style="font-family:var(--font-mono);">${escapeHtmlScenario(d.intervenedP85Date)}</td>
+          <tr data-select-node="${escapeHtmlText(d.key)}" style="cursor:pointer;" title="Click to select ${escapeHtmlText(d.key)} (${escapeHtmlText(d.summary)})">
+            <td><strong style="font-family:var(--font-mono);color:#38bdf8;">${escapeHtmlText(d.key)}</strong></td>
+            <td>${escapeHtmlText(d.summary.slice(0, 32))}${d.summary.length > 32 ? '…' : ''}</td>
+            <td><span class="badge-pill">${escapeHtmlText(d.team)}</span></td>
+            <td style="font-family:var(--font-mono);">${formatFriendlyDate(d.intervenedP85Date)}</td>
             <td><span class="kpi-delta ${deltaClass}">${signStr}</span></td>
           </tr>
         `;
@@ -101,11 +101,11 @@ function renderTabBody(props: ScenarioPanelProps): string {
       <table class="cascade-table">
         <thead>
           <tr>
-            <th>Ticket</th>
-            <th>Downstream Summary</th>
+            <th>Task</th>
+            <th>Summary</th>
             <th>Team</th>
-            <th>Sim P85</th>
-            <th>Causal Δ</th>
+            <th>New Finish</th>
+            <th>Shift</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -118,19 +118,19 @@ function renderTabBody(props: ScenarioPanelProps): string {
       .slice(0, 5)
       .map(
         (b, idx) => `
-        <div class="bottleneck-item" data-select-node="${escapeHtmlScenario(b.key)}">
+        <div class="bottleneck-item" data-select-node="${escapeHtmlText(b.key)}" title="Click to test interventions on ${escapeHtmlText(b.key)} | Ripple Weight: ${b.downstreamRippleWeight} | Criticality: ${Math.round(b.criticalityIndex * 100)}%">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <span>
-              <strong style="font-family:var(--font-mono);color:#a5b4fc;">#${idx + 1} ${escapeHtmlScenario(b.key)}</strong>
-              — <strong style="font-size:12px;">${escapeHtmlScenario(b.summary)}</strong>
+              <strong style="font-family:var(--font-mono);color:#a5b4fc;">#${idx + 1} ${escapeHtmlText(b.key)}</strong>
+              — <strong style="font-size:12px;">${escapeHtmlText(b.summary)}</strong>
             </span>
-            <span class="badge-pill rose">Ripple Wt: ${b.downstreamRippleWeight}</span>
+            <span class="badge-pill rose">Blocks ${b.downstreamCount} Tasks</span>
           </div>
-          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;font-family:var(--font-mono);">
-            Team: ${escapeHtmlScenario(b.team)} · Criticality: ${Math.round(b.criticalityIndex * 100)}% · Fanout: ${b.downstreamCount} · Risk: ${b.riskScore}/100
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+            Team: <strong>${escapeHtmlText(b.team)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong>
           </div>
           <div style="font-size:11px;color:#67e8f9;margin-top:4px;">
-            💡 ${escapeHtmlScenario(b.recommendation)}
+            💡 ${escapeHtmlText(b.recommendation)}
           </div>
         </div>
       `
@@ -151,22 +151,35 @@ function renderTabBody(props: ScenarioPanelProps): string {
         decoupleBlockingEdges,
       },
     },
-    resultPreview: {
-      p50Date: activeSim.p50Date,
-      p85Date: activeSim.p85Date,
-      p95Date: activeSim.p95Date,
-      rippleDelayDays: activeSim.rippleDelayDays,
-      blastRadiusCount: activeSim.blastRadiusNodes.length,
+    advancedMathMetrics: {
+      cvar95TailRiskDate: `${activeSim.cvar95Date} (+${activeSim.cvar95Days}d)`,
+      quasimetricLatentEnergyE: activeSim.quasimetricEnergy,
+      estimatedReworkHours: `${activeSim.estimatedReworkHours}h`,
+      monteCarloIterations: 500,
       registeredMcpTools: MCP_TOOLS_MANIFEST.map((t) => t.name),
     },
   };
 
   return `
-    <div style="display:flex;flex-direction:column;gap:8px;">
-      <div style="font-size:11.5px;color:var(--text-secondary);">
-        <strong>Rovo-World-Model Agent (<code>rovo-world-model-agent</code>)</strong> &amp; <strong>MCP Endpoint (<code>mcp-world-model-endpoint</code>)</strong> live JSON-RPC payload:
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="advanced-math-grid">
+        <div class="math-stat-box" title="Conditional Value-at-Risk (CVaR 0.95): Expected finish date across the worst 5% tail-risk simulation runs">
+          <span>Worst 5% Tail Date (CVaR₀.₉₅)</span>
+          <strong style="color:#fda4af;">${formatFriendlyDate(activeSim.cvar95Date, true)}</strong>
+        </div>
+        <div class="math-stat-box" title="Quasimetric Latent Energy E(s -> s'): Measures asymmetric schedule friction required to recover baseline dates">
+          <span>Schedule Friction (Latent E)</span>
+          <strong style="color:#67e8f9;">${activeSim.quasimetricEnergy}</strong>
+        </div>
+        <div class="math-stat-box" title="Expected downstream context-switching & interface rework hours caused by schedule shift">
+          <span>Est. Rework Overhead</span>
+          <strong style="color:#fcd34d;">${activeSim.estimatedReworkHours} hrs</strong>
+        </div>
       </div>
-      <pre class="code-console">${escapeHtmlScenario(JSON.stringify(mcpRpcSample, null, 2))}</pre>
+      <div style="font-size:11px;color:var(--text-secondary);">
+        <strong>Live MCP Endpoint &amp; Rovo Action Payload:</strong>
+      </div>
+      <pre class="code-console">${escapeHtmlText(JSON.stringify(mcpRpcSample, null, 2))}</pre>
     </div>
   `;
 }
@@ -200,64 +213,114 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
 
   const delaySignLabel =
     delayDays > 0
-      ? `+${delayDays} Days (Delay)`
+      ? `+${delayDays} Days Delay`
       : delayDays < 0
-        ? `${delayDays} Days (Accelerate)`
-        : '0 Days (Baseline)';
+        ? `${delayDays} Days Faster`
+        : 'No Change (Baseline)';
+
+  const activeBadgeText =
+    delayDays > 0
+      ? `Simulated: +${delayDays}d Delay`
+      : delayDays < 0
+        ? `Simulated: ${delayDays}d Faster`
+        : addDeveloper || decoupleBlockingEdges
+          ? 'Mitigation Active'
+          : 'Baseline';
+
+  const uncertaintyLabel =
+    selectedNode.uncertaintySigma >= 1.8
+      ? 'High Variance'
+      : selectedNode.uncertaintySigma >= 1.0
+        ? 'Moderate'
+        : 'Low Variance';
+
+  const forecastRows = [
+    {
+      label: 'Likely Finish (50%)',
+      tooltip: 'Median P50 Forecast: 50% of simulated runs finish on or before this date.',
+      baseDays: baselineSim.p50Days,
+      intDays: activeSim.p50Days,
+      baseDate: baselineSim.p50Date,
+      intDate: activeSim.p50Date,
+    },
+    {
+      label: 'Commit Target (85%)',
+      tooltip: 'Recommended P85 Commitment Date: 85% probability of shipping on or before this date.',
+      baseDays: baselineSim.p85Days,
+      intDays: activeSim.p85Days,
+      baseDate: baselineSim.p85Date,
+      intDate: activeSim.p85Date,
+    },
+    {
+      label: 'Worst-Case (95%)',
+      tooltip: `Conservative P95 Buffer Date. Extreme 5% tail risk (CVaR₀.₉₅) = ${activeSim.cvar95Date}.`,
+      baseDays: baselineSim.p95Days,
+      intDays: activeSim.p95Days,
+      baseDate: baselineSim.p95Date,
+      intDate: activeSim.p95Date,
+    },
+  ];
 
   return `
     <div class="right-column">
-      <!-- Counterfactual Intervention Controls Card -->
+      <!-- What-If Simulator Controls Card -->
       <div class="panel-card">
         <div class="panel-header">
           <div class="panel-title">
-            🎛️ Scenario Intervention Panel ($do$-Calculus)
+            <span>🎛️ What-If Scenario Simulator</span>
+            ${renderInfoTooltip(
+              'Counterfactual Intervention Engine (do-Calculus)',
+              'Test schedule slips, extra engineering capacity, or dependency decoupling on any selected task. All downstream tasks and Teamwork Graph goals recalculate immediately.',
+              `Active Intervention: do(${selectedNode.key} = ${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`}, addDev=${addDeveloper}, decouple=${decoupleBlockingEdges})`
+            )}
           </div>
           <span class="badge-pill ${delayDays > 0 ? 'rose' : delayDays < 0 ? 'emerald' : 'cyan'}">
-            do(${escapeHtmlScenario(selectedNode.key)} = ${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`})
+            ${escapeHtmlText(activeBadgeText)}
           </span>
         </div>
 
         <div class="intervention-box">
-          <!-- Selected Node Details -->
+          <!-- Selected Task Summary Card -->
           <div class="selected-node-banner">
             <div class="node-banner-top">
-              <span class="node-key-tag">${escapeHtmlScenario(selectedNode.key)} · ${escapeHtmlScenario(selectedNode.status)}</span>
-              <span class="badge-pill">${escapeHtmlScenario(selectedNode.team)}</span>
+              <span class="node-key-tag">${escapeHtmlText(selectedNode.key)} · ${escapeHtmlText(selectedNode.status)}</span>
+              <span class="badge-pill">${escapeHtmlText(selectedNode.team)} · ${escapeHtmlText(selectedNode.assignee)}</span>
             </div>
-            <div class="node-summary-text">${escapeHtmlScenario(selectedNode.summary)}</div>
+            <div class="node-summary-text">${escapeHtmlText(selectedNode.summary)}</div>
             <div class="node-meta-grid">
               <div class="meta-cell">
-                <span>Linked Goal</span>
-                <strong>${escapeHtmlScenario(linkedGoal?.name ?? selectedNode.goalId)}</strong>
+                <span>Teamwork Goal</span>
+                <strong>${escapeHtmlText(linkedGoal?.name ?? selectedNode.goalId)}</strong>
               </div>
               <div class="meta-cell">
-                <span>Base Estimate</span>
+                <span>Estimated Effort</span>
                 <strong>${selectedNode.baseEstimateDays} Days</strong>
               </div>
-              <div class="meta-cell">
-                <span>Uncertainty σ</span>
-                <strong>±${selectedNode.uncertaintySigma} Days</strong>
+              <div class="meta-cell" title="Log-normal uncertainty standard deviation σ = ±${selectedNode.uncertaintySigma} days">
+                <span>Risk Spread ⓘ</span>
+                <strong>${uncertaintyLabel}</strong>
               </div>
-              <div class="meta-cell">
-                <span>Criticality</span>
-                <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}%</strong>
+              <div class="meta-cell" title="Criticality Index: ${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% of Monte Carlo simulations have this task on the critical path">
+                <span>Path Impact ⓘ</span>
+                <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% Critical</strong>
               </div>
             </div>
             ${
               selectedNode.confluenceDecision
-                ? `<div style="margin-top:7px;padding-top:6px;border-top:1px dashed var(--border-subtle);font-size:10.5px;color:#a5b4fc;font-family:var(--font-mono);">
-                     📄 TWG Confluence Decision: <strong>${escapeHtmlScenario(selectedNode.confluenceDecision.title)}</strong> (${escapeHtmlScenario(selectedNode.confluenceDecision.spaceKey)})
+                ? `<div class="confluence-adr-pill" title="Linked Confluence Architecture Decision Record via Atlassian Teamwork Graph">
+                     📄 Linked Decision: <strong>${escapeHtmlText(selectedNode.confluenceDecision.title)}</strong>
                    </div>`
                 : ''
             }
           </div>
 
-          <!-- Delay / Accelerate Slider (-5d to +30d) -->
+          <!-- Step 1: Schedule & Mitigation Controls -->
           <div class="delay-slider-card">
             <div class="slider-header">
-              <span class="slider-title">Delay / Accelerate Slider (-5d to +30d)</span>
-              <span class="slider-readout ${delayDays < 0 ? 'accel-text' : ''}">${delaySignLabel}</span>
+              <span class="slider-title">1. Simulate Task Delay or Speedup</span>
+              <span class="slider-readout ${delayDays < 0 ? 'accel-text' : delayDays === 0 ? 'neutral-text' : ''}">
+                ${delaySignLabel}
+              </span>
             </div>
             <input
               type="range"
@@ -273,86 +336,69 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                 .map(
                   (val) => `
                   <button class="preset-btn ${delayDays === val ? 'active' : ''}" data-preset-delay="${val}">
-                    ${val === 0 ? '0d' : val > 0 ? `+${val}d` : `${val}d`}
+                    ${val === 0 ? 'Reset (0d)' : val > 0 ? `+${val}d` : `${val}d`}
                   </button>
                 `
                 )
                 .join('')}
             </div>
 
-            <!-- Scope / Resource Toggles -->
+            <div class="mitigation-label">2. Test Recovery Mitigations</div>
             <div class="scope-toggles-row">
               <button
                 class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
                 id="btn-toggle-add-dev"
-                title="Simulate swarming +1 developer (-35% base duration, -40% uncertainty σ)"
+                title="Math: Compresses base task estimate by 35% and reduces uncertainty variance σ by 40%"
               >
-                👩‍💻 ${addDeveloper ? '✓ Added Swarm Developer (-35% Est)' : 'Add Developer (+1 Resource)'}
+                👩‍💻 ${addDeveloper ? '✓ Developer Added (-35% Time)' : 'Add +1 Developer'}
               </button>
               <button
                 class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
                 id="btn-toggle-decouple-edge"
-                title="Simulate decoupling outgoing blocking edges (reduces propagation weight to 0.25)"
+                title="Math: Inserts an interface mock contract, reducing outgoing dependency propagation weight to 0.25"
               >
-                ✂️ ${decoupleBlockingEdges ? '✓ Blocking Edge Decoupled' : 'Decouple Blocking Edge'}
+                ✂️ ${decoupleBlockingEdges ? '✓ Dependency Decoupled' : 'Decouple Dependency'}
               </button>
             </div>
           </div>
 
-          <!-- Side-by-Side Baseline vs Counterfactual P50 / P85 / P95 Distribution Bars -->
+          <!-- Step 3: Side-by-Side Release Date Comparison -->
           <div class="comparison-bars-card">
-            <div style="font-size:11.5px;font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between;">
-              <span>📊 Baseline vs. Counterfactual Distribution (P50 / P85 / P95)</span>
-              <span style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-secondary);">500 CRN Worlds</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:6px;font-size:10px;font-family:var(--font-mono);color:#94a3b8;background:rgba(30,41,59,0.55);padding:5px 8px;border-radius:6px;">
-              <span>CVaR₀.₉₅: <strong style="color:#fda4af;">${escapeHtmlScenario(activeSim.cvar95Date)} (+${activeSim.cvar95Days}d)</strong></span>
-              <span>Latent Energy E: <strong style="color:#67e8f9;">${activeSim.quasimetricEnergy}</strong></span>
-              <span>Rework Risk: <strong style="color:#fcd34d;">${activeSim.estimatedReworkHours}h</strong></span>
+            <div style="font-size:12px;font-weight:700;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+              <span>📊 Release Date Impact (Original vs. Simulated)</span>
+              ${renderInfoTooltip(
+                'Baseline vs. Counterfactual Forecast',
+                `Compares your original baseline schedule against the simulated What-If scenario across 500 paired runs. Extreme 5% Tail Date (CVaR₀.₉₅): ${formatFriendlyDate(activeSim.cvar95Date, true)} | Friction E: ${activeSim.quasimetricEnergy} | Est. Rework: ${activeSim.estimatedReworkHours}h.`,
+                `ΔP85 = ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | CVaR₀.₉₅ = ${activeSim.cvar95Date}`
+              )}
             </div>
 
-            ${(['P50', 'P85', 'P95'] as const)
-              .map((metric) => {
-                const baseDays =
-                  metric === 'P50'
-                    ? baselineSim.p50Days
-                    : metric === 'P85'
-                      ? baselineSim.p85Days
-                      : baselineSim.p95Days;
-                const intDays =
-                  metric === 'P50'
-                    ? activeSim.p50Days
-                    : metric === 'P85'
-                      ? activeSim.p85Days
-                      : activeSim.p95Days;
-                const baseDate =
-                  metric === 'P50'
-                    ? baselineSim.p50Date
-                    : metric === 'P85'
-                      ? baselineSim.p85Date
-                      : baselineSim.p95Date;
-                const intDate =
-                  metric === 'P50'
-                    ? activeSim.p50Date
-                    : metric === 'P85'
-                      ? activeSim.p85Date
-                      : activeSim.p95Date;
-                const diff = Number((intDays - baseDays).toFixed(1));
+            ${forecastRows
+              .map((row) => {
+                const diff = Number((row.intDays - row.baseDays).toFixed(1));
                 const intBarColor =
                   diff > 0 ? '#f43f5e' : diff < 0 ? '#10b981' : '#38bdf8';
+                const diffBadge =
+                  diff > 0
+                    ? `<span style="color:#fb7185;font-weight:700;">(+${diff}d)</span>`
+                    : diff < 0
+                      ? `<span style="color:#34d399;font-weight:700;">(${diff}d)</span>`
+                      : `<span style="color:#94a3b8;">(No change)</span>`;
 
                 return `
-                  <div class="dist-compare-group">
+                  <div class="dist-compare-group" title="${escapeHtmlText(row.tooltip)}">
                     <div class="dist-compare-label">
-                      <strong>${metric}</strong>
-                      <span>Base: ${baseDate} (${baseDays}d) vs. Sim: <strong>${intDate} (${intDays}d)</strong></span>
+                      <strong>${escapeHtmlText(row.label)}</strong>
+                      <span>
+                        ${formatFriendlyDate(row.baseDate)} → <strong>${formatFriendlyDate(row.intDate)}</strong> ${diffBadge}
+                      </span>
                     </div>
                     <div class="dual-bar-stack">
                       <div class="bar-track-line">
-                        <div class="bar-fill-base" style="width:${pct(baseDays)}%;"></div>
+                        <div class="bar-fill-base" style="width:${pct(row.baseDays)}%;"></div>
                       </div>
                       <div class="bar-track-line">
-                        <div class="bar-fill-sim" style="width:${pct(intDays)}%;background:${intBarColor};"></div>
+                        <div class="bar-fill-sim" style="width:${pct(row.intDays)}%;background:${intBarColor};"></div>
                       </div>
                     </div>
                   </div>
@@ -360,20 +406,24 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
               })
               .join('')}
 
-            <button class="btn btn-rovo-copy" id="btn-copy-rovo-prompt">
-              ${copiedPromptNotice ? '✓ Copied Rovo Mitigation Prompt to Clipboard!' : '📋 Copy Rovo Mitigation Prompt'}
+            <button class="btn btn-rovo-copy" id="btn-copy-rovo-prompt" title="Copy a ready-to-paste prompt for @Rovo-World-Model Agent in Jira Rovo Chat">
+              ${copiedPromptNotice ? '✓ Copied Prompt for @Rovo-World-Model Agent!' : '🤖 Ask @Rovo-World-Model Agent for Mitigation Plan'}
             </button>
           </div>
         </div>
       </div>
 
-      <!-- Atlassian Teamwork Graph (TWG) Goals Impact Card -->
+      <!-- Atlassian Teamwork Graph (TWG) Goals Status Card -->
       <div class="panel-card">
         <div class="panel-header">
           <div class="panel-title">
-            🧭 Atlassian Teamwork Graph (TWG) Goals
+            <span>🧭 Business Goals (Atlassian Teamwork Graph)</span>
+            ${renderInfoTooltip(
+              'Teamwork Graph Goal Alignment',
+              'Shows how engineering task changes affect high-level company goals and their probability of finishing on or before the target deadline.'
+            )}
           </div>
-          <span class="badge-pill cyan">${activeSim.goalImpacts.length} Goals</span>
+          <span class="badge-pill cyan">${activeSim.goalImpacts.length} Linked Goals</span>
         </div>
         <div class="goals-list">
           ${activeSim.goalImpacts
@@ -399,26 +449,26 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                     : '#10b981';
               const shiftSign =
                 goal.rippleDelayDays > 0
-                  ? `+${goal.rippleDelayDays}d`
+                  ? `+${goal.rippleDelayDays}d slip`
                   : goal.rippleDelayDays < 0
-                    ? `${goal.rippleDelayDays}d`
+                    ? `${goal.rippleDelayDays}d faster`
                     : '';
 
               return `
-                <div class="goal-card ${statusClass}">
+                <div class="goal-card ${statusClass}" title="Goal ID: ${escapeHtmlText(goal.goalKey)} | Owner Team: ${escapeHtmlText(goal.ownerTeam)}">
                   <div class="goal-top">
                     <div>
-                      <div style="font-size:10.5px;font-family:var(--font-mono);color:var(--text-secondary);">
-                        ${escapeHtmlScenario(goal.goalKey)} · Team: ${escapeHtmlScenario(goal.ownerTeam)}
+                      <div class="goal-name">${escapeHtmlText(goal.goalName)}</div>
+                      <div style="font-size:11px;color:var(--text-secondary);">
+                        Owner: ${escapeHtmlText(goal.ownerTeam)}
                       </div>
-                      <div class="goal-name">${escapeHtmlScenario(goal.goalName)}</div>
                     </div>
-                    <span class="badge-pill ${pillVariant}">${escapeHtmlScenario(goal.status)}</span>
+                    <span class="badge-pill ${pillVariant}">${escapeHtmlText(goal.status)}</span>
                   </div>
                   <div class="goal-dates-row">
-                    <span>Target: <strong>${escapeHtmlScenario(goal.targetDate)}</strong></span>
-                    <span>Sim P85: <strong>${escapeHtmlScenario(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em style="color:${goal.rippleDelayDays > 0 ? '#fb7185' : '#34d399'};">(${shiftSign})</em>` : ''}</span>
-                    <span>On-Time: <strong>${probPct}%</strong></span>
+                    <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
+                    <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em style="color:${goal.rippleDelayDays > 0 ? '#fb7185' : '#34d399'};">(${shiftSign})</em>` : ''}</span>
+                    <span>On-Time Chance: <strong>${probPct}%</strong></span>
                   </div>
                   <div class="prob-bar-track">
                     <div class="prob-bar-fill" style="width:${probPct}%;background:${barColor};"></div>
@@ -430,17 +480,17 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
         </div>
       </div>
 
-      <!-- Downstream Affected Tickets & Bottlenecks & Rovo/MCP Tabs -->
+      <!-- Downstream Impact / Bottlenecks / Math & MCP Inspector Tabs -->
       <div class="panel-card">
         <div class="tab-bar">
           <button class="tab-btn ${activeRightTab === 'cascade' ? 'active' : ''}" data-tab="cascade">
-            🌊 Downstream Tickets (${activeSim.blastRadiusNodes.length})
+            🌊 Impacted Tasks (${activeSim.blastRadiusNodes.length})
           </button>
           <button class="tab-btn ${activeRightTab === 'bottlenecks' ? 'active' : ''}" data-tab="bottlenecks">
-            🚧 Top Bottlenecks (${activeSim.topBottlenecks.length})
+            🚧 Top Blockers (${activeSim.topBottlenecks.length})
           </button>
           <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
-            🤖 Rovo &amp; MCP Spec
+            ⚙️ Math &amp; MCP Spec
           </button>
         </div>
         <div class="tab-body">
@@ -450,4 +500,3 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
     </div>
   `;
 }
-

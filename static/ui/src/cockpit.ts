@@ -1,5 +1,5 @@
 /**
- * Project World Model (PWM) × Jira Time Machine — Main Custom UI Cockpit Controller
+ * Rovo-World-Model — Main Custom UI Cockpit Controller (`static/ui/src/cockpit.ts`)
  *
  * Composes:
  * 1. `HeaderBar.tsx` (`renderHeaderBar`)
@@ -7,9 +7,8 @@
  * 3. `DagCanvas.tsx` (`renderDagCanvas`)
  * 4. `ScenarioPanel.tsx` (`renderScenarioPanel`, `buildRovoMitigationPrompt`)
  *
- * Communicates with Atlassian Forge via `@forge/bridge` (`invoke`) for `getGraphData`,
- * `runWhatIfSimulation`, `loadDemoScenario`, `resetScenario`, and `createRealJiraIssues`,
- * with instant 500-iteration client-side CRN Monte Carlo computation for zero-latency interactivity.
+ * Includes interactive floating hover card inspector for DAG nodes so technical math
+ * and metadata appear smoothly on mouseover without cluttering the canvas.
  */
 
 import { runIntervention, runMonteCarloSimulation } from '../../../src/engine/simulator';
@@ -26,6 +25,7 @@ import {
   renderScenarioPanel,
 } from './components/ScenarioPanel';
 import { renderTimelineScrubber } from './components/TimelineScrubber';
+import { escapeHtmlText } from './components/tooltip';
 
 interface CockpitState {
   graph: CausalGraph;
@@ -79,12 +79,12 @@ const state: CockpitState = {
   delayDays: 8,
   addDeveloper: false,
   decoupleBlockingEdges: false,
-  selectedEpochIndex: 2, // Today (State t_0)
+  selectedEpochIndex: 2, // Today
   scrubberDayOffset: 0,
   activeRightTab: 'cascade',
   copiedPromptNotice: false,
   statusBanner:
-    'Active Scenario: "Project Chronos: Next-Gen Platform Launch" (18 Nodes across Core Engine, Cloud Infra, Client UI · 2 TWG Goals: Zero-Downtime Migration & Q4 Global Launch)',
+    'Viewing "Project Chronos: Next-Gen Platform Launch" — Click any task card on the map or drag the What-If slider on the right to simulate schedule changes.',
 };
 
 function recomputeSimulation(): void {
@@ -180,7 +180,10 @@ function attachCockpitEventListeners(): void {
     });
   };
 
-  // 1. Node click on SVG DAG
+  // 1. Node click + hover inspector on SVG DAG
+  const hoverCard = document.getElementById('dag-node-hover-card');
+  const viewportContainer = document.getElementById('dag-viewport-container');
+
   document.querySelectorAll<SVGGElement>('.dag-node-group').forEach((el) => {
     el.addEventListener('click', () => {
       const key = el.getAttribute('data-node-key');
@@ -190,6 +193,80 @@ function attachCockpitEventListeners(): void {
         recomputeSimulation();
         triggerRemoteWhatIf();
         renderCockpit();
+      }
+    });
+
+    el.addEventListener('mouseenter', (evt) => {
+      if (!hoverCard || !viewportContainer) return;
+      const rawHover = el.getAttribute('data-node-hover');
+      if (!rawHover) return;
+      try {
+        const info = JSON.parse(rawHover) as {
+          key: string;
+          summary: string;
+          team: string;
+          assignee: string;
+          status: string;
+          estimateDays: number;
+          sigma: number;
+          goalName: string;
+          p85Date: string;
+          rippleShift: number;
+          criticalityPct: number;
+          adr: string;
+        };
+
+        const shiftLine =
+          info.rippleShift > 0
+            ? `<span style="color:#fda4af;font-weight:700;">+${info.rippleShift.toFixed(1)}d downstream slip</span>`
+            : info.rippleShift < 0
+              ? `<span style="color:#6ee7b7;font-weight:700;">${info.rippleShift.toFixed(1)}d faster</span>`
+              : `<span style="color:#94a3b8;">On Baseline Schedule</span>`;
+
+        hoverCard.innerHTML = `
+          <div class="hover-card-header">
+            <span class="hover-card-key">${escapeHtmlText(info.key)}</span>
+            <span class="badge-pill">${escapeHtmlText(info.team)}</span>
+          </div>
+          <div class="hover-card-title">${escapeHtmlText(info.summary)}</div>
+          <div class="hover-card-meta">
+            <div><span>Assignee:</span> <strong>${escapeHtmlText(info.assignee)}</strong></div>
+            <div><span>Status:</span> <strong>${escapeHtmlText(info.status)}</strong></div>
+            <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
+            <div><span>Schedule Impact:</span> ${shiftLine}</div>
+            <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
+          </div>
+          ${
+            info.adr
+              ? `<div class="hover-card-adr">📄 ${escapeHtmlText(info.adr)}</div>`
+              : ''
+          }
+          <div class="hover-card-math">
+            📐 <code>Est = ${info.estimateDays}d (σ = ±${info.sigma}d) | Criticality = ${info.criticalityPct}%</code>
+          </div>
+          <div class="hover-card-tip">Click card to select &amp; run What-If simulation</div>
+        `;
+        hoverCard.style.display = 'block';
+
+        const vpRect = viewportContainer.getBoundingClientRect();
+        const mouseX = evt.clientX - vpRect.left + viewportContainer.scrollLeft;
+        const mouseY = evt.clientY - vpRect.top + viewportContainer.scrollTop;
+
+        const leftPos = Math.min(
+          Math.max(12, mouseX + 16),
+          viewportContainer.scrollWidth - 310
+        );
+        const topPos = Math.max(12, mouseY - 24);
+        hoverCard.style.left = `${leftPos}px`;
+        hoverCard.style.top = `${topPos}px`;
+      } catch {
+        // Ignore parse issues
+      }
+    });
+
+    el.addEventListener('mouseleave', () => {
+      if (hoverCard) {
+        hoverCard.style.display = 'none';
       }
     });
   });
@@ -221,7 +298,7 @@ function attachCockpitEventListeners(): void {
     });
   });
 
-  // 4. Scope / Resource Toggle: Add Developer (+1 Swarm Resource)
+  // 4. Scope / Resource Toggle: Add Developer (+1 Resource)
   const btnAddDev = document.getElementById('btn-toggle-add-dev');
   if (btnAddDev) {
     btnAddDev.addEventListener('click', () => {
@@ -233,7 +310,7 @@ function attachCockpitEventListeners(): void {
     });
   }
 
-  // 5. Scope / Resource Toggle: Decouple Blocking Edge
+  // 5. Scope / Resource Toggle: Decouple Dependency
   const btnDecouple = document.getElementById('btn-toggle-decouple-edge');
   if (btnDecouple) {
     btnDecouple.addEventListener('click', () => {
@@ -269,7 +346,7 @@ function attachCockpitEventListeners(): void {
         // Fallback when clipboard permission is restricted in sandboxed iframe
       }
       state.copiedPromptNotice = true;
-      state.statusBanner = `Copied Rovo Mitigation Prompt: "${promptText.slice(0, 95)}…"`;
+      state.statusBanner = `Copied Rovo Prompt to clipboard — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
       renderCockpit();
     });
   }
@@ -322,30 +399,30 @@ function attachCockpitEventListeners(): void {
       state.scrubberDayOffset = 0;
       recomputeSimulation();
       state.statusBanner =
-        'Loaded "Project Chronos: Next-Gen Platform Launch" (18 nodes across Core Engine, Cloud Infra, Client UI) with +10d shock on CHRON-104.';
+        'Loaded "Project Chronos" 18-task multi-team launch scenario with a +10 day simulated delay on CHRON-104.';
       renderCockpit();
       await invokeForgeResolver('loadDemoScenario', { projectKey: 'CHRON' });
     });
   }
 
-  // 10. Header Action: Create Real Jira Issues (`invoke('createRealJiraIssues')`)
+  // 10. Header Action: Seed Jira Issues (`invoke('createRealJiraIssues')`)
   const btnCreateIssues = document.getElementById('btn-create-jira-issues');
   if (btnCreateIssues) {
     btnCreateIssues.addEventListener('click', async () => {
       state.statusBanner =
-        'Executing seedJiraProject("CHRON") via api.asApp().requestJira(route`/rest/api/3/issue`)…';
+        'Creating linked Jira issues in your project via Jira REST API…';
       renderCockpit();
       const res = await invokeForgeResolver<{
         seedReport?: { message?: string };
       }>('createRealJiraIssues', { projectKey: state.graph.projectKey });
       state.statusBanner =
         res?.seedReport?.message ??
-        'Project Chronos 18-node graph synced (in-memory snapshot active for local/sandbox environment).';
+        'Project Chronos 18-task dependency graph synced.';
       renderCockpit();
     });
   }
 
-  // 11. Header Action: Focus Top Bottleneck
+  // 11. Header Action: Inspect #1 Blocker
   const btnBottleneck = document.getElementById('btn-jump-bottleneck');
   if (btnBottleneck) {
     btnBottleneck.addEventListener('click', () => {
@@ -353,12 +430,12 @@ function attachCockpitEventListeners(): void {
       state.selectedNodeKey = topKey;
       if (state.delayDays === 0) state.delayDays = 8;
       recomputeSimulation();
-      state.statusBanner = `Focused #1 Critical Bottleneck ${topKey} — simulating +${state.delayDays}d counterfactual delay.`;
+      state.statusBanner = `Selected #1 Critical Path Blocker (${topKey}) — showing impact of a +${state.delayDays} day delay.`;
       renderCockpit();
     });
   }
 
-  // 12. Header Action: Reset Scenario (`invoke('resetScenario')`)
+  // 12. Header Action: Reset (`invoke('resetScenario')`)
   const btnReset = document.getElementById('btn-reset-sim');
   if (btnReset) {
     btnReset.addEventListener('click', async () => {
@@ -369,7 +446,7 @@ function attachCockpitEventListeners(): void {
       state.selectedEpochIndex = 2;
       recomputeSimulation();
       state.statusBanner =
-        'Scenario reset — viewing unperturbed 500-iteration baseline forecast.';
+        'All What-If changes cleared — viewing original baseline project schedule.';
       renderCockpit();
       await invokeForgeResolver('resetScenario', { projectKey: state.graph.projectKey });
     });
