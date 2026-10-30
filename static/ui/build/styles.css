@@ -522,7 +522,7 @@ body {
 
 .tm-scrubber-row {
   display: grid;
-  grid-template-columns: 1fr 330px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
   gap: 16px;
   align-items: center;
 }
@@ -531,6 +531,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .tm-slider-wrap {
@@ -570,6 +571,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
 }
 
 .cone-box-header {
@@ -577,21 +581,25 @@ body {
   color: var(--text-secondary);
   display: flex;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .cone-mini-chart {
-  display: flex;
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-items: end;
   gap: 4px;
-  height: 50px;
-  padding: 6px 8px;
+  height: 52px;
+  width: 100%;
+  padding: 6px 10px 4px;
   background: var(--bg-canvas);
   border: 1px solid var(--border-standard);
   border-radius: var(--radius-md);
+  overflow: hidden;
 }
 
 .cone-bar-col {
-  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -621,6 +629,7 @@ body {
   font-size: 8.5px;
   color: var(--text-muted);
   white-space: nowrap;
+  line-height: 1;
 }
 
 /* Main Workspace Split: Left Jira Dependency Map + Right Simulator Drawer */

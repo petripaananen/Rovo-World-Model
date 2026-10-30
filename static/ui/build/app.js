@@ -1612,17 +1612,18 @@ function renderTimelineScrubber(props) {
           </div>
           <div class="cone-mini-chart">
             ${activeSim.distributionBuckets
-        .map((b) => {
+        .map((b, idx, arr) => {
         const heightPct = Math.max(10, Math.round((b.probability / maxBucketProb) * 100));
         const isNearP85 = Math.abs(b.dayOffset - activeSim.p85Days) <= 2.5;
         const isNearScrub = Math.abs(b.dayOffset - scrubberDayOffset) <= 2;
+        const showDateLabel = idx === 0 || idx === Math.floor(arr.length / 2) || idx === arr.length - 1;
         return `
                   <div
                     class="cone-bar-col"
                     title="${formatFriendlyDate(b.date, true)}: ${Math.round(b.probability * 100)}% density | Confidence: ${Math.round(b.cumulativeProbability * 100)}%"
                   >
                     <div class="cone-bar ${isNearP85 ? 'p85-marker' : ''} ${isNearScrub ? 'scrub-marker' : ''}" style="height:${heightPct}%;"></div>
-                    <span class="cone-bar-label">${formatFriendlyDate(b.date)}</span>
+                    <span class="cone-bar-label">${showDateLabel ? formatFriendlyDate(b.date) : '&nbsp;'}</span>
                   </div>
                 `;
     })
