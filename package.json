@@ -1,0 +1,25 @@
+{
+  "name": "rovo-world-model-time-machine",
+  "version": "1.0.0",
+  "description": "Codegeist 2026: Project World Model (PWM) & Jira Time Machine — Causal AI Digital Twin, Rovo Agent, Teamwork Graph & MCP Server on Atlassian Forge",
+  "main": "src/index.ts",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/engine/__tests__/engine.test.ts",
+    "build:ui": "npm --prefix static/ui run build",
+    "build": "npm run typecheck && npm run build:ui"
+  },
+  "dependencies": {
+    "@forge/api": "^4.1.0",
+    "@forge/bridge": "^4.1.0",
+    "@forge/resolver": "^1.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  }
+}
+

@@ -1,0 +1,139 @@
+modules:
+  jira:projectPage:
+    - key: pwm-jira-time-machine-cockpit
+      resource: custom-ui-cockpit
+      resolver:
+        function: ui-resolver-fn
+      title: Jira Time Machine (PWM)
+      layout: basic
+
+  rovo:agent:
+    - key: pwm-time-machine-agent
+      name: Causal Time Machine Agent
+      description: >-
+        Causal AI Digital Twin and Counterfactual Monte Carlo Risk Simulator
+        powered by the Project World Model (PWM) and Atlassian Teamwork Graph.
+      prompt: |
+        You are the **Causal Time Machine Agent**, a Principal Causal AI & Delivery Risk Co-Pilot built on the Project World Model (PWM) and the Atlassian Teamwork Graph (TWG).
+
+        Your mission is to help engineering leaders, product managers, and release captains understand structural dependencies, predict cascading schedule risks, and resolve delivery bottlenecks with mathematical confidence.
+
+        ### Core Capabilities & Workflow
+        1. **Counterfactual Risk Simulation ($do$-calculus):**
+           When a user asks "What happens if [Issue] slips by [N] days?" or wants to stress-test a task, invoke the `simulate-delay-impact` action with `issueKey` and `delayDays`. Explain:
+           - The baseline vs. intervened P50, P85, and P95 project completion dates.
+           - The exact net ripple delay ($\Delta$ days) and the downstream **Blast Radius** issues across teams.
+           - Which high-level **Teamwork Graph Goals** transition to `At Risk` or `Off Track`.
+        2. **Critical Path & Bottleneck Diagnosis:**
+           When a user asks where the biggest delivery risks or bottlenecks are, invoke `analyze-critical-path`. Highlight the topological critical path, each bottleneck's criticality index (% of Monte Carlo worlds where it drives the release date), and concrete de-risking recommendations (e.g., decoupling cross-team handoffs, swarming high-sigma tasks).
+        3. **Judge-Ready Demo Seeding:**
+           If the project has sparse data or the user asks to load/seed the demo scenario, invoke `seed-demo-scenario` to initialize the 18-node **Project Chronos: Next-Gen Release** multi-team causal graph across 3 teams and 2 Teamwork Graph Goals.
+
+        Always ground your answers in the quantitative P50/P85/P95 probability percentiles, cite specific Jira issue keys, and provide actionable mitigation steps.
+      conversationStarters:
+        - Analyze our critical path and top delivery bottlenecks
+        - What happens to our launch goal if CHRON-104 is delayed by 8 days?
+        - Seed the Project Chronos multi-team demo scenario
+      actions:
+        - simulate-delay-impact
+        - analyze-critical-path
+        - seed-demo-scenario
+
+  rovo:action:
+    - key: simulate-delay-impact
+      name: Simulate Counterfactual Delay Impact
+      function: rovo-simulate-delay-fn
+      actionVerb: GET
+      description: >-
+        Applies a Pearl do-calculus intervention do(Issue = +delayDays) on the
+        Project World Model DAG, runs a 500-iteration Monte Carlo simulation,
+        and returns the cascading impact on release dates, downstream tasks, and
+        Teamwork Graph goals.
+      inputs:
+        issueKey:
+          title: Jira Issue Key
+          type: string
+          required: true
+          description: The Jira issue key to delay (e.g., CHRON-104 or CHRON-102).
+        delayDays:
+          title: Delay Days
+          type: integer
+          required: true
+          description: Number of counterfactual delay days to inject (+1 to +60).
+        projectKey:
+          title: Project Key
+          type: string
+          required: false
+          description: Optional Jira project key (defaults to active project or CHRON).
+
+    - key: analyze-critical-path
+      name: Analyze Topological Critical Path & Bottlenecks
+      function: rovo-analyze-critical-path-fn
+      actionVerb: GET
+      description: >-
+        Performs cycle-safe topological sorting and 500-iteration Monte Carlo
+        simulation on the project dependency graph to return top bottlenecks,
+        criticality scores, and P50/P85/P95 completion forecasts.
+      inputs:
+        projectKey:
+          title: Project Key
+          type: string
+          required: false
+          description: Optional Jira project key (defaults to active project or CHRON).
+
+    - key: seed-demo-scenario
+      name: Seed Project Chronos Demo Scenario
+      function: rovo-seed-demo-fn
+      actionVerb: CREATE
+      description: >-
+        Loads the 18-node Project Chronos multi-team causal dependency graph
+        across 3 teams and 2 Teamwork Graph goals, and optionally creates linked
+        Jira issues in the target project.
+      inputs:
+        projectKey:
+          title: Project Key
+          type: string
+          required: false
+          description: Optional Jira project key in which to seed or store the demo graph.
+        populateJiraIssues:
+          title: Populate Linked Jira Issues
+          type: boolean
+          required: false
+          description: Whether to attempt creating live linked Jira issues via Jira REST API.
+
+  webtrigger:
+    - key: mcp-world-model-endpoint
+      function: mcp-webtrigger-fn
+      response:
+        type: dynamic
+
+  function:
+    - key: ui-resolver-fn
+      handler: index.uiResolverHandler
+    - key: rovo-simulate-delay-fn
+      handler: index.simulateDelayImpactHandler
+    - key: rovo-analyze-critical-path-fn
+      handler: index.analyzeCriticalPathHandler
+    - key: rovo-seed-demo-fn
+      handler: index.seedDemoScenarioHandler
+    - key: mcp-webtrigger-fn
+      handler: index.mcpWebtriggerHandler
+
+resources:
+  - key: custom-ui-cockpit
+    path: static/ui/build
+
+app:
+  id: ari:cloud:ecosystem::app/0087095c-82be-4370-83d9-04e01de63d75
+  runtime:
+    name: nodejs20.x
+    memoryMB: 512
+    architecture: arm64
+
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - read:jira-user
+    - storage:app
+
