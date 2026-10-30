@@ -1,7 +1,7 @@
 {
-  "name": "rovo-world-model-time-machine",
+  "name": "rovo-world-model",
   "version": "1.0.0",
-  "description": "Codegeist 2026: Project World Model (PWM) & Jira Time Machine — Causal AI Digital Twin, Rovo Agent, Teamwork Graph & MCP Server on Atlassian Forge",
+  "description": "Rovo-World-Model (Codegeist 2026) — Causal AI Digital Twin, Rovo Agent, Teamwork Graph & MCP Server on Atlassian Forge",
   "main": "src/index.ts",
   "license": "MIT",
   "private": true,

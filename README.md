@@ -1,13 +1,13 @@
-# Rovo World Model — Causal Time Machine
+# Rovo-World-Model
 
 **Codegeist 2026 Hackathon Submission ("Build with context. Ship with confidence")**
 
 - **Primary Category:** Apps for Software Teams
 - **Bonus Categories Targeted:**
-  1. **Best Agents — Rovo / Assignable Agents** (`rovo:agent` + 3 `rovo:action` tools)
+  1. **Best Agents — Rovo / Assignable Agents** (`rovo:agent` + 3 `action` tools)
   2. **Best App with Atlassian MCP** (`mcp-world-model-endpoint` JSON-RPC 2.0 Webtrigger)
-  3. **Best Apps with Teamwork Graph Integration** (Townsquare Goals + Teams + Jira Issue Links)
-  4. **Best Marketplace Published App** (Zero external server dependencies; 100% native Atlassian Forge `nodejs20.x`)
+  3. **Best Apps with Teamwork Graph Integration** (Townsquare Goals + Teams + Jira Issue Links + Confluence ADRs)
+  4. **Best Marketplace Published App** (Zero external server dependencies; 100% native Atlassian Forge `nodejs22.x`)
 
 ---
 
@@ -34,8 +34,8 @@ To ship with confidence, engineering leaders need a **Causal Project World Model
    - **Time Machine Scrubber:** Scrub from **Past Sprints (`-28d`) $\to$ Today (`State t₀`) $\to$ Future Probability Cones (`P50, P85, P95`)** to dynamically highlight which nodes are *Done*, *In Progress*, or *At Risk / Blocked* on any date.
    - **Interactive Causal DAG Canvas:** Multi-swimlane SVG graph across *Core Engine*, *Cloud Infra*, and *Client UI* with glowing critical-path borders and animated blast-radius edges.
    - **Scenario Intervention Panel ($do$-calculus):** Slide **Delay / Accelerate (`-5d` to `+30d`)**, toggle **Add Developer (+1 Resource)** or **Decouple Blocking Edge**, compare side-by-side Baseline vs. Counterfactual P50/P85/P95 bars, and click **"Copy Rovo Mitigation Prompt"**.
-3. **Causal Time Machine Rovo Agent (`src/rovo/actions.ts`):**
-   - Conversational co-pilot (`pwm-time-machine-agent`) equipped with three actions: `simulate-delay-impact`, `analyze-critical-path`, and `seed-demo-scenario`.
+3. **Rovo-World-Model Agent (`src/rovo/actions.ts`):**
+   - Conversational co-pilot (`rovo-world-model-agent`) equipped with three actions: `simulate-delay-impact`, `analyze-critical-path`, and `seed-demo-scenario`.
 4. **Atlassian Model Context Protocol (MCP) Server (`src/mcp/server.ts`):**
    - JSON-RPC 2.0 webtrigger endpoint (`mcp-world-model-endpoint`) exposing `pwm_simulate_intervention`, `pwm_get_critical_path`, `pwm_seed_demo_scenario`, and `pwm_get_causal_graph`.
 
@@ -75,11 +75,11 @@ To ship with confidence, engineering leaders need a **Causal Project World Model
 
 ## 4. Judge Quick-Start Instructions (< 2 Minutes)
 
-1. **Open any Jira Project** and click **Jira Time Machine (PWM)** in the left project sidebar.
+1. **Open any Jira Project** and click **Rovo-World-Model** in the left project sidebar.
 2. **Zero-Setup Demo Mode:** If your test Jira instance has fewer than 5 issues, the app automatically loads **"Project Chronos: Next-Gen Platform Launch"** (18 interconnected nodes across *Core Engine*, *Cloud Infra*, and *Client UI*, linked to **Zero-Downtime Migration** and **Q4 Global Launch** goals). You can also click **⚡ Load Demo Scenario** or **➕ Create Real Jira Issues** in the header at any time.
 3. **Explore Counterfactuals ($do$-calculus):**
    - Click bottleneck node **`CHRON-104`** on the DAG canvas.
    - Drag the **Delay / Accelerate Slider (`-5d` to `+30d`)** in the right panel and watch the red causal ripple propagate across downstream tickets and Teamwork Graph Goals in real time.
    - Toggle **👩‍💻 Add Developer (+1 Resource)** or **✂️ Decouple Blocking Edge** to see how much schedule buffer is recovered on the side-by-side P50 / P85 / P95 distribution bars.
 4. **Scrub the Time Machine:** Drag the **Time Machine Scrubber** from `Past (-28d)` through `Today (State t₀)` to `Future Cone P95` to see which issues are *Done*, *In Progress*, or *At Risk / Blocked* on any future date.
-5. **Test Rovo Chat:** Click **📋 Copy Rovo Mitigation Prompt** (or see [`ROVO_TEST_PROMPTS.md`](file:///c:/Users/petri/.gemini/antigravity/Rovo-world-model/ROVO_TEST_PROMPTS.md)) and paste into Rovo Chat with `@Causal Time Machine Agent`.
+5. **Test Rovo Chat:** Click **📋 Copy Rovo Mitigation Prompt** (or see [`ROVO_TEST_PROMPTS.md`](file:///c:/Users/petri/.gemini/antigravity/Rovo-world-model/ROVO_TEST_PROMPTS.md)) and paste into Rovo Chat with `@Rovo-World-Model Agent`.

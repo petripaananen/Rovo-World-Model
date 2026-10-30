@@ -1,20 +1,20 @@
 modules:
   jira:projectPage:
-    - key: pwm-jira-time-machine-cockpit
+    - key: rovo-world-model-cockpit
       resource: custom-ui-cockpit
       resolver:
         function: ui-resolver-fn
-      title: Jira Time Machine (PWM)
+      title: Rovo-World-Model
       layout: basic
 
   rovo:agent:
-    - key: pwm-time-machine-agent
-      name: Causal Time Machine Agent
+    - key: rovo-world-model-agent
+      name: Rovo-World-Model Agent
       description: >-
-        Causal AI Digital Twin and Counterfactual Monte Carlo Risk Simulator
-        powered by the Project World Model (PWM) and Atlassian Teamwork Graph.
+        Rovo-World-Model Causal AI Digital Twin and Counterfactual Monte Carlo
+        Risk Simulator powered by the Atlassian Teamwork Graph.
       prompt: |
-        You are the **Causal Time Machine Agent**, a Principal Causal AI & Delivery Risk Co-Pilot built on the Project World Model (PWM) and the Atlassian Teamwork Graph (TWG).
+        You are the **Rovo-World-Model Agent**, a Principal Causal AI & Delivery Risk Co-Pilot built on Rovo-World-Model and the Atlassian Teamwork Graph (TWG).
 
         Your mission is to help engineering leaders, product managers, and release captains understand structural dependencies, predict cascading schedule risks, and resolve delivery bottlenecks with mathematical confidence.
 
@@ -99,7 +99,8 @@ modules:
           title: Populate Linked Jira Issues
           type: boolean
           required: false
-          description: Whether to attempt creating live linked Jira issues via Jira REST API.
+          description: Whether to attempt creating live linked Jira issues via Jira REST
+            API.
 
   webtrigger:
     - key: mcp-world-model-endpoint
@@ -124,7 +125,7 @@ resources:
     path: static/ui/build
 
 app:
-  id: ari:cloud:ecosystem::app/0087095c-82be-4370-83d9-04e01de63d75
+  id: ari:cloud:ecosystem::app/fee6c1b4-044f-4298-be43-9a2bf3e7fa06
   runtime:
     name: nodejs22.x
     memoryMB: 512
@@ -136,4 +137,3 @@ permissions:
     - write:jira-work
     - read:jira-user
     - storage:app
-

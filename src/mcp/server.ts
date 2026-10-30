@@ -173,10 +173,10 @@ export async function mcpWebtriggerHandler(
       return buildJsonResponse(200, {
         protocolVersion: '2024-11-05',
         serverInfo: {
-          name: 'rovo-project-world-model-mcp',
+          name: 'rovo-world-model-mcp',
           version: '1.0.0',
           description:
-            'Atlassian Forge MCP Server for Project World Model (PWM) & Jira Time Machine',
+            'Atlassian Forge MCP Server for Rovo-World-Model',
         },
         tools: MCP_TOOLS_MANIFEST,
       });
@@ -204,7 +204,7 @@ export async function mcpWebtriggerHandler(
             tools: { listChanged: false },
           },
           serverInfo: {
-            name: 'rovo-project-world-model-mcp',
+            name: 'rovo-world-model-mcp',
             version: '1.0.0',
           },
         },

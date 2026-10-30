@@ -1,6 +1,6 @@
-# Rovo Agent Test Prompts — Causal Time Machine Agent (`pwm-time-machine-agent`)
+# Rovo Agent Test Prompts — Rovo-World-Model Agent (`rovo-world-model-agent`)
 
-Use these 5 high-impact natural language prompts inside **Jira Rovo Chat** (`@Causal Time Machine Agent`) during live demos or the Codegeist 2026 judging video:
+Use these 5 high-impact natural language prompts inside **Jira Rovo Chat** (`@Rovo-World-Model Agent`) during live demos or the Codegeist 2026 judging video:
 
 ---
 

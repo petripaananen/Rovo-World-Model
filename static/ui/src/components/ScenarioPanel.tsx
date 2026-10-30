@@ -49,7 +49,7 @@ export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   if (decoupleBlockingEdges) modifiers.push('decoupling outgoing blocking edges');
   const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
 
-  return `@Causal Time Machine Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current simulated P85 date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} downstream blast-radius issues. Recommend the top dependency to decouple to ship on time with 85% confidence.`;
+  return `@Rovo-World-Model Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current simulated P85 date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} downstream blast-radius issues. Recommend the top dependency to decouple to ship on time with 85% confidence.`;
 }
 
 function renderTabBody(props: ScenarioPanelProps): string {
@@ -164,7 +164,7 @@ function renderTabBody(props: ScenarioPanelProps): string {
   return `
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div style="font-size:11.5px;color:var(--text-secondary);">
-        <strong>Rovo Agent (<code>pwm-time-machine-agent</code>)</strong> &amp; <strong>MCP Endpoint (<code>mcp-world-model-endpoint</code>)</strong> live JSON-RPC payload:
+        <strong>Rovo-World-Model Agent (<code>rovo-world-model-agent</code>)</strong> &amp; <strong>MCP Endpoint (<code>mcp-world-model-endpoint</code>)</strong> live JSON-RPC payload:
       </div>
       <pre class="code-console">${escapeHtmlScenario(JSON.stringify(mcpRpcSample, null, 2))}</pre>
     </div>

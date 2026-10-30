@@ -77,17 +77,17 @@ export function renderHeaderBar(props: HeaderBarProps): string {
   return `
     <header class="cockpit-header">
       <div class="brand-cluster">
-        <div class="brand-orb">PWM</div>
+        <div class="brand-orb">RWM</div>
         <div class="brand-titles">
           <h1>
-            Rovo World Model — Causal Time Machine
+            Rovo-World-Model
             <span class="badge-pill ${graph.isSyntheticDemo ? 'cyan' : 'emerald'}">
               ${escapeHtmlHeader(dataBadgeLabel)}
             </span>
             <span class="badge-pill">Codegeist 2026</span>
           </h1>
           <div class="brand-subtitle">
-            Atlassian Teamwork Graph (TWG) · 500-Iteration Twin-Network Monte Carlo ($do$-Calculus) · Forge <code>nodejs20.x</code>
+            Causal AI Digital Twin &amp; Time Machine · Atlassian Teamwork Graph (TWG) · 500-Iteration CRN Monte Carlo ($do$-Calculus)
           </div>
         </div>
       </div>

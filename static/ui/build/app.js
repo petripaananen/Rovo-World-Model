@@ -1789,17 +1789,17 @@ function renderHeaderBar(props) {
     return `
     <header class="cockpit-header">
       <div class="brand-cluster">
-        <div class="brand-orb">PWM</div>
+        <div class="brand-orb">RWM</div>
         <div class="brand-titles">
           <h1>
-            Rovo World Model — Causal Time Machine
+            Rovo-World-Model
             <span class="badge-pill ${graph.isSyntheticDemo ? 'cyan' : 'emerald'}">
               ${escapeHtmlHeader(dataBadgeLabel)}
             </span>
             <span class="badge-pill">Codegeist 2026</span>
           </h1>
           <div class="brand-subtitle">
-            Atlassian Teamwork Graph (TWG) · 500-Iteration Twin-Network Monte Carlo ($do$-Calculus) · Forge <code>nodejs20.x</code>
+            Causal AI Digital Twin &amp; Time Machine · Atlassian Teamwork Graph (TWG) · 500-Iteration CRN Monte Carlo ($do$-Calculus)
           </div>
         </div>
       </div>
@@ -2347,7 +2347,7 @@ function buildRovoMitigationPrompt(props) {
     if (decoupleBlockingEdges)
         modifiers.push('decoupling outgoing blocking edges');
     const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
-    return `@Causal Time Machine Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current simulated P85 date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} downstream blast-radius issues. Recommend the top dependency to decouple to ship on time with 85% confidence.`;
+    return `@Rovo-World-Model Agent Simulate what happens to our "${goal?.name ?? 'Q4 Global Launch'}" goal if ${node.key} ("${node.summary}") on team ${node.team} is ${shiftStr}${modSuffix}. Current simulated P85 date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} downstream blast-radius issues. Recommend the top dependency to decouple to ship on time with 85% confidence.`;
 }
 function renderTabBody(props) {
     const { activeRightTab, activeSim, intervention, graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, } = props;
@@ -2438,7 +2438,7 @@ function renderTabBody(props) {
     return `
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div style="font-size:11.5px;color:var(--text-secondary);">
-        <strong>Rovo Agent (<code>pwm-time-machine-agent</code>)</strong> &amp; <strong>MCP Endpoint (<code>mcp-world-model-endpoint</code>)</strong> live JSON-RPC payload:
+        <strong>Rovo-World-Model Agent (<code>rovo-world-model-agent</code>)</strong> &amp; <strong>MCP Endpoint (<code>mcp-world-model-endpoint</code>)</strong> live JSON-RPC payload:
       </div>
       <pre class="code-console">${escapeHtmlScenario(JSON.stringify(mcpRpcSample, null, 2))}</pre>
     </div>
