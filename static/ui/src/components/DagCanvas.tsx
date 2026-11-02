@@ -278,7 +278,7 @@ export function renderDagCanvas(props: DagCanvasProps): string {
         estimateDays: node.baseEstimateDays,
         sigma: node.uncertaintySigma,
         goalName: goalObj?.name ?? node.goalId,
-        p85Date: stat ? formatFriendlyDate(stat.p85CompletionDate, true) : 'N/A',
+        p85Date: stat ? formatFriendlyDate(stat.p85Date, true) : 'N/A',
         rippleShift: rippleShift,
         criticalityPct: Math.round((stat?.criticalityIndex ?? 0) * 100),
         adr: node.confluenceDecision

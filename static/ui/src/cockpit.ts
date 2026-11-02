@@ -193,59 +193,111 @@ function recomputeSimulation(): void {
   }
 }
 
-export function renderCockpit(): void {
+export function renderCockpit(
+  activeSliderId?: 'delay-slider-input' | 'time-machine-range'
+): void {
   const root = document.getElementById('app-root');
   if (!root) return;
 
   const hasActiveIntervention =
     state.delayDays !== 0 || state.addDeveloper || state.decoupleBlockingEdges;
 
+  const headerHtml = renderHeaderBar({
+    availableProjects: state.availableProjects,
+    graph: state.graph,
+    baselineSim: state.baselineSim,
+    activeSim: state.activeSim,
+    intervention: state.intervention,
+    selectedNodeKey: state.selectedNodeKey,
+    delayDays: state.delayDays,
+    addDeveloper: state.addDeveloper,
+    decoupleBlockingEdges: state.decoupleBlockingEdges,
+    statusBanner: state.statusBanner,
+  });
+
+  const scrubberHtml = renderTimelineScrubber({
+    graph: state.graph,
+    activeSim: state.activeSim,
+    selectedEpochIndex: state.selectedEpochIndex,
+    scrubberDayOffset: state.scrubberDayOffset,
+    hasActiveIntervention,
+  });
+
+  const dagHtml = renderDagCanvas({
+    graph: state.graph,
+    activeSim: state.activeSim,
+    selectedNodeKey: state.selectedNodeKey,
+    delayDays: state.delayDays,
+    addDeveloper: state.addDeveloper,
+    decoupleBlockingEdges: state.decoupleBlockingEdges,
+    scrubberDayOffset: state.scrubberDayOffset,
+  });
+
+  const scenarioHtml = renderScenarioPanel({
+    graph: state.graph,
+    baselineSim: state.baselineSim,
+    activeSim: state.activeSim,
+    intervention: state.intervention,
+    selectedNodeKey: state.selectedNodeKey,
+    delayDays: state.delayDays,
+    addDeveloper: state.addDeveloper,
+    decoupleBlockingEdges: state.decoupleBlockingEdges,
+    activeRightTab: state.activeRightTab,
+    copiedPromptNotice: state.copiedPromptNotice,
+  });
+
+  const headerMount = document.getElementById('header-mount');
+  const scrubberMount = document.getElementById('scrubber-mount');
+  const dagMount = document.getElementById('dag-mount');
+  const scenarioMount = document.getElementById('scenario-mount');
+
+  if (activeSliderId && headerMount && scrubberMount && dagMount && scenarioMount) {
+    headerMount.innerHTML = headerHtml;
+    dagMount.innerHTML = dagHtml;
+    if (activeSliderId === 'delay-slider-input') {
+      scrubberMount.innerHTML = scrubberHtml;
+      const readoutEl = scenarioMount.querySelector('.slider-value-readout');
+      if (readoutEl) {
+        readoutEl.textContent =
+          state.delayDays > 0
+            ? `+${state.delayDays} Days (Delayed)`
+            : state.delayDays < 0
+              ? `${state.delayDays} Days (Accelerated)`
+              : '0 Days (Baseline)';
+        readoutEl.className = `slider-value-readout ${
+          state.delayDays > 0
+            ? 'delay-positive'
+            : state.delayDays < 0
+              ? 'delay-negative'
+              : 'delay-zero'
+        }`;
+      }
+      scenarioMount
+        .querySelectorAll<HTMLButtonElement>('[data-preset-delay]')
+        .forEach((btn) => {
+          const d = Number(btn.getAttribute('data-preset-delay') ?? 0);
+          btn.classList.toggle('active', d === state.delayDays);
+        });
+    } else if (activeSliderId === 'time-machine-range') {
+      scenarioMount.innerHTML = scenarioHtml;
+      scrubberMount
+        .querySelectorAll<HTMLButtonElement>('[data-epoch-idx]')
+        .forEach((btn) => {
+          const idx = Number(btn.getAttribute('data-epoch-idx') ?? -1);
+          btn.classList.toggle('active', idx === state.selectedEpochIndex);
+        });
+    }
+    attachCockpitEventListeners(activeSliderId);
+    return;
+  }
+
   root.innerHTML = `
     <div class="cockpit-shell">
-      ${renderHeaderBar({
-        availableProjects: state.availableProjects,
-        graph: state.graph,
-        baselineSim: state.baselineSim,
-        activeSim: state.activeSim,
-        intervention: state.intervention,
-        selectedNodeKey: state.selectedNodeKey,
-        delayDays: state.delayDays,
-        addDeveloper: state.addDeveloper,
-        decoupleBlockingEdges: state.decoupleBlockingEdges,
-        statusBanner: state.statusBanner,
-      })}
-
-      ${renderTimelineScrubber({
-        graph: state.graph,
-        activeSim: state.activeSim,
-        selectedEpochIndex: state.selectedEpochIndex,
-        scrubberDayOffset: state.scrubberDayOffset,
-        hasActiveIntervention,
-      })}
-
+      <div id="header-mount" style="display:contents">${headerHtml}</div>
+      <div id="scrubber-mount" style="display:contents">${scrubberHtml}</div>
       <section class="workspace-grid">
-        ${renderDagCanvas({
-          graph: state.graph,
-          activeSim: state.activeSim,
-          selectedNodeKey: state.selectedNodeKey,
-          delayDays: state.delayDays,
-          addDeveloper: state.addDeveloper,
-          decoupleBlockingEdges: state.decoupleBlockingEdges,
-          scrubberDayOffset: state.scrubberDayOffset,
-        })}
-
-        ${renderScenarioPanel({
-          graph: state.graph,
-          baselineSim: state.baselineSim,
-          activeSim: state.activeSim,
-          intervention: state.intervention,
-          selectedNodeKey: state.selectedNodeKey,
-          delayDays: state.delayDays,
-          addDeveloper: state.addDeveloper,
-          decoupleBlockingEdges: state.decoupleBlockingEdges,
-          activeRightTab: state.activeRightTab,
-          copiedPromptNotice: state.copiedPromptNotice,
-        })}
+        <div id="dag-mount" style="display:contents">${dagHtml}</div>
+        <div id="scenario-mount" style="display:contents">${scenarioHtml}</div>
       </section>
     </div>
   `;
@@ -289,7 +341,9 @@ async function loadJiraProjectGraph(projectKey?: string): Promise<void> {
   }
 }
 
-function attachCockpitEventListeners(): void {
+function attachCockpitEventListeners(
+  skipMountForSlider?: 'delay-slider-input' | 'time-machine-range'
+): void {
   const triggerRemoteWhatIf = () => {
     void invokeForgeResolver('runWhatIfSimulation', {
       projectKey: state.graph.projectKey,
@@ -403,119 +457,151 @@ function attachCockpitEventListeners(): void {
     });
   });
 
-  // 2. Delay / Accelerate Slider input (-5d to +30d)
-  const delaySlider = document.getElementById(
-    'delay-slider-input'
-  ) as HTMLInputElement | null;
-  if (delaySlider) {
-    delaySlider.addEventListener('input', () => {
-      state.delayDays = Number(delaySlider.value);
-      state.copiedPromptNotice = false;
-      recomputeSimulation();
-      renderCockpit();
-    });
-    delaySlider.addEventListener('change', () => {
-      triggerRemoteWhatIf();
-    });
-  }
-
-  // 3. Delay / Accelerate Preset Buttons
-  document.querySelectorAll<HTMLButtonElement>('[data-preset-delay]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      state.delayDays = Number(btn.getAttribute('data-preset-delay') ?? 0);
-      state.copiedPromptNotice = false;
-      recomputeSimulation();
-      triggerRemoteWhatIf();
-      renderCockpit();
-    });
-  });
-
-  // 4. Scope / Resource Toggle: Add Developer
-  const btnAddDev = document.getElementById('btn-toggle-add-dev');
-  if (btnAddDev) {
-    btnAddDev.addEventListener('click', () => {
-      state.addDeveloper = !state.addDeveloper;
-      state.copiedPromptNotice = false;
-      recomputeSimulation();
-      triggerRemoteWhatIf();
-      renderCockpit();
-    });
-  }
-
-  // 5. Scope / Resource Toggle: Decouple Dependency
-  const btnDecouple = document.getElementById('btn-toggle-decouple-edge');
-  if (btnDecouple) {
-    btnDecouple.addEventListener('click', () => {
-      state.decoupleBlockingEdges = !state.decoupleBlockingEdges;
-      state.copiedPromptNotice = false;
-      recomputeSimulation();
-      triggerRemoteWhatIf();
-      renderCockpit();
-    });
-  }
-
-  // 6. Copy Rovo Mitigation Prompt Button
-  const btnCopyRovo = document.getElementById('btn-copy-rovo-prompt');
-  if (btnCopyRovo) {
-    btnCopyRovo.addEventListener('click', async () => {
-      const promptText = buildRovoMitigationPrompt({
-        graph: state.graph,
-        baselineSim: state.baselineSim,
-        activeSim: state.activeSim,
-        intervention: state.intervention,
-        selectedNodeKey: state.selectedNodeKey,
-        delayDays: state.delayDays,
-        addDeveloper: state.addDeveloper,
-        decoupleBlockingEdges: state.decoupleBlockingEdges,
-        activeRightTab: state.activeRightTab,
-        copiedPromptNotice: state.copiedPromptNotice,
+  if (skipMountForSlider !== 'delay-slider-input') {
+    // 2. Delay / Accelerate Slider input (-5d to +30d)
+    const delaySlider = document.getElementById(
+      'delay-slider-input'
+    ) as HTMLInputElement | null;
+    if (delaySlider) {
+      delaySlider.addEventListener('input', () => {
+        state.delayDays = Number(delaySlider.value);
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        renderCockpit('delay-slider-input');
       });
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(promptText);
+      delaySlider.addEventListener('change', () => {
+        renderCockpit();
+        triggerRemoteWhatIf();
+      });
+    }
+
+    // 3. Delay / Accelerate Preset Buttons
+    document.querySelectorAll<HTMLButtonElement>('[data-preset-delay]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.delayDays = Number(btn.getAttribute('data-preset-delay') ?? 0);
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+      });
+    });
+
+    // 4. Scope / Resource Toggle: Add Developer
+    const btnAddDev = document.getElementById('btn-toggle-add-dev');
+    if (btnAddDev) {
+      btnAddDev.addEventListener('click', () => {
+        state.addDeveloper = !state.addDeveloper;
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+      });
+    }
+
+    // 5. Scope / Resource Toggle: Decouple Dependency
+    const btnDecouple = document.getElementById('btn-toggle-decouple-edge');
+    if (btnDecouple) {
+      btnDecouple.addEventListener('click', () => {
+        state.decoupleBlockingEdges = !state.decoupleBlockingEdges;
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+      });
+    }
+
+    // 6. Copy Rovo Mitigation Prompt Button
+    const btnCopyRovo = document.getElementById('btn-copy-rovo-prompt');
+    if (btnCopyRovo) {
+      btnCopyRovo.addEventListener('click', async () => {
+        const promptText = buildRovoMitigationPrompt({
+          graph: state.graph,
+          baselineSim: state.baselineSim,
+          activeSim: state.activeSim,
+          intervention: state.intervention,
+          selectedNodeKey: state.selectedNodeKey,
+          delayDays: state.delayDays,
+          addDeveloper: state.addDeveloper,
+          decoupleBlockingEdges: state.decoupleBlockingEdges,
+          activeRightTab: state.activeRightTab,
+          copiedPromptNotice: state.copiedPromptNotice,
+        });
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(promptText);
+          }
+        } catch {
+          // Fallback when clipboard permission is restricted in sandboxed iframe
         }
-      } catch {
-        // Fallback when clipboard permission is restricted in sandboxed iframe
-      }
-      state.copiedPromptNotice = true;
-      state.statusBanner = `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
-      renderCockpit();
-    });
-  }
+        state.copiedPromptNotice = true;
+        state.statusBanner = `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
+        renderCockpit();
+      });
+    }
 
-  // 7. Time Machine Epoch Buttons
-  document.querySelectorAll<HTMLButtonElement>('[data-epoch-idx]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const idx = Number(btn.getAttribute('data-epoch-idx') ?? 2);
-      state.selectedEpochIndex = idx;
-      const ep = state.activeSim.timeMachineEpochs[idx];
-      if (ep) {
-        state.scrubberDayOffset = ep.dayOffset;
-      }
-      renderCockpit();
-    });
-  });
-
-  // 8. Time Machine Continuous Range Slider
-  const tmSlider = document.getElementById(
-    'time-machine-range'
-  ) as HTMLInputElement | null;
-  if (tmSlider) {
-    tmSlider.addEventListener('input', () => {
-      const val = Number(tmSlider.value);
-      state.scrubberDayOffset = val;
-      let bestIdx = 0;
-      let bestDist = Infinity;
-      state.activeSim.timeMachineEpochs.forEach((ep, idx) => {
-        const d = Math.abs(ep.dayOffset - val);
-        if (d < bestDist) {
-          bestDist = d;
-          bestIdx = idx;
+    // 13. Right Panel Tabs
+    document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tab = btn.getAttribute('data-tab') as CockpitState['activeRightTab'];
+        if (tab) {
+          state.activeRightTab = tab;
+          renderCockpit();
         }
       });
-      state.selectedEpochIndex = bestIdx;
-      renderCockpit();
     });
+
+    // 14. Clickable rows in Cascade / Bottlenecks list
+    document.querySelectorAll<HTMLElement>('[data-select-node]').forEach((row) => {
+      row.addEventListener('click', () => {
+        const key = row.getAttribute('data-select-node');
+        if (key) {
+          state.selectedNodeKey = key;
+          if (state.delayDays === 0) state.delayDays = 5;
+          recomputeSimulation();
+          renderCockpit();
+        }
+      });
+    });
+  }
+
+  if (skipMountForSlider !== 'time-machine-range') {
+    // 7. Time Machine Epoch Buttons
+    document.querySelectorAll<HTMLButtonElement>('[data-epoch-idx]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.getAttribute('data-epoch-idx') ?? 2);
+        state.selectedEpochIndex = idx;
+        const ep = state.activeSim.timeMachineEpochs[idx];
+        if (ep) {
+          state.scrubberDayOffset = ep.dayOffset;
+        }
+        renderCockpit();
+      });
+    });
+
+    // 8. Time Machine Continuous Range Slider
+    const tmSlider = document.getElementById(
+      'time-machine-range'
+    ) as HTMLInputElement | null;
+    if (tmSlider) {
+      tmSlider.addEventListener('input', () => {
+        const val = Number(tmSlider.value);
+        state.scrubberDayOffset = val;
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        state.activeSim.timeMachineEpochs.forEach((ep, idx) => {
+          const d = Math.abs(ep.dayOffset - val);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIdx = idx;
+          }
+        });
+        state.selectedEpochIndex = bestIdx;
+        renderCockpit('time-machine-range');
+      });
+      tmSlider.addEventListener('change', () => {
+        renderCockpit();
+      });
+    }
   }
 
   // 9. Header Action: Sync Jira Project (`invoke('getGraphData')`)
@@ -582,30 +668,6 @@ function attachCockpitEventListeners(): void {
       await invokeForgeResolver('resetScenario', { projectKey: state.graph.projectKey });
     });
   }
-
-  // 13. Right Panel Tabs
-  document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const tab = btn.getAttribute('data-tab') as CockpitState['activeRightTab'];
-      if (tab) {
-        state.activeRightTab = tab;
-        renderCockpit();
-      }
-    });
-  });
-
-  // 14. Clickable rows in Cascade / Bottlenecks list
-  document.querySelectorAll<HTMLElement>('[data-select-node]').forEach((row) => {
-    row.addEventListener('click', () => {
-      const key = row.getAttribute('data-select-node');
-      if (key) {
-        state.selectedNodeKey = key;
-        if (state.delayDays === 0) state.delayDays = 5;
-        recomputeSimulation();
-        renderCockpit();
-      }
-    });
-  });
 }
 
 // Initialize on DOM load + sync with Forge Backend Resolver (`getGraphData`)

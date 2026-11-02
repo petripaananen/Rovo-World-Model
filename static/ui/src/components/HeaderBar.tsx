@@ -73,7 +73,7 @@ export function renderHeaderBar(props: HeaderBarProps): string {
 
   const projectList: JiraProjectOption[] =
     availableProjects.length > 0
-      ? availableProjects
+      ? [...availableProjects]
       : [
           {
             id: graph.projectKey,

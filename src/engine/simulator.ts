@@ -203,7 +203,9 @@ export function runMonteCarloSimulation(
       for (let p = 0; p < pIdxList.length; p++) {
         const uIdx = pIdxList[p];
         const w = pWeightList[p];
-        const candidateStart = trialEnd[uIdx] * w;
+        const uStart = trialStart[uIdx];
+        const uDur = Math.max(0, trialEnd[uIdx] - uStart);
+        const candidateStart = uStart + uDur * w;
         if (candidateStart > earliestStart) {
           earliestStart = candidateStart;
           chosenPred = uIdx;

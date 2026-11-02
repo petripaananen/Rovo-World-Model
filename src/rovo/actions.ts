@@ -51,16 +51,28 @@ export async function simulateDelayImpact(
   const projectKey =
     payload.projectKey ||
     payload.context?.jira?.projectKey ||
-    context?.jira?.projectKey ||
-    'CHRON';
+    context?.jira?.projectKey;
+
+  const graph = await fetchProjectCausalGraph({ projectKey });
+
   const issueKey =
     payload.issueKey ||
     payload.context?.jira?.issueKey ||
     context?.jira?.issueKey ||
-    `${projectKey.toUpperCase()}-104`;
-  const delayDays = Math.max(-5, Math.min(90, Number(payload.delayDays ?? 7) || 7));
+    graph.nodes.find((n) => n.key.endsWith('-104'))?.key ||
+    graph.topologicalOrder[0] ||
+    graph.nodes[0]?.key ||
+    `${graph.projectKey}-1`;
 
-  const graph = await fetchProjectCausalGraph({ projectKey });
+  const parsedDelay =
+    payload.delayDays !== undefined && payload.delayDays !== ''
+      ? Number(payload.delayDays)
+      : NaN;
+  const delayDays = Math.max(
+    -5,
+    Math.min(90, Number.isFinite(parsedDelay) ? parsedDelay : 7)
+  );
+
   const result = runIntervention(graph, issueKey, delayDays, {
     iterations: 500,
     addDeveloper: payload.addDeveloper,
@@ -149,8 +161,7 @@ export async function analyzeCriticalPath(
   const projectKey =
     payload.projectKey ||
     payload.context?.jira?.projectKey ||
-    context?.jira?.projectKey ||
-    'CHRON';
+    context?.jira?.projectKey;
 
   const graph = await fetchProjectCausalGraph({ projectKey });
   const sim = runMonteCarloSimulation(graph, { iterations: 500 });

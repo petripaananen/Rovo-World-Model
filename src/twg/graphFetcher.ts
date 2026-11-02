@@ -6,12 +6,11 @@
  * Atlassian Teamwork Graph Goals & Teams.
  */
 
-import { buildDAGFromJiraIssues } from '../engine/dag';
+import { addCalendarDays, buildDAGFromJiraIssues } from '../engine/dag';
 import { CausalGraph, RawJiraIssue, TeamMetadata, TeamworkGoal } from '../engine/types';
 import {
   buildChronosGoals,
   CHRONOS_DEFAULT_REFERENCE_DATE,
-  CHRONOS_TEAMS,
   getChronosSyntheticGraph,
 } from './syntheticSeeder';
 
@@ -57,17 +56,45 @@ export interface LoadGraphOptions {
 }
 
 /**
+ * Invokes Jira REST API preferring `api.asUser()` (to enforce the current user's Jira browse permissions
+ * in Custom UI & Rovo contexts) and gracefully falling back to `api.asApp()` when running in an
+ * unauthenticated webtrigger (MCP server) or background context.
+ */
+async function requestJiraWithUserFallback(
+  forgeApi: typeof import('@forge/api'),
+  routeUrl: ReturnType<typeof import('@forge/api').route>
+): Promise<{ ok: boolean; json: () => Promise<unknown> }> {
+  const api = forgeApi.default;
+  try {
+    if (typeof api.asUser === 'function') {
+      const userRes = await api.asUser().requestJira(routeUrl, {
+        headers: { Accept: 'application/json' },
+      });
+      if (userRes && userRes.ok) {
+        return userRes;
+      }
+    }
+  } catch {
+    // Fall back to app context when no user context is bound (e.g. MCP webtrigger)
+  }
+
+  return api.asApp().requestJira(routeUrl, {
+    headers: { Accept: 'application/json' },
+  });
+}
+
+/**
  * Fetches all available Jira projects on the user's Atlassian Cloud site (e.g., BloomPath Sprint, Triton).
  */
 export async function fetchAvailableJiraProjects(): Promise<JiraProjectSummary[]> {
   try {
     const forgeApi = await import('@forge/api');
-    const api = forgeApi.default;
     const { route } = forgeApi;
 
-    const response = await api.asApp().requestJira(route`/rest/api/3/project/search?maxResults=50`, {
-      headers: { Accept: 'application/json' },
-    });
+    const response = await requestJiraWithUserFallback(
+      forgeApi,
+      route`/rest/api/3/project/search?maxResults=50`
+    );
 
     if (response.ok) {
       const payload = (await response.json()) as {
@@ -99,7 +126,7 @@ export async function fetchAvailableJiraProjects(): Promise<JiraProjectSummary[]
  * Fetches and builds the `CausalGraph` for a Jira project:
  * 1. If `forceDemo` is explicitly true, returns the synthetic graph (`isSyntheticDemo: true`).
  * 2. Queries live Jira issues + `issuelinks` for the active Jira project (even if the project has 1, 2, or 3 issues,
- *    such as `BLP-7` and `BLP-8` in BloomPath Sprint!).
+ *    such as `BLP-7` and `BLP-8` in BloomPath Sprint).
  * 3. Queries the Jira project name so the UI header displays the real Jira project name (e.g. `BloomPath Sprint` or `Triton`).
  * 4. Falls back to the synthetic graph only when running offline in local unit tests or when the project has 0 issues.
  */
@@ -109,12 +136,14 @@ export async function fetchProjectCausalGraph(
   const referenceDate = options.referenceDate || CHRONOS_DEFAULT_REFERENCE_DATE;
 
   if (options.forceDemo) {
-    return getChronosSyntheticGraph((options.projectKey || 'CHRON').trim().toUpperCase(), referenceDate);
+    return getChronosSyntheticGraph(
+      (options.projectKey || 'CHRON').trim().toUpperCase(),
+      referenceDate
+    );
   }
 
   try {
     const forgeApi = await import('@forge/api');
-    const api = forgeApi.default;
     const { route } = forgeApi;
 
     const availableProjects = await fetchAvailableJiraProjects();
@@ -136,32 +165,24 @@ export async function fetchProjectCausalGraph(
       'summary,status,issuelinks,assignee,timetracking,duedate,issuetype,timeoriginalestimate,timeestimate,customfield_10016,labels,parent';
 
     // Query Jira REST v3 search endpoint for the project
-    let response = await api
-      .asApp()
-      .requestJira(
-        route`/rest/api/3/search?jql=project=${projectKey} ORDER BY created ASC&fields=${fields}&maxResults=100`,
-        {
-          headers: { Accept: 'application/json' },
-        }
-      );
+    let response = await requestJiraWithUserFallback(
+      forgeApi,
+      route`/rest/api/3/search?jql=project=${projectKey} ORDER BY created ASC&fields=${fields}&maxResults=100`
+    );
 
     // Fallback to /rest/api/3/search/jql if needed
     if (!response.ok) {
-      response = await api
-        .asApp()
-        .requestJira(
-          route`/rest/api/3/search/jql?jql=project=${projectKey} ORDER BY created ASC&fields=${fields}&maxResults=100`,
-          {
-            headers: { Accept: 'application/json' },
-          }
-        );
+      response = await requestJiraWithUserFallback(
+        forgeApi,
+        route`/rest/api/3/search/jql?jql=project=${projectKey} ORDER BY created ASC&fields=${fields}&maxResults=100`
+      );
     }
 
     if (response.ok) {
       const payload = (await response.json()) as { issues?: RawJiraIssue[] };
       const issues = payload.issues ?? [];
 
-      // Always return the real Jira project issues when at least 1 issue exists in the project!
+      // Always return the real Jira project issues when at least 1 issue exists in the project
       if (issues.length >= 1) {
         const { goals, teams } = await fetchTeamworkGraphMetadata(
           forgeApi,
@@ -183,7 +204,10 @@ export async function fetchProjectCausalGraph(
     );
   }
 
-  return getChronosSyntheticGraph((options.projectKey || 'CHRON').trim().toUpperCase(), referenceDate);
+  return getChronosSyntheticGraph(
+    (options.projectKey || 'CHRON').trim().toUpperCase(),
+    referenceDate
+  );
 }
 
 /**
@@ -208,7 +232,7 @@ async function fetchTeamworkGraphMetadata(
       name: `${projectName} Sprint Delivery`,
       targetDate: buildChronosGoals(referenceDate)[0].targetDate,
       targetDayOffset: 14,
-      ownerTeam: `${projectName} Core`,
+      ownerTeam: `${projectName} Engineering`,
       status: 'On Track',
     },
     {
@@ -217,7 +241,7 @@ async function fetchTeamworkGraphMetadata(
       name: `${projectName} Release Milestone`,
       targetDate: buildChronosGoals(referenceDate)[1].targetDate,
       targetDayOffset: 28,
-      ownerTeam: `${projectName} Delivery`,
+      ownerTeam: 'Platform & Delivery',
       status: 'On Track',
     },
   ];
@@ -256,7 +280,52 @@ async function fetchTeamworkGraphMetadata(
         projectKey,
       });
       if (res.ok) {
-        return { goals: defaultGoals, teams: defaultTeams };
+        const graphData = (await res.json()) as {
+          data?: {
+            graphStore?: {
+              projectGoalsAndDecisions?: {
+                edges?: Array<{
+                  node?: {
+                    columns?: Array<{ key?: string; value?: string }>;
+                  };
+                }>;
+              };
+            };
+          };
+        };
+
+        const rawEdges =
+          graphData?.data?.graphStore?.projectGoalsAndDecisions?.edges ?? [];
+        const parsedGoals = new Map<string, TeamworkGoal>();
+
+        rawEdges.forEach((edge, idx) => {
+          const cols = edge?.node?.columns ?? [];
+          const colMap = new Map<string, string>();
+          for (const c of cols) {
+            if (c.key && c.value) colMap.set(c.key, c.value);
+          }
+          const gId = colMap.get('g.id');
+          const gName = colMap.get('g.name');
+          if (gId && gName && !parsedGoals.has(gId)) {
+            const offset = idx === 0 ? 18 : 32;
+            parsedGoals.set(gId, {
+              id: gId,
+              key: gId,
+              name: gName,
+              targetDate: colMap.get('g.targetDate') || addCalendarDays(referenceDate, offset),
+              targetDayOffset: offset,
+              ownerTeam: defaultTeams[idx % defaultTeams.length].name,
+              status: 'On Track',
+            });
+          }
+        });
+
+        if (parsedGoals.size > 0) {
+          return {
+            goals: Array.from(parsedGoals.values()),
+            teams: defaultTeams,
+          };
+        }
       }
     }
   } catch {

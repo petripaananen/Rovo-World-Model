@@ -150,14 +150,16 @@ export async function mcpWebtriggerHandler(
   try {
     if (!req.body || req.method === 'GET') {
       const toolParam = req.queryParameters?.tool?.[0];
-      const projectKey = req.queryParameters?.projectKey?.[0] || 'CHRON';
+      const projectKey = req.queryParameters?.projectKey?.[0];
 
       if (
         toolParam === 'pwm_simulate_intervention' ||
         toolParam === 'pwm_simulate_delay_impact'
       ) {
-        const issueKey = req.queryParameters?.issueKey?.[0] || `${projectKey}-104`;
-        const delayDays = Number(req.queryParameters?.delayDays?.[0] ?? 8);
+        const issueKey = req.queryParameters?.issueKey?.[0];
+        const rawDelay = req.queryParameters?.delayDays?.[0];
+        const delayDays =
+          rawDelay !== undefined && rawDelay !== '' ? Number(rawDelay) : 8;
         const sim = await simulateDelayImpact({ issueKey, delayDays, projectKey });
         return buildJsonResponse(200, sim);
       }
@@ -234,9 +236,12 @@ export async function mcpWebtriggerHandler(
         toolName === 'pwm_simulate_delay_impact' ||
         toolName === 'simulate-delay-impact'
       ) {
+        const rawDelay = args.delayDays;
+        const parsedDelay =
+          rawDelay !== undefined && rawDelay !== '' ? Number(rawDelay) : 7;
         toolOutput = await simulateDelayImpact({
-          issueKey: String(args.issueKey || 'CHRON-104'),
-          delayDays: Number(args.delayDays ?? 7),
+          issueKey: args.issueKey ? String(args.issueKey) : undefined,
+          delayDays: Number.isFinite(parsedDelay) ? parsedDelay : 7,
           addDeveloper: Boolean(args.addDeveloper),
           decoupleBlockingEdges: Boolean(args.decoupleBlockingEdges),
           projectKey: args.projectKey ? String(args.projectKey) : undefined,
@@ -253,9 +258,17 @@ export async function mcpWebtriggerHandler(
         toolName === 'pwm_seed_demo_scenario' ||
         toolName === 'seed-demo-scenario'
       ) {
+        const confirmWriteHeader =
+          req.headers?.['x-pwm-confirm-write'] ??
+          req.headers?.['X-PWM-Confirm-Write'] ??
+          '';
+        const allowPopulateJira =
+          Boolean(args.populateJiraIssues) &&
+          String(confirmWriteHeader).toLowerCase() === 'true';
+
         toolOutput = await seedDemoScenario({
           projectKey: args.projectKey ? String(args.projectKey) : undefined,
-          populateJiraIssues: Boolean(args.populateJiraIssues),
+          populateJiraIssues: allowPopulateJira,
         });
       } else if (toolName === 'pwm_get_causal_graph') {
         toolOutput = await fetchProjectCausalGraph({

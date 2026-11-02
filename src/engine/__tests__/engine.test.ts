@@ -179,9 +179,61 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
     assert.equal(cpAction.projectKey, 'CHRON');
     assert.equal(cpAction.top3Bottlenecks.length, 3);
 
+    const zeroDelaySwarm = await simulateDelayImpact({
+      issueKey: 'CORE-104',
+      delayDays: 0,
+      addDeveloper: true,
+      projectKey: 'CHRON',
+    });
+    assert.equal(zeroDelaySwarm.delayDays, 0);
+    assert.ok(zeroDelaySwarm.p85ShiftDays < 0);
+
     const seedAction = await seedDemoScenario({ projectKey: 'CHRON' });
     assert.equal(seedAction.ready, true);
     assert.equal(seedAction.nodesCount, 18);
+  });
+
+  it('maintains causal start ordering on decoupled edges and synthesizes internal fallback links when only external links exist', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const decoupled = runIntervention(graph, 'CHRON-104', 0, {
+      iterations: 200,
+      decoupleBlockingEdges: true,
+    });
+    const predStat = decoupled.nodeStats['CHRON-104'];
+    const succStat = decoupled.nodeStats['CHRON-105'];
+    assert.ok(predStat && succStat);
+    assert.ok(
+      succStat.p50StartDay >= predStat.p50StartDay,
+      `Expected decoupled successor CHRON-105 start (${succStat.p50StartDay}d) >= predecessor CHRON-104 start (${predStat.p50StartDay}d)`
+    );
+
+    const extOnlyGraph = buildDAGFromJiraIssues('BLP', [
+      {
+        id: '2001',
+        key: 'BLP-1',
+        fields: {
+          summary: 'First Sprint Task',
+          status: { name: 'In Progress' },
+          issuelinks: [
+            {
+              type: { name: 'Blocks', outward: 'blocks' },
+              outwardIssue: { key: 'OTHER-99' },
+            },
+          ],
+        },
+      },
+      {
+        id: '2002',
+        key: 'BLP-2',
+        fields: {
+          summary: 'Second Sprint Task',
+          status: { name: 'To Do' },
+        },
+      },
+    ]);
+    assert.equal(extOnlyGraph.edges.length, 1);
+    assert.equal(extOnlyGraph.edges[0].from, 'BLP-1');
+    assert.equal(extOnlyGraph.edges[0].to, 'BLP-2');
   });
 
   it('serves MCP JSON-RPC 2.0 tools/list and tools/call (pwm_simulate_intervention & pwm_get_critical_path)', async () => {

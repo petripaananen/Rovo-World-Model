@@ -9,16 +9,19 @@
  * 4. `getInitials(name)`: Extracts 2-letter avatar initials (e.g. `PP`, `MC`).
  */
 
-export function escapeHtmlText(str: string): string {
-  return str
+export function escapeHtmlText(str: string | undefined | null): string {
+  return String(str ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
 
-export function formatFriendlyDate(isoDate: string, includeYear = false): string {
-  if (!isoDate || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) return isoDate;
+export function formatFriendlyDate(
+  isoDate: string | undefined | null,
+  includeYear = false
+): string {
+  if (!isoDate || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) return String(isoDate ?? 'N/A');
   const [y, m, d] = isoDate.split('-').map(Number);
   const months = [
     'Jan',
@@ -38,20 +41,21 @@ export function formatFriendlyDate(isoDate: string, includeYear = false): string
   return includeYear ? `${monthName} ${d}, ${y}` : `${monthName} ${d}`;
 }
 
-export function getInitials(name: string): string {
+export function getInitials(name: string | undefined | null): string {
   if (!name || name.toLowerCase() === 'unassigned') return 'UA';
   const parts = name.trim().split(/\s+/);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
-export function renderJiraStatusLozenge(status: string): string {
-  const lower = (status || 'To Do').toLowerCase();
+export function renderJiraStatusLozenge(status: string | undefined | null): string {
+  const safeStatus = String(status || 'To Do');
+  const lower = safeStatus.toLowerCase();
   if (lower === 'done' || lower === 'completed') {
     return `<span class="jira-lozenge jira-lozenge-done">DONE</span>`;
   }
   if (lower.includes('risk') || lower.includes('block') || lower === 'off track') {
-    return `<span class="jira-lozenge jira-lozenge-danger">${escapeHtmlText(status.toUpperCase())}</span>`;
+    return `<span class="jira-lozenge jira-lozenge-danger">${escapeHtmlText(safeStatus.toUpperCase())}</span>`;
   }
   if (lower.includes('progress')) {
     return `<span class="jira-lozenge jira-lozenge-inprogress">IN PROGRESS</span>`;

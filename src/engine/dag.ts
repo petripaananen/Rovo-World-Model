@@ -377,8 +377,10 @@ export function computeDeterministicCriticalPath(
     const preds = incoming.get(key) ?? [];
     let maxPredFinish = 0;
     for (const edge of preds) {
+      const predES = ES.get(edge.from) ?? 0;
       const predEF = EF.get(edge.from) ?? 0;
-      const weightedFinish = predEF * edge.propagationWeight;
+      const predDur = Math.max(0, predEF - predES);
+      const weightedFinish = predES + predDur * edge.propagationWeight;
       if (weightedFinish > maxPredFinish) {
         maxPredFinish = weightedFinish;
       }
@@ -625,7 +627,12 @@ export function buildDAGFromJiraIssues(
     }
   });
 
-  if (rawEdges.length === 0 && nodes.length > 1) {
+  const nodeKeySet = new Set(nodes.map((n) => n.key));
+  const internalEdgesCount = rawEdges.filter(
+    (e) => nodeKeySet.has(e.from) && nodeKeySet.has(e.to) && e.from !== e.to
+  ).length;
+
+  if (internalEdgesCount === 0 && nodes.length > 1) {
     for (let i = 0; i < nodes.length - 1; i++) {
       rawEdges.push({
         from: nodes[i].key,
