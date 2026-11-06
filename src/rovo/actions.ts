@@ -141,9 +141,13 @@ export async function simulateDelayImpact(
     p95ShiftDays: result.p95ShiftDays,
     rippleDelayDays: result.rippleDelayDays,
     criticalPathNodes: result.criticalPathNodes,
+    superCriticalNodes: result.superCriticalNodes,
     blastRadiusNodes: result.blastRadiusNodes,
     goalImpacts: result.goalImpacts,
     nodeDeltas: result.nodeDeltas,
+    reserves: result.reserves,
+    earnedValue: result.earnedValue,
+    deliveryGovernance: result.deliveryGovernance,
     mitigationRecommendations,
     executionTimeMs: result.executionTimeMs,
     summaryMarkdown,
@@ -176,15 +180,16 @@ export async function analyzeCriticalPath(
   const bottleneckLines = top3Bottlenecks
     .map(
       (b, idx) =>
-        `${idx + 1}. **${b.key}** — *${b.summary}* (${b.team}, Assignee: ${b.assignee})\n   - **Downstream Ripple Weight:** ${b.downstreamRippleWeight} (${b.downstreamCount} dependent tasks) | **Criticality Index:** ${Math.round(b.criticalityIndex * 100)}% | **Risk Score:** ${b.riskScore}/100\n   - **Mitigation:** ${b.recommendation}`
+        `${idx + 1}. **${b.key}** — *${b.summary}* (${b.team}, Assignee: ${b.assignee})\n   - **Downstream Ripple Weight:** ${b.downstreamRippleWeight} (${b.downstreamCount} dependent tasks) | **Criticality Index:** ${Math.round(b.criticalityIndex * 100)}% | **Mitigation ROI:** ${b.mitigationROI ?? 1.5}x | **Risk Score:** ${b.riskScore}/100\n   - **Mitigation:** ${b.recommendation}`
     )
     .join('\n');
 
   const summaryMarkdown = [
-    `### Project World Model — Critical Path & Top 3 Bottlenecks (${graph.projectName})`,
-    `- **P50 Completion:** ${sim.p50Date} (+${sim.p50Days}d)`,
-    `- **P85 Commit Target:** **${sim.p85Date}** (+${sim.p85Days}d)`,
-    `- **P95 Tail Envelope:** ${sim.p95Date} (+${sim.p95Days}d)`,
+    `### Rovo-World-Model — Critical Path & Delivery Governance (${graph.projectName})`,
+    `- **P50 Target Base:** ${sim.p50Date} (+${sim.p50Days}d)`,
+    `- **P85 Commit Target:** **${sim.p85Date}** (+${sim.p85Days}d, PM Buffer: +${sim.reserves?.pmContingencyReserveDays ?? 0}d)`,
+    `- **P95 Tail Envelope:** ${sim.p95Date} (+${sim.p95Days}d, Exec Reserve: +${sim.reserves?.managementReserveDays ?? 0}d)`,
+    `- **Engineering Earned Value (EVM):** CPI **${sim.earnedValue?.cpi ?? 1.0}** · SPI **${sim.earnedValue?.spi ?? 1.0}** · Forecast EAC **${sim.earnedValue?.eacTrendDays ?? sim.p50Days}d**`,
     `- **Topological Critical Path (${sim.criticalPathNodes.length} nodes):** \`${sim.criticalPathNodes.join(' → ')}\``,
     '',
     `#### Top 3 Bottleneck Nodes by Downstream Ripple Weight`,
@@ -201,10 +206,14 @@ export async function analyzeCriticalPath(
     p85Date: sim.p85Date,
     p95Date: sim.p95Date,
     criticalPathNodes: sim.criticalPathNodes,
+    superCriticalNodes: sim.superCriticalNodes,
     topologicalOrder: graph.topologicalOrder,
     top3Bottlenecks,
     topBottlenecks: top5,
     goalImpacts: sim.goalImpacts,
+    reserves: sim.reserves,
+    earnedValue: sim.earnedValue,
+    deliveryGovernance: sim.deliveryGovernance,
     cycleWarnings: graph.cycleWarnings,
     executionTimeMs: sim.executionTimeMs,
     summaryMarkdown,

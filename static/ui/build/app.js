@@ -13,7 +13,7 @@ const MCP_TOOLS_MANIFEST = [
 // === Module: engine/types ===
 /**
  * Project World Model (PWM) — Core Causal AI & Monte Carlo Simulation Types
- * Zero-dependency TypeScript types for Atlassian Forge (nodejs20.x).
+ * Zero-dependency TypeScript types for Atlassian Forge (nodejs22.x).
  */
 
 
@@ -28,6 +28,30 @@ const MCP_TOOLS_MANIFEST = [
  * 4. Downstream blast radius & effective causal propagation weight calculation
  * 5. Forward/backward pass deterministic critical path & float (slack) analysis
  */
+/**
+ * Computes 3-Point PERT Beta expected duration (mean M) and standard deviation (sigma)
+ * when `optimisticDays` (Min), `mostLikelyDays` (ML), and `pessimisticDays` (Max) are present.
+ * Formula: M = (Min + 4 * ML + Max) / 6, Sigma = (Max - Min) / 6.
+ */
+function computePertParameters(node) {
+    const hasPert = typeof node.optimisticDays === 'number' &&
+        typeof node.mostLikelyDays === 'number' &&
+        typeof node.pessimisticDays === 'number' &&
+        node.pessimisticDays >= node.optimisticDays;
+    if (hasPert) {
+        const minD = Math.max(0.25, node.optimisticDays);
+        const mlD = Math.max(minD, node.mostLikelyDays);
+        const maxD = Math.max(mlD, node.pessimisticDays);
+        const meanDays = Number(((minD + 4 * mlD + maxD) / 6).toFixed(2));
+        const sigmaDays = Number(Math.max(0.1, (maxD - minD) / 6).toFixed(2));
+        return { meanDays, sigmaDays, isPertActive: true };
+    }
+    return {
+        meanDays: Math.max(0.5, node.baseEstimateDays),
+        sigmaDays: Math.max(0.1, node.uncertaintySigma),
+        isPertActive: false,
+    };
+}
 /**
  * Resolves a node identifier (either `node.key`, `node.id`, or matching numeric suffix like `CORE-104` -> `CHRON-104`)
  * to its canonical `node.key`.
@@ -78,6 +102,8 @@ function detectAndBreakCycles(nodes, rawEdges) {
                 to: toKey,
                 dependencyType: edge.dependencyType || 'Blocks',
                 propagationWeight: clampedWeight,
+                precedenceType: edge.precedenceType ?? existing?.precedenceType ?? 'FS',
+                lagDays: edge.lagDays ?? existing?.lagDays ?? 0,
             });
         }
     }
@@ -272,10 +298,11 @@ function getDownstreamBlastRadius(graph, targetNodeId) {
 /**
  * Computes deterministic Critical Path Method (CPM) forward/backward pass metrics:
  * Earliest Start (ES), Earliest Finish (EF), Latest Start (LS), Latest Finish (LF),
- * Total Float (`slackDays`), transitive downstream dependency count, and cumulative
- * downstream ripple weight.
+ * Total Float (`slackDays`), Forced-Deadline Signed Float (`totalFloatDays`),
+ * transitive downstream dependency count, and cumulative downstream ripple weight.
+ * Supports all 4 precedence types (`FS`, `SS`, `FF`, `SF`) and lead/lag (`lagDays`).
  */
-function computeDeterministicCriticalPath(graph) {
+function computeDeterministicCriticalPath(graph, forcedTargetDays) {
     const topo = graph.topologicalOrder.length === graph.nodes.length
         ? graph.topologicalOrder
         : topologicalSort(graph.nodes, graph.edges);
@@ -294,27 +321,44 @@ function computeDeterministicCriticalPath(graph) {
         if (node.status.toLowerCase() === 'done') {
             return 0;
         }
-        return Math.max(0.5, node.baseEstimateDays);
+        const pert = computePertParameters(node);
+        return Math.max(0.5, pert.meanDays);
     };
-    // Forward pass
+    // Forward pass supporting FS, SS, FF, SF precedence and lagDays
     const ES = new Map();
     const EF = new Map();
     for (const key of topo) {
         const node = nodeMap.get(key);
+        const dur = effectiveDuration(node);
         const preds = incoming.get(key) ?? [];
-        let maxPredFinish = 0;
+        let maxPredStart = 0;
         for (const edge of preds) {
             const predES = ES.get(edge.from) ?? 0;
             const predEF = EF.get(edge.from) ?? 0;
             const predDur = Math.max(0, predEF - predES);
-            const weightedFinish = predES + predDur * edge.propagationWeight;
-            if (weightedFinish > maxPredFinish) {
-                maxPredFinish = weightedFinish;
+            const pType = edge.precedenceType ?? 'FS';
+            const lag = edge.lagDays ?? 0;
+            let candidateStart = 0;
+            if (pType === 'SS') {
+                candidateStart = predES + lag;
+            }
+            else if (pType === 'FF') {
+                candidateStart = Math.max(0, predEF + lag - dur);
+            }
+            else if (pType === 'SF') {
+                candidateStart = Math.max(0, predES + lag - dur);
+            }
+            else {
+                // Default FS (Finish-to-Start)
+                candidateStart = predES + predDur * edge.propagationWeight + lag;
+            }
+            if (candidateStart > maxPredStart) {
+                maxPredStart = candidateStart;
             }
         }
-        const dur = effectiveDuration(node);
-        ES.set(key, maxPredFinish);
-        EF.set(key, maxPredFinish + dur);
+        const startVal = Math.max(0, maxPredStart);
+        ES.set(key, startVal);
+        EF.set(key, startVal + dur);
     }
     let projectDuration = 0;
     for (const ef of EF.values()) {
@@ -322,9 +366,25 @@ function computeDeterministicCriticalPath(graph) {
             projectDuration = ef;
         }
     }
+    // Determine forced deadline for negative float detection (anchored to goal target if available)
+    const goalOffsetById = new Map();
+    for (const g of graph.goals) {
+        if (g.targetDayOffset > 0) {
+            goalOffsetById.set(g.id, g.targetDayOffset);
+        }
+    }
+    const earliestGoalOffset = graph.goals.length > 0
+        ? Math.min(...graph.goals.map((g) => g.targetDayOffset).filter((d) => d > 0), projectDuration)
+        : projectDuration;
+    const targetDeadlineDays = typeof forcedTargetDays === 'number' && Number.isFinite(forcedTargetDays)
+        ? forcedTargetDays
+        : earliestGoalOffset > 0
+            ? earliestGoalOffset
+            : projectDuration;
     // Backward pass + transitive downstream count
     const LS = new Map();
     const LF = new Map();
+    const forcedLS = new Map();
     const downstreamSets = new Map();
     for (let i = topo.length - 1; i >= 0; i--) {
         const key = topo[i];
@@ -332,12 +392,17 @@ function computeDeterministicCriticalPath(graph) {
         const dur = effectiveDuration(node);
         const succs = outgoing.get(key) ?? [];
         const ds = new Set();
+        const nodeGoalDeadline = typeof forcedTargetDays === 'number' && Number.isFinite(forcedTargetDays)
+            ? forcedTargetDays
+            : goalOffsetById.get(node.goalId) ?? targetDeadlineDays;
         if (succs.length === 0) {
             LF.set(key, projectDuration);
             LS.set(key, Math.max(0, projectDuration - dur));
+            forcedLS.set(key, nodeGoalDeadline - dur);
         }
         else {
             let minSuccStart = projectDuration;
+            let minForcedFinish = nodeGoalDeadline;
             for (const edge of succs) {
                 ds.add(edge.to);
                 const childDs = downstreamSets.get(edge.to);
@@ -346,15 +411,22 @@ function computeDeterministicCriticalPath(graph) {
                         ds.add(item);
                     }
                 }
+                const lag = edge.lagDays ?? 0;
                 const succLS = LS.get(edge.to) ?? projectDuration;
-                const effectiveConstraint = edge.propagationWeight > 0 ? succLS / edge.propagationWeight : succLS;
+                const effectiveConstraint = edge.propagationWeight > 0 ? (succLS - lag) / edge.propagationWeight : succLS - lag;
                 const boundedConstraint = Math.min(projectDuration, effectiveConstraint);
                 if (boundedConstraint < minSuccStart) {
                     minSuccStart = boundedConstraint;
                 }
+                const succForcedLS = forcedLS.get(edge.to) ?? targetDeadlineDays;
+                const forcedConstraint = succForcedLS - lag;
+                if (forcedConstraint < minForcedFinish) {
+                    minForcedFinish = forcedConstraint;
+                }
             }
             LF.set(key, minSuccStart);
             LS.set(key, Math.max(0, minSuccStart - dur));
+            forcedLS.set(key, minForcedFinish - dur);
         }
         downstreamSets.set(key, ds);
     }
@@ -365,6 +437,8 @@ function computeDeterministicCriticalPath(graph) {
         const ls = Number((LS.get(key) ?? 0).toFixed(2));
         const lf = Number((LF.get(key) ?? 0).toFixed(2));
         const slackDays = Number(Math.max(0, ls - es).toFixed(2));
+        const fLS = forcedLS.get(key) ?? ls;
+        const totalFloatDays = Number((fLS - es).toFixed(2));
         const node = nodeMap.get(key);
         const isDone = node.status.toLowerCase() === 'done';
         const blast = getDownstreamBlastRadius(graph, key);
@@ -379,6 +453,7 @@ function computeDeterministicCriticalPath(graph) {
             latestStart: ls,
             latestFinish: lf,
             slackDays,
+            totalFloatDays,
             downstreamCount: downstreamSets.get(key)?.size ?? 0,
             downstreamRippleWeight: Number(cumulativeRippleWeight.toFixed(2)),
             isOnCriticalPath: !isDone && slackDays <= 0.75,
@@ -476,23 +551,59 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
         const labels = issue.fields.labels ?? [];
         const teamLabel = labels.find((l) => l.toLowerCase().startsWith('team:'));
         const goalLabel = labels.find((l) => l.toLowerCase().startsWith('goal:'));
+        const pertLabel = labels.find((l) => l.toLowerCase().startsWith('pert:'));
+        let optimisticDays;
+        let mostLikelyDays;
+        let pessimisticDays;
+        if (pertLabel) {
+            const parts = pertLabel
+                .slice(5)
+                .split('-')
+                .map((v) => Number(v.trim()));
+            if (parts.length === 3 && parts.every((n) => Number.isFinite(n) && n > 0)) {
+                optimisticDays = parts[0];
+                mostLikelyDays = parts[1];
+                pessimisticDays = parts[2];
+                baseEstimateDays = Number(((optimisticDays + 4 * mostLikelyDays + pessimisticDays) / 6).toFixed(1));
+                uncertaintySigma = Number(Math.max(0.2, (pessimisticDays - optimisticDays) / 6).toFixed(2));
+            }
+        }
         const assignedTeam = teamLabel
             ? teamLabel.slice(5)
             : defaultTeams[index % defaultTeams.length].name;
         const assignedGoalId = goalLabel
             ? goalLabel.slice(5).toUpperCase()
             : defaultGoals[index < Math.ceil(rawIssues.length * 0.55) ? 0 : 1].id;
+        const issueTypeName = issue.fields.issuetype?.name || 'Task';
+        const isStageGate = issueTypeName.toLowerCase() === 'milestone' ||
+            issueTypeName.toLowerCase() === 'gate' ||
+            (issue.fields.summary ?? '').toLowerCase().includes('gate');
+        const normalizedStat = normalizeStatus(statusName);
+        const plannedEffortDays = baseEstimateDays;
+        const actualEffortDays = normalizedStat === 'Done'
+            ? baseEstimateDays
+            : normalizedStat === 'In Progress'
+                ? Number((baseEstimateDays * 0.55).toFixed(1))
+                : normalizedStat === 'Blocked'
+                    ? Number((baseEstimateDays * 0.4).toFixed(1))
+                    : 0;
         nodes.push({
             id: issue.id || issue.key,
             key: issue.key,
             summary: issue.fields.summary || `Untitled Issue ${issue.key}`,
-            status: normalizeStatus(statusName),
+            status: normalizedStat,
             baseEstimateDays,
             uncertaintySigma,
+            optimisticDays,
+            mostLikelyDays,
+            pessimisticDays,
+            plannedEffortDays,
+            actualEffortDays,
+            isStageGate,
             assignee: issue.fields.assignee?.displayName || 'Unassigned',
             team: assignedTeam,
             goalId: assignedGoalId,
-            issueType: issue.fields.issuetype?.name || 'Task',
+            issueType: issueTypeName,
             storyPoints: storyPoints ?? baseEstimateDays,
             dueDate: issue.fields.duedate ?? undefined,
         });
@@ -623,6 +734,69 @@ function percentileSorted(sorted, q) {
     return sorted[base];
 }
 /**
+ * Computes the objective step-function completion percentage (0%, 25%, 50%, 75%, 100%)
+ * where the final 75% -> 100% transition requires downstream handoff acceptance when
+ * the task gates a downstream dependent task.
+ */
+function computeNodeCompletionStepPct(node, outgoingEdges, nodeByKey) {
+    const statusLower = node.status.toLowerCase();
+    if (statusLower === 'done' || statusLower === 'completed' || statusLower === 'closed') {
+        if (node.handoffAcceptedByDownstream === false) {
+            return 75;
+        }
+        if (node.handoffAcceptedByDownstream === true) {
+            return 100;
+        }
+        const hasUnacceptedCrossTeamHandoff = outgoingEdges.some((edge) => {
+            const target = nodeByKey.get(edge.to);
+            if (!target)
+                return false;
+            const isCrossTeam = target.team !== node.team || edge.dependencyType === 'Cross-Team Handoff';
+            return isCrossTeam && target.status.toLowerCase() === 'to do' && edge.propagationWeight >= 0.95 && node.handoffAcceptedByDownstream !== undefined;
+        });
+        return hasUnacceptedCrossTeamHandoff ? 75 : 100;
+    }
+    if (statusLower.includes('review') || statusLower.includes('qa')) {
+        return 75;
+    }
+    if (statusLower.includes('progress')) {
+        return 50;
+    }
+    if (statusLower.includes('block')) {
+        return 25;
+    }
+    return 0;
+}
+/**
+ * Computes Brooks's Law onboarding drag and communication channel complexity N = n(n-1)/2
+ * when adding +1 developer to a squad working on `node`.
+ */
+function computeBrooksLawMetrics(node) {
+    const n = Math.max(2, node.teamSize ?? 3);
+    const communicationChannelsBefore = (n * (n - 1)) / 2;
+    const communicationChannelsAfter = ((n + 1) * n) / 2;
+    const deltaChannels = communicationChannelsAfter - communicationChannelsBefore;
+    const pert = computePertParameters(node);
+    const base = Math.max(0.5, pert.meanDays);
+    const onboardingPenaltyDays = Number(Math.min(1.2, 0.08 * base + 0.06 * deltaChannels).toFixed(2));
+    const parallelCompressed = base * 0.65;
+    const appliedOnboarding = base <= 2.0 ? onboardingPenaltyDays : onboardingPenaltyDays * 0.35;
+    const effectiveSwarmDurationDays = Number(Math.max(0.5, parallelCompressed + appliedOnboarding).toFixed(2));
+    const netAccelerationDays = Number((base - effectiveSwarmDurationDays).toFixed(2));
+    let warning;
+    if (base <= 2.5) {
+        warning = `Short task (${base}d): +${onboardingPenaltyDays}d mentoring & coordination overhead (${communicationChannelsBefore} -> ${communicationChannelsAfter} channels) reduces parallel speedup.`;
+    }
+    return {
+        communicationChannelsBefore,
+        communicationChannelsAfter,
+        onboardingPenaltyDays,
+        netAccelerationDays,
+        effectiveSwarmDurationDays,
+        warning,
+    };
+}
+/**
  * Runs a 500-iteration Monte Carlo simulation over the Project World Model DAG.
  * Supports optional Pearl $do$-calculus intervention (`deltaDays`, `addDeveloper`, `decoupleBlockingEdges`).
  */
@@ -658,19 +832,41 @@ function runMonteCarloSimulation(graph, options = {}) {
     const blastInfo = intervenedKey
         ? getDownstreamBlastRadius(effectiveGraph, intervenedKey)
         : { targetKey: undefined, blastRadiusKeys: [], effectiveWeights: {} };
-    // Pre-index incoming edges for each topological index for ultra-fast inner loop
+    // Pre-index incoming and outgoing edges for each topological index
     const predIndices = Array.from({ length: n }, () => []);
     const predWeights = Array.from({ length: n }, () => []);
+    const predTypes = Array.from({ length: n }, () => []);
+    const predLags = Array.from({ length: n }, () => []);
+    const outgoingByKey = new Map();
+    for (const node of orderedNodes) {
+        outgoingByKey.set(node.key, []);
+    }
     for (const edge of effectiveEdges) {
+        outgoingByKey.get(edge.from)?.push(edge);
         const uIdx = keyToIndex.get(edge.from);
         const vIdx = keyToIndex.get(edge.to);
         if (uIdx !== undefined && vIdx !== undefined) {
             predIndices[vIdx].push(uIdx);
             predWeights[vIdx].push(edge.propagationWeight);
+            predTypes[vIdx].push(edge.precedenceType ?? 'FS');
+            predLags[vIdx].push(edge.lagDays ?? 0);
         }
     }
-    // Deterministic CPM metrics (slack, downstream counts, ripple weights)
+    // Detect parallel assignee contention across active non-Done tasks
+    const assigneeActiveTasks = new Map();
+    for (const node of orderedNodes) {
+        if (node.status.toLowerCase() !== 'done' &&
+            node.assignee &&
+            node.assignee.toLowerCase() !== 'unassigned') {
+            const list = assigneeActiveTasks.get(node.assignee) ?? [];
+            list.push(node.key);
+            assigneeActiveTasks.set(node.assignee, list);
+        }
+    }
+    // Deterministic CPM metrics (slack, totalFloat, downstream counts, ripple weights)
     const cpmMetrics = computeDeterministicCriticalPath(effectiveGraph);
+    // Precompute PERT parameters per node
+    const nodePert = orderedNodes.map((node) => computePertParameters(node));
     // Typed storage for Monte Carlo trials
     const nodeStartSamples = Array.from({ length: n }, () => new Float64Array(iterations));
     const nodeEndSamples = Array.from({ length: n }, () => new Float64Array(iterations));
@@ -687,35 +883,73 @@ function runMonteCarloSimulation(graph, options = {}) {
         let terminalNodeIdx = -1;
         for (let i = 0; i < n; i++) {
             const node = orderedNodes[i];
+            const pert = nodePert[i];
             const isTarget = node.key === intervenedKey;
             const isDone = node.status.toLowerCase() === 'done';
             // Sample stochastic task duration using right-skewed normal noise
             const z = sampleStandardNormal(rng);
             let sampledDuration = 0;
             if (!isDone || (isTarget && (interventionDelta !== 0 || addDeveloper))) {
-                let base = isDone ? 0 : Math.max(0.5, node.baseEstimateDays);
-                let sigma = isDone ? 0.25 : Math.max(0.1, node.uncertaintySigma);
+                let base = isDone ? 0 : pert.meanDays;
+                let sigma = isDone ? 0.25 : pert.sigmaDays;
+                // Multi-tasking fragmentation / overload adjustment if explicitly configured
+                if (typeof node.allocationRatio === 'number') {
+                    if (node.allocationRatio < 0.2) {
+                        sigma *= 1.25;
+                    }
+                    else if (node.allocationRatio > 1.1) {
+                        sigma *= 1.2;
+                    }
+                }
                 if (isTarget && addDeveloper) {
-                    base = Math.max(0.5, base * 0.65);
+                    const brooks = computeBrooksLawMetrics(node);
+                    base = brooks.effectiveSwarmDurationDays;
                     sigma = Math.max(0.1, sigma * 0.6);
                 }
                 // Right-skewed software engineering tail distribution
                 const skewNoise = z >= 0 ? z * sigma * 1.28 : z * sigma * 0.62;
-                const rawDuration = Math.max(base * 0.35, base + skewNoise);
+                let rawDuration = Math.max(base * 0.35, base + skewNoise);
+                // Discrete Pure Risk Events (Bernoulli shocks)
+                if (node.pureRisks && node.pureRisks.length > 0) {
+                    for (const risk of node.pureRisks) {
+                        const u = rng();
+                        if (u < Math.max(0, Math.min(1, risk.probability))) {
+                            rawDuration += Math.max(0, risk.delayImpactDays);
+                        }
+                    }
+                }
                 const shiftedDuration = rawDuration + (isTarget ? interventionDelta : 0);
                 sampledDuration = isDone && interventionDelta <= 0 ? 0 : Math.max(0.5, shiftedDuration);
             }
-            // Compute earliest start time gated by upstream predecessors
+            // Compute earliest start time gated by upstream predecessors (FS, SS, FF, SF + lagDays)
             const pIdxList = predIndices[i];
             const pWeightList = predWeights[i];
+            const pTypeList = predTypes[i];
+            const pLagList = predLags[i];
             let earliestStart = 0;
             let chosenPred = -1;
             for (let p = 0; p < pIdxList.length; p++) {
                 const uIdx = pIdxList[p];
                 const w = pWeightList[p];
+                const pType = pTypeList[p];
+                const lag = pLagList[p];
                 const uStart = trialStart[uIdx];
-                const uDur = Math.max(0, trialEnd[uIdx] - uStart);
-                const candidateStart = uStart + uDur * w;
+                const uEnd = trialEnd[uIdx];
+                const uDur = Math.max(0, uEnd - uStart);
+                let candidateStart = 0;
+                if (pType === 'SS') {
+                    candidateStart = Math.max(0, uStart + lag);
+                }
+                else if (pType === 'FF') {
+                    candidateStart = Math.max(0, uEnd + lag - sampledDuration);
+                }
+                else if (pType === 'SF') {
+                    candidateStart = Math.max(0, uStart + lag - sampledDuration);
+                }
+                else {
+                    // Default FS (Finish-to-Start)
+                    candidateStart = Math.max(0, uStart + uDur * w + lag);
+                }
                 if (candidateStart > earliestStart) {
                     earliestStart = candidateStart;
                     chosenPred = uIdx;
@@ -765,6 +999,7 @@ function runMonteCarloSimulation(graph, options = {}) {
     const nodeStats = {};
     for (let i = 0; i < n; i++) {
         const node = orderedNodes[i];
+        const pert = nodePert[i];
         const sortedStarts = Float64Array.from(nodeStartSamples[i]).sort();
         const sortedEnds = Float64Array.from(nodeEndSamples[i]).sort();
         const nodeP50Start = Number(percentileSorted(sortedStarts, 0.5).toFixed(1));
@@ -773,6 +1008,7 @@ function runMonteCarloSimulation(graph, options = {}) {
         const nodeP95End = Number(percentileSorted(sortedEnds, 0.95).toFixed(1));
         const criticalityIndex = Number((criticalHits[i] / iterations).toFixed(3));
         const effWeight = blastInfo.effectiveWeights[node.key] ?? 0;
+        const completionStepPct = computeNodeCompletionStepPct(node, outgoingByKey.get(node.key) ?? [], nodeByKey);
         nodeStats[node.key] = {
             nodeId: node.id,
             key: node.key,
@@ -791,6 +1027,10 @@ function runMonteCarloSimulation(graph, options = {}) {
             p95Date: addCalendarDays(graph.referenceDate, Math.ceil(nodeP95End)),
             meanDurationDays: Number((nodeDurationSums[i] / iterations).toFixed(2)),
             slackDays: cpmMetrics[node.key]?.slackDays ?? 0,
+            totalFloatDays: cpmMetrics[node.key]?.totalFloatDays ?? cpmMetrics[node.key]?.slackDays ?? 0,
+            completionStepPct,
+            pertMeanDays: pert.meanDays,
+            pertSigmaDays: pert.sigmaDays,
             criticalityIndex,
             rippleDelayDays: Number((interventionDelta * effWeight).toFixed(1)),
             effectivePropagationWeight: effWeight,
@@ -807,7 +1047,12 @@ function runMonteCarloSimulation(graph, options = {}) {
         const sortedByEnd = [...topoKeys].sort((a, b) => (nodeStats[b]?.p85EndDay ?? 0) - (nodeStats[a]?.p85EndDay ?? 0));
         criticalPathNodes.push(...sortedByEnd.slice(0, Math.min(5, sortedByEnd.length)));
     }
-    // Rank top bottlenecks
+    // Identify super-critical nodes (negative float relative to target deadline)
+    const superCriticalNodes = topoKeys.filter((key) => {
+        const stat = nodeStats[key];
+        return stat.status.toLowerCase() !== 'done' && (stat.totalFloatDays ?? 0) < 0;
+    });
+    // Rank top bottlenecks with Mitigation ROI
     const topBottlenecks = orderedNodes
         .filter((node) => node.status.toLowerCase() !== 'done')
         .map((node) => {
@@ -816,12 +1061,20 @@ function runMonteCarloSimulation(graph, options = {}) {
         const downstreamCount = cpm?.downstreamCount ?? 0;
         const downstreamRippleWeight = cpm?.downstreamRippleWeight ?? 0;
         const slackDays = cpm?.slackDays ?? 0;
+        const totalFloatDays = cpm?.totalFloatDays ?? slackDays;
         // Composite causal bottleneck score (0..100)
         const criticalityTerm = stat.criticalityIndex * 45;
         const fanoutTerm = Math.min(30, downstreamRippleWeight * 3.8);
         const uncertaintyTerm = Math.min(15, node.uncertaintySigma * 4.5);
         const zeroSlackBonus = slackDays <= 0.5 ? 10 : Math.max(0, 10 - slackDays * 1.5);
         const riskScore = Math.min(99, Math.round(criticalityTerm + fanoutTerm + uncertaintyTerm + zeroSlackBonus));
+        // Mitigation ROI: expected schedule risk reduction per day of mitigation effort
+        const brooks = computeBrooksLawMetrics(node);
+        const expectedRiskReductionDays = Math.max(0.5, (brooks.netAccelerationDays + node.uncertaintySigma * 0.4) *
+            Math.max(0.25, stat.criticalityIndex) *
+            (1 + Math.min(2.5, downstreamRippleWeight * 0.25)));
+        const mitigationCostDays = Math.max(1.0, node.pureRisks?.[0]?.mitigationEffortDays ?? Math.max(1.0, node.baseEstimateDays * 0.25));
+        const mitigationROI = Number((expectedRiskReductionDays / mitigationCostDays).toFixed(2));
         let recommendation = 'Monitor standard sprint progress; buffer is currently sufficient.';
         if (downstreamCount >= 4 && stat.criticalityIndex >= 0.35) {
             recommendation = `High-fanout structural gate (${downstreamCount} downstream tasks, ripple weight ${downstreamRippleWeight}). Add a swarm developer or decouple interface contract early.`;
@@ -846,6 +1099,8 @@ function runMonteCarloSimulation(graph, options = {}) {
             downstreamCount,
             downstreamRippleWeight,
             slackDays,
+            totalFloatDays,
+            mitigationROI,
             riskScore,
             recommendation,
         };
@@ -1035,7 +1290,6 @@ function runMonteCarloSimulation(graph, options = {}) {
             narrative: `95th percentile worst-case envelope (${p95Date}, +${p95Days}d) absorbing compound σ tail shocks.`,
         },
     ];
-    const executionTimeMs = Number((performance.now() - startClock).toFixed(2));
     // Compute Asymmetric Quasimetric Latent Energy E(s -> s' | z_env) & Rework Hours (ported from ProjectWorldModel)
     const gammaRev = decoupleBlockingEdges ? 0.92 : 0.72;
     let quadDiffSum = 0;
@@ -1051,9 +1305,216 @@ function runMonteCarloSimulation(graph, options = {}) {
         }
     }
     const quasimetricEnergy = Number((Math.sqrt(Math.max(0, quadDiffSum)) + (1.0 - gammaRev) * posLockInDelta).toFixed(2));
-    const estimatedReworkHours = Number(Math.max(4, (blastInfo.blastRadiusKeys.length * 3.5 + Math.max(0, interventionDelta) * 5.2) *
+    // Fast-tracking overlap & late scope-change maturity escalation
+    let fastTrackingReworkBonus = 0;
+    for (const edge of effectiveEdges) {
+        if ((edge.lagDays ?? 0) < 0) {
+            fastTrackingReworkBonus += Math.abs(edge.lagDays) * 1.8;
+        }
+    }
+    const maturityRatio = orderedNodes.length > 0 ? (doneCount + inProgressCount * 0.5) / orderedNodes.length : 0;
+    const lateChangeEscalationFactor = Number(Math.exp(0.65 * maturityRatio).toFixed(2));
+    const estimatedReworkHours = Number(Math.max(4, (blastInfo.blastRadiusKeys.length * 3.5 +
+        Math.max(0, interventionDelta) * 5.2 +
+        fastTrackingReworkBonus) *
+        (interventionDelta > 0 ? lateChangeEscalationFactor * 0.78 : 1.0) *
         (addDeveloper ? 0.65 : 1.0) *
         (decoupleBlockingEdges ? 0.5 : 1.0)).toFixed(1));
+    // 1. Three-Tier Schedule Reserve Breakdown (Base P50, PM Contingency P85-P50, Exec Reserve CVaR95-P85)
+    const pmContingencyReserveDays = Number(Math.max(0.5, p85Days - p50Days).toFixed(1));
+    const managementReserveDays = Number(Math.max(0.5, cvar95Days - p85Days).toFixed(1));
+    let totalBac = 0;
+    let committedEffort = 0;
+    for (const node of orderedNodes) {
+        const bac = Math.max(0.5, node.plannedEffortDays ?? node.baseEstimateDays);
+        totalBac += bac;
+        const sLow = node.status.toLowerCase();
+        if (sLow === 'done' || sLow.includes('progress') || sLow.includes('block')) {
+            committedEffort += bac;
+        }
+    }
+    const committedEffortRatio = Number((totalBac > 0 ? Math.min(1, committedEffort / totalBac) : 0).toFixed(2));
+    const activeSlipOrBlock = Math.max(0, interventionDelta) + blockedCount * 1.5;
+    const bufferBurnRatio = Number(Math.min(2.0, activeSlipOrBlock / Math.max(1.0, pmContingencyReserveDays)).toFixed(2));
+    const reserves = {
+        baseTargetDays: p50Days,
+        pmContingencyReserveDays,
+        managementReserveDays,
+        bufferBurnRatio,
+        committedEffortRatio,
+    };
+    // 2. Hierarchical Engineering Earned Value (EVM in Dev-Days: BAC, BCWS, BCWP, ACWP, CPI, SPI, EAC)
+    let totalBcws = 0;
+    let totalBcwp = 0;
+    let totalAcwp = 0;
+    const byTeamAccum = new Map();
+    for (const node of orderedNodes) {
+        const stat = nodeStats[node.key];
+        const bac = Math.max(0.5, node.plannedEffortDays ?? node.baseEstimateDays);
+        const stepPct = (stat?.completionStepPct ?? 0) / 100;
+        const bcwp = bac * stepPct;
+        const sLow = node.status.toLowerCase();
+        const plannedPct = sLow === 'done'
+            ? 1.0
+            : sLow.includes('block')
+                ? 0.65
+                : sLow.includes('progress')
+                    ? 0.55
+                    : 0.0;
+        const bcws = bac * plannedPct;
+        let acwp = typeof node.actualEffortDays === 'number'
+            ? node.actualEffortDays
+            : sLow === 'done'
+                ? bac
+                : sLow.includes('block')
+                    ? bac * 0.5
+                    : sLow.includes('progress')
+                        ? bac * 0.52
+                        : 0;
+        if (node.key === intervenedKey && interventionDelta > 0) {
+            acwp += interventionDelta * 0.75;
+        }
+        totalBcws += bcws;
+        totalBcwp += bcwp;
+        totalAcwp += acwp;
+        const tEntry = byTeamAccum.get(node.team) ?? { bac: 0, bcws: 0, bcwp: 0, acwp: 0 };
+        tEntry.bac += bac;
+        tEntry.bcws += bcws;
+        tEntry.bcwp += bcwp;
+        tEntry.acwp += acwp;
+        byTeamAccum.set(node.team, tEntry);
+    }
+    const safeDiv = (num, den) => den > 0.01 ? Number((num / den).toFixed(2)) : 1.0;
+    const projectCpi = safeDiv(totalBcwp, totalAcwp);
+    const projectSpi = safeDiv(totalBcwp, totalBcws);
+    const cvDays = Number((totalBcwp - totalAcwp).toFixed(1));
+    const svDays = Number((totalBcwp - totalBcws).toFixed(1));
+    const eacOneOffDays = Number(Math.max(0.5, totalAcwp + (totalBac - totalBcwp)).toFixed(1));
+    const eacTrendDays = Number(Math.max(0.5, totalBac / Math.max(0.25, projectCpi)).toFixed(1));
+    const etcDays = Number(Math.max(0, (totalBac - totalBcwp) / Math.max(0.25, projectSpi)).toFixed(1));
+    const byTeam = {};
+    let hasUnderperformingTeam = false;
+    let hasOutperformingTeam = false;
+    for (const [teamName, acc] of byTeamAccum.entries()) {
+        const tCpi = safeDiv(acc.bcwp, acc.acwp);
+        const tSpi = safeDiv(acc.bcwp, acc.bcws);
+        if (tCpi < 0.88 || tSpi < 0.88)
+            hasUnderperformingTeam = true;
+        if (tCpi >= 1.02 && tSpi >= 0.98)
+            hasOutperformingTeam = true;
+        byTeam[teamName] = {
+            bacDays: Number(acc.bac.toFixed(1)),
+            bcwsDays: Number(acc.bcws.toFixed(1)),
+            bcwpDays: Number(acc.bcwp.toFixed(1)),
+            acwpDays: Number(acc.acwp.toFixed(1)),
+            cvDays: Number((acc.bcwp - acc.acwp).toFixed(1)),
+            svDays: Number((acc.bcwp - acc.bcws).toFixed(1)),
+            cpi: tCpi,
+            spi: tSpi,
+            maskingWarning: (tCpi < 0.88 || tSpi < 0.88) && (projectCpi >= 0.92 || projectSpi >= 0.92),
+        };
+    }
+    const earnedValue = {
+        bacDays: Number(totalBac.toFixed(1)),
+        bcwsDays: Number(totalBcws.toFixed(1)),
+        bcwpDays: Number(totalBcwp.toFixed(1)),
+        acwpDays: Number(totalAcwp.toFixed(1)),
+        cvDays,
+        svDays,
+        cpi: projectCpi,
+        spi: projectSpi,
+        eacOneOffDays,
+        eacTrendDays,
+        etcDays,
+        maskingWarning: hasUnderperformingTeam &&
+            (hasOutperformingTeam || projectCpi >= 0.92 || projectSpi >= 0.92),
+        byTeam,
+    };
+    // 3. Software Delivery Governance, Brooks's Law, Cross-Team Handoffs, Hypercare & Retro Calibration
+    const inspectNode = (intervenedKey ? nodeByKey.get(intervenedKey) : undefined) ??
+        (topBottlenecks[0] ? nodeByKey.get(topBottlenecks[0].key) : undefined) ??
+        orderedNodes[0];
+    const brooksLawDiagnostic = inspectNode
+        ? computeBrooksLawMetrics(inspectNode)
+        : undefined;
+    const overallocatedAssignees = [];
+    for (const [assignee, issues] of assigneeActiveTasks.entries()) {
+        if (issues.length >= 2) {
+            overallocatedAssignees.push({
+                assignee,
+                concurrentIssues: issues,
+                utilizationPct: Math.min(250, issues.length * 65),
+            });
+        }
+    }
+    let blockedHandoffIdleDays = 0;
+    for (const edge of effectiveEdges) {
+        const uNode = nodeByKey.get(edge.from);
+        const vNode = nodeByKey.get(edge.to);
+        if (!uNode || !vNode)
+            continue;
+        const isCrossTeam = uNode.team !== vNode.team ||
+            edge.dependencyType === 'Cross-Team Handoff' ||
+            vNode.executionMode === 'cross-team-dependency' ||
+            vNode.executionMode === 'external-vendor-api';
+        if (isCrossTeam) {
+            const uSlip = Math.max(0, nodeStats[uNode.key]?.rippleDelayDays ?? 0);
+            blockedHandoffIdleDays += uSlip > 0 ? uSlip * edge.propagationWeight : 0.4;
+        }
+    }
+    blockedHandoffIdleDays = Number(blockedHandoffIdleDays.toFixed(1));
+    const stageGateNodes = orderedNodes
+        .filter((nd) => nd.isStageGate ||
+        nd.issueType?.toLowerCase() === 'milestone' ||
+        nd.issueType?.toLowerCase() === 'gate' ||
+        Boolean(nd.confluenceDecision))
+        .map((nd) => nd.key);
+    const hypercareReserveDays = Number(Math.max(1.0, p50Days * 0.05 + estimatedReworkHours / 16).toFixed(1));
+    let readyNodes = 0;
+    for (const nd of orderedNodes) {
+        const hasAssignee = Boolean(nd.assignee && nd.assignee.toLowerCase() !== 'unassigned');
+        const hasEst = nd.baseEstimateDays > 0;
+        const hasGoal = Boolean(nd.goalId);
+        if (hasAssignee && hasEst && hasGoal)
+            readyNodes++;
+    }
+    const sprintReadinessScore = orderedNodes.length > 0 ? Math.round((readyNodes / orderedNodes.length) * 100) : 100;
+    const completedNodes = orderedNodes.filter((nd) => nd.status.toLowerCase() === 'done');
+    const empiricalVelocityRatio = completedNodes.length > 0 ? Number((1 / Math.max(0.5, projectCpi)).toFixed(2)) : 1.0;
+    const recommendedSigmaMultiplier = Number(Math.max(0.85, Math.min(1.45, empiricalVelocityRatio * (blockedCount > 0 ? 1.12 : 1.0))).toFixed(2));
+    const primaryGoalProb = goalImpacts[0]?.probabilityOfOnTime ?? 0.85;
+    const slaBreachProbability = Number(Math.max(0, 1 - primaryGoalProb).toFixed(2));
+    const costOfDelayDevDays = Number((Math.max(0, p85Days - (goalImpacts[0]?.targetDayOffset ?? p85Days)) * 1.5 +
+        blockedHandoffIdleDays).toFixed(1));
+    const deliveryGovernance = {
+        releaseMode: 'external-commit',
+        slaBreachProbability,
+        costOfDelayDevDays,
+        brooksLawDiagnostic: brooksLawDiagnostic
+            ? {
+                communicationChannelsBefore: brooksLawDiagnostic.communicationChannelsBefore,
+                communicationChannelsAfter: brooksLawDiagnostic.communicationChannelsAfter,
+                onboardingPenaltyDays: brooksLawDiagnostic.onboardingPenaltyDays,
+                netAccelerationDays: brooksLawDiagnostic.netAccelerationDays,
+                warning: brooksLawDiagnostic.warning,
+            }
+            : undefined,
+        overallocatedAssignees,
+        blockedHandoffIdleDays,
+        lateChangeEscalationFactor,
+        stageGateNodes,
+        hypercareReserveDays,
+        sprintReadinessScore,
+        lessonsLearntCalibration: {
+            completedCount: completedNodes.length,
+            empiricalVelocityRatio,
+            recommendedSigmaMultiplier,
+            summary: completedNodes.length > 0
+                ? `Calibrated across ${completedNodes.length} completed tasks (velocity ratio ${empiricalVelocityRatio}x, recommended σ multiplier ${recommendedSigmaMultiplier}x).`
+                : `Baseline prior active (0 completed tasks yet; complete sprint issues to auto-calibrate empirical σ).`,
+        },
+    };
+    const executionTimeMs = Number((performance.now() - startClock).toFixed(2));
     return {
         p50Date,
         p85Date,
@@ -1066,6 +1527,7 @@ function runMonteCarloSimulation(graph, options = {}) {
         quasimetricEnergy,
         estimatedReworkHours,
         criticalPathNodes,
+        superCriticalNodes,
         blastRadiusNodes: blastInfo.blastRadiusKeys,
         rippleDelayDays: interventionDelta,
         iterations,
@@ -1080,6 +1542,9 @@ function runMonteCarloSimulation(graph, options = {}) {
         topBottlenecks,
         distributionBuckets,
         timeMachineEpochs,
+        reserves,
+        earnedValue,
+        deliveryGovernance,
     };
 }
 /**
@@ -1300,6 +1765,13 @@ function renderHeaderBar(props) {
     const topBlocker = activeSim.topBottlenecks[0];
     const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'BLP-7';
     const windowBufferDays = Math.max(1, Math.round(activeSim.p95Days - activeSim.p50Days));
+    const superCriticalCount = activeSim.superCriticalNodes?.length ?? 0;
+    const reserves = activeSim.reserves;
+    const pmBufferDays = reserves ? Math.round(reserves.pmContingencyReserveDays) : Math.max(1, Math.round(activeSim.p85Days - activeSim.p50Days));
+    const execReserveDays = reserves ? Math.round(reserves.managementReserveDays) : Math.max(1, Math.round(activeSim.cvar95Days - activeSim.p85Days));
+    const bufferBurnPct = reserves ? Math.round(reserves.bufferBurnRatio * 100) : 0;
+    const overallocatedList = activeSim.deliveryGovernance?.overallocatedAssignees ?? [];
+    const evm = activeSim.earnedValue;
     const projectList = availableProjects.length > 0
         ? [...availableProjects]
         : [
@@ -1389,14 +1861,16 @@ function renderHeaderBar(props) {
       <div class="kpi-card ${p85Shift > 0 ? 'highlight-shift' : p85Shift < 0 ? 'highlight-accel' : ''}">
         <div class="kpi-label">
           <span>PROJECTED RELEASE DATE</span>
-          ${renderInfoTooltip('85% Confidence Commit Date (P85)', 'Statistically, 85 out of 100 simulated project runs finish on or before this date. Compare with the baseline target to see the impact of your What-If change.', `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d) | Baseline P85 = ${baselineSim.p85Date}`)}
+          ${renderInfoTooltip('85% Confidence Commit Date (P85)', 'Statistically, 85 out of 100 simulated project runs finish on or before this date. Compare with the baseline target to see the impact of your What-If change.', `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d) | Baseline P85 = ${baselineSim.p85Date} | Super-Critical (Float < 0): ${superCriticalCount} issues`)}
         </div>
         <div class="kpi-value">
           <span>${formatFriendlyDate(activeSim.p85Date, true)}</span>
           ${releaseLozenge}
         </div>
         <div class="kpi-sub">
-          Baseline Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong> (85% confidence)
+          Baseline Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong>${superCriticalCount > 0
+        ? ` · <strong style="color:#AE2E24;">${superCriticalCount} Negative Float</strong>`
+        : ' (85% confidence)'}
         </div>
       </div>
 
@@ -1404,14 +1878,14 @@ function renderHeaderBar(props) {
       <div class="kpi-card">
         <div class="kpi-label">
           <span>DELIVERY FORECAST WINDOW</span>
-          ${renderInfoTooltip('Probability Cone & Tail Risk (P50 – P95 & CVaR)', 'Shows the window between Likely Median completion (50% probability) and Worst-Case Buffer (95% probability).', `P50=${activeSim.p50Date} | P95=${activeSim.p95Date} (${p95Shift >= 0 ? `+${p95Shift}d` : `${p95Shift}d`}) | CVaR₀.₉₅=${activeSim.cvar95Date}`)}
+          ${renderInfoTooltip('3-Tier Schedule Buffers & Tail Risk (P50 / P85 / CVaR)', 'Decomposes schedule uncertainty into Base Target (P50), PM Contingency Buffer (P85 - P50), and Executive Tail Reserve (CVaR95 - P85).', `Base P50=${activeSim.p50Date} | PM Buffer=+${pmBufferDays}d | Exec Reserve=+${execReserveDays}d | Buffer Burn=${bufferBurnPct}%`)}
         </div>
         <div class="kpi-value">
           <span>${formatFriendlyDate(activeSim.p50Date)} – ${formatFriendlyDate(activeSim.p95Date)}</span>
           <span class="jira-lozenge jira-lozenge-todo">±${windowBufferDays}D SPREAD</span>
         </div>
         <div class="kpi-sub">
-          Likely (50%): <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · Buffer (95%): <strong>${formatFriendlyDate(activeSim.p95Date)}</strong>
+          Target: <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · PM Buffer: <strong>+${pmBufferDays}d</strong> · Exec: <strong>+${execReserveDays}d</strong>
         </div>
       </div>
 
@@ -1419,22 +1893,24 @@ function renderHeaderBar(props) {
       <div class="kpi-card">
         <div class="kpi-label">
           <span>CRITICAL PATH BLOCKERS</span>
-          ${renderInfoTooltip('Topological Critical Path', 'Issues with zero or near-zero schedule slack that directly gate the project completion date.', `Critical Path (${activeSim.criticalPathNodes.length} issues) | Top Blocker ${topBlockerKey} Ripple Weight = ${topBlocker?.downstreamRippleWeight ?? 1.0}`)}
+          ${renderInfoTooltip('Topological Critical Path & Resource Contention', 'Issues with zero or negative schedule slack that gate project completion, plus parallel assignee multi-tasking contention.', `Critical Path (${activeSim.criticalPathNodes.length} issues) | Top Blocker ${topBlockerKey} ROI = ${topBlocker?.mitigationROI ?? 1.0}d/$ | Overloaded Assignees = ${overallocatedList.length}`)}
         </div>
         <div class="kpi-value">
           <span>${activeSim.criticalPathNodes.length} ${activeSim.criticalPathNodes.length === 1 ? 'Blocker' : 'Blockers'}</span>
           <span class="jira-lozenge jira-lozenge-inprogress">TOP: ${escapeHtmlText(topBlockerKey)}</span>
         </div>
         <div class="kpi-sub">
-          <strong>${escapeHtmlText(topBlockerKey)}</strong> impacts <strong>${topBlocker?.downstreamCount ?? 1} downstream ${(topBlocker?.downstreamCount ?? 1) === 1 ? 'issue' : 'issues'}</strong>
+          <strong>${escapeHtmlText(topBlockerKey)}</strong> gates <strong>${topBlocker?.downstreamCount ?? 1} ${(topBlocker?.downstreamCount ?? 1) === 1 ? 'issue' : 'issues'}</strong>${overallocatedList.length > 0
+        ? ` · <strong style="color:#A54800;">${overallocatedList.length} Overloaded Dev</strong>`
+        : ''}
         </div>
       </div>
 
       <!-- Card 4: Teamwork Graph Goals -->
-      <div class="kpi-card ${affectedGoalsCount > 0 && p85Shift > 0 ? 'highlight-shift' : ''}">
+      <div class="kpi-card ${(affectedGoalsCount > 0 && p85Shift > 0) || evm?.maskingWarning ? 'highlight-shift' : ''}">
         <div class="kpi-label">
           <span>TEAMWORK GRAPH GOALS</span>
-          ${renderInfoTooltip('Atlassian Teamwork Graph Alignment', 'Connects project issues to high-level Teamwork Graph Goals and tracks on-time delivery probability.', `Selected: ${selectedNodeKey} | Downstream Impact: ${activeSim.blastRadiusNodes.length} issues | Friction E = ${activeSim.quasimetricEnergy}`)}
+          ${renderInfoTooltip('Teamwork Graph Goals & Engineering Earned Value', 'Connects project issues to Teamwork Graph Goals and tracks Dev-Day Earned Value (CPI = BCWP/ACWP, SPI = BCWP/BCWS) across engineering squads.', `Effort CPI = ${evm?.cpi ?? 1.0} | Schedule SPI = ${evm?.spi ?? 1.0} | EAC = ${evm?.eacTrendDays ?? 0}d (BAC ${evm?.bacDays ?? 0}d) | Friction E = ${activeSim.quasimetricEnergy}`)}
         </div>
         <div class="kpi-value">
           <span>${hasActiveIntervention
@@ -1445,7 +1921,7 @@ function renderHeaderBar(props) {
           </span>
         </div>
         <div class="kpi-sub">
-          ${activeSim.goalImpacts
+          Effort CPI <strong>${(evm?.cpi ?? 1.0).toFixed(2)}</strong> · Schedule SPI <strong>${(evm?.spi ?? 1.0).toFixed(2)}</strong> · ${activeSim.goalImpacts
         .map((g) => `${escapeHtmlText(g.goalName)} (${g.status})`)
         .join(' · ')}
         </div>
@@ -1543,6 +2019,14 @@ function renderTimelineScrubber(props) {
             ? `+${scrubberDayOffset} Days`
             : `${scrubberDayOffset} Days`;
     const maxBucketProb = Math.max(0.05, ...activeSim.distributionBuckets.map((b) => b.probability));
+    const reserves = activeSim.reserves;
+    const baseTargetDays = reserves?.baseTargetDays ?? activeSim.p50Days;
+    const pmBufferDays = reserves?.pmContingencyReserveDays ?? Math.max(0.5, activeSim.p85Days - activeSim.p50Days);
+    const execReserveDays = reserves?.managementReserveDays ?? Math.max(0.5, activeSim.cvar95Days - activeSim.p85Days);
+    const totalReserveSpan = Math.max(1, baseTargetDays + pmBufferDays + execReserveDays);
+    const basePct = Math.max(20, Math.round((baseTargetDays / totalReserveSpan) * 100));
+    const pmPct = Math.max(10, Math.round((pmBufferDays / totalReserveSpan) * 100));
+    const execPct = Math.max(8, 100 - basePct - pmPct);
     return `
     <section class="time-machine-panel">
       <div class="tm-header">
@@ -1601,6 +2085,19 @@ function renderTimelineScrubber(props) {
               title="Drag to scrub across past sprints and future completion dates"
             />
             <span class="tm-slider-bound">Buffer (${formatFriendlyDate(activeSim.p95Date)})</span>
+          </div>
+
+          <div class="reserve-segmented-wrap" title="3-Tier Schedule Buffer Allocation: Base Target (P50 = ${baseTargetDays.toFixed(1)}d) + PM Contingency Buffer (+${pmBufferDays.toFixed(1)}d) + Executive Tail Reserve (+${execReserveDays.toFixed(1)}d)">
+            <div class="reserve-segmented-bar">
+              <div class="reserve-seg reserve-seg-base" style="width:${basePct}%;" title="Base Target (P50): ${baseTargetDays.toFixed(1)} days"></div>
+              <div class="reserve-seg reserve-seg-pm" style="width:${pmPct}%;" title="PM Contingency Buffer (P85 - P50): +${pmBufferDays.toFixed(1)} days"></div>
+              <div class="reserve-seg reserve-seg-exec" style="width:${execPct}%;" title="Executive Tail Reserve (CVaR95 - P85): +${execReserveDays.toFixed(1)} days"></div>
+            </div>
+            <div class="reserve-segmented-legend">
+              <span><i class="reserve-dot" style="background:#0C66E4;"></i>Base P50 (${Math.round(baseTargetDays)}d)</span>
+              <span><i class="reserve-dot" style="background:#E2B203;"></i>PM Buffer (+${Math.round(pmBufferDays)}d)</span>
+              <span><i class="reserve-dot" style="background:#6E5DC6;"></i>Exec Reserve (+${Math.round(execReserveDays)}d)</span>
+            </div>
           </div>
 
           <div class="tm-status-summary">
@@ -1769,8 +2266,29 @@ function renderDagCanvas(props) {
             edgeClass += ' critical-edge';
             markerId = 'url(#arrow-critical)';
         }
-        const edgeTooltip = `${edge.from} ${edge.dependencyType} ${edge.to}`;
-        return `<path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>`;
+        const precType = edge.precedenceType ?? 'FS';
+        const lagDays = edge.lagDays ?? 0;
+        const lagSuffix = lagDays > 0
+            ? ` (+${lagDays}d Lag)`
+            : lagDays < 0
+                ? ` (${lagDays}d Fast-Track)`
+                : '';
+        const edgeTooltip = `${edge.from} ${edge.dependencyType} (${precType}${lagSuffix}) ${edge.to}`;
+        const hasNonDefaultMeta = precType !== 'FS' || lagDays !== 0;
+        const midX = (x1 + x2) / 2;
+        const midY = (y1 + y2) / 2;
+        const pillLabel = lagDays < 0
+            ? `${precType} ${lagDays}d FT`
+            : lagDays > 0
+                ? `${precType} +${lagDays}d`
+                : precType;
+        const edgeMetaBadge = hasNonDefaultMeta
+            ? `<g transform="translate(${midX - 24}, ${midY - 8})">
+             <rect width="48" height="15" rx="3" fill="${lagDays < 0 ? '#FFF7D6' : '#F3F0FF'}" stroke="${lagDays < 0 ? '#E2B203' : '#6E5DC6'}" stroke-width="1" />
+             <text x="24" y="10.5" text-anchor="middle" fill="${lagDays < 0 ? '#A54800' : '#5E4DB2'}" font-size="8.5" font-weight="700">${escapeHtmlText(pillLabel)}</text>
+           </g>`
+            : '';
+        return `<g><path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>${edgeMetaBadge}</g>`;
     })
         .join('');
     // Render authentic Jira Issue Cards inside SVG
@@ -1848,6 +2366,16 @@ function renderDagCanvas(props) {
           </g>
         `;
         }
+        else if (node.isStageGate) {
+            topBadge = `
+          <g transform="translate(${xLeft + nodeW - 48}, ${yTop - 10})">
+            <rect width="48" height="18" rx="3" fill="#6E5DC6" />
+            <text x="24" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="700">
+              GATE
+            </text>
+          </g>
+        `;
+        }
         const shortSummary = node.summary.length > 27 ? `${node.summary.slice(0, 26)}…` : node.summary;
         const avatarInitials = getInitials(node.assignee);
         const hoverJson = JSON.stringify({
@@ -1858,6 +2386,11 @@ function renderDagCanvas(props) {
             status: temporalState,
             estimateDays: node.baseEstimateDays,
             sigma: node.uncertaintySigma,
+            pertMean: stat?.pertMeanDays ?? node.baseEstimateDays,
+            pertSigma: stat?.pertSigmaDays ?? node.uncertaintySigma,
+            completionStepPct: stat?.completionStepPct ?? 0,
+            totalFloatDays: stat?.totalFloatDays ?? 0,
+            isStageGate: Boolean(node.isStageGate),
             goalName: goalObj?.name ?? node.goalId,
             p85Date: stat ? formatFriendlyDate(stat.p85Date, true) : 'N/A',
             rippleShift: rippleShift,
@@ -2026,8 +2559,9 @@ function renderTabBody(props) {
             </span>
             <span class="jira-lozenge jira-lozenge-inprogress">GATES ${b.downstreamCount}</span>
           </div>
-          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px;">
-            Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong>
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+            <span>Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong></span>
+            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · ROI: <strong style="color:#216E4E;">${(b.mitigationROI ?? 1.0).toFixed(2)}d/$</strong></span>
           </div>
           <div style="font-size:11.5px;color:#0055CC;margin-top:4px;">
             💡 ${escapeHtmlText(b.recommendation)}
@@ -2035,6 +2569,100 @@ function renderTabBody(props) {
         </div>
       `)
             .join('');
+    }
+    if (activeRightTab === 'governance') {
+        const res = activeSim.reserves;
+        const evm = activeSim.earnedValue;
+        const gov = activeSim.deliveryGovernance;
+        const burnPct = res ? Math.round(res.bufferBurnRatio * 100) : 0;
+        const burnLozenge = burnPct >= 80
+            ? `<span class="jira-lozenge jira-lozenge-danger">${burnPct}% BURN</span>`
+            : burnPct >= 50
+                ? `<span class="jira-lozenge jira-lozenge-inprogress">${burnPct}% BURN</span>`
+                : `<span class="jira-lozenge jira-lozenge-done">${burnPct}% BURN</span>`;
+        const cpiVal = evm?.cpi ?? 1.0;
+        const spiVal = evm?.spi ?? 1.0;
+        const evmLozenge = evm?.maskingWarning
+            ? `<span class="jira-lozenge jira-lozenge-danger">SQUAD VARIANCE ALERT</span>`
+            : cpiVal < 0.9 || spiVal < 0.9
+                ? `<span class="jira-lozenge jira-lozenge-inprogress">WATCH</span>`
+                : `<span class="jira-lozenge jira-lozenge-done">HEALTHY</span>`;
+        const squadRows = Object.entries(evm?.byTeam ?? {})
+            .map(([teamName, sq]) => `
+          <div class="gov-squad-row">
+            <span>${escapeHtmlText(teamName)}</span>
+            <span>CPI <strong>${sq.cpi.toFixed(2)}</strong> · SPI <strong>${sq.spi.toFixed(2)}</strong></span>
+          </div>
+        `)
+            .join('');
+        const stageGateNodes = gov?.stageGateNodes ?? [];
+        const retroCal = gov?.lessonsLearntCalibration;
+        return `
+      <div class="governance-grid">
+        <!-- Card 1: 3-Tier Schedule Buffers & Hypercare -->
+        <div class="gov-card">
+          <div class="gov-card-header">
+            <span>1. Schedule Buffers &amp; Hypercare</span>
+            ${burnLozenge}
+          </div>
+          <div class="gov-stat-row">
+            <span>Base Target (P50): <strong>${(res?.baseTargetDays ?? activeSim.p50Days).toFixed(1)}d</strong></span>
+            <span>PM Buffer (P85-P50): <strong>+${(res?.pmContingencyReserveDays ?? 0).toFixed(1)}d</strong></span>
+          </div>
+          <div class="gov-stat-row">
+            <span>Exec Reserve (CVaR): <strong>+${(res?.managementReserveDays ?? 0).toFixed(1)}d</strong></span>
+            <span>Hypercare Buffer: <strong>+${(gov?.hypercareReserveDays ?? 1.5).toFixed(1)}d</strong></span>
+          </div>
+        </div>
+
+        <!-- Card 2: Engineering Earned Value (Dev-Days) -->
+        <div class="gov-card">
+          <div class="gov-card-header">
+            <span>2. Engineering Earned Value (Dev-Days)</span>
+            ${evmLozenge}
+          </div>
+          <div class="gov-stat-row">
+            <span>Effort CPI: <strong>${cpiVal.toFixed(2)}</strong></span>
+            <span>Schedule SPI: <strong>${spiVal.toFixed(2)}</strong></span>
+            <span>EAC: <strong>${(evm?.eacTrendDays ?? 0).toFixed(1)}d</strong> (BAC ${(evm?.bacDays ?? 0).toFixed(1)}d)</span>
+          </div>
+          <div class="gov-squad-list">
+            ${squadRows}
+          </div>
+        </div>
+
+        <!-- Card 3: Resource Contention & Handoffs -->
+        <div class="gov-card">
+          <div class="gov-card-header">
+            <span>3. Resource Contention &amp; Handoffs</span>
+            <span class="jira-lozenge ${(gov?.overallocatedAssignees.length ?? 0) > 0 ? 'jira-lozenge-inprogress' : 'jira-lozenge-done'}">
+              ${gov?.overallocatedAssignees.length ?? 0} OVERLOADED
+            </span>
+          </div>
+          <div class="gov-stat-row">
+            <span>Blocked Handoff Idle: <strong>${(gov?.blockedHandoffIdleDays ?? 0).toFixed(1)}d</strong></span>
+            <span>SLA Breach Risk: <strong>${Math.round((gov?.slaBreachProbability ?? 0) * 100)}%</strong></span>
+          </div>
+          ${(gov?.overallocatedAssignees.length ?? 0) > 0
+            ? `<div class="gov-sub-note">Parallel Contention: ${escapeHtmlText(gov.overallocatedAssignees.map((a) => `${a.assignee} (${a.utilizationPct}%)`).join(', '))}</div>`
+            : `<div class="gov-sub-note">No parallel critical-path assignee multi-tasking detected.</div>`}
+        </div>
+
+        <!-- Card 4: Sprint Readiness (DoR) & Retro Calibration -->
+        <div class="gov-card">
+          <div class="gov-card-header">
+            <span>4. Sprint Readiness &amp; Stage Gates</span>
+            <span class="jira-lozenge ${(gov?.sprintReadinessScore ?? 100) >= 80 ? 'jira-lozenge-done' : 'jira-lozenge-inprogress'}">
+              DoR ${gov?.sprintReadinessScore ?? 100}%
+            </span>
+          </div>
+          <div class="gov-stat-row">
+            <span>Stage Gates: <strong>${stageGateNodes.length}</strong> (${escapeHtmlText(stageGateNodes.join(', ') || 'None')})</span>
+            <span>Retro Priors: <strong>${retroCal ? `${retroCal.empiricalVelocityRatio}x (${retroCal.completedCount} done)` : '1.0x'}</strong></span>
+          </div>
+        </div>
+      </div>
+    `;
     }
     const mcpRpcSample = {
         jsonrpc: '2.0',
@@ -2199,7 +2827,7 @@ function renderScenarioPanel(props) {
               <button
                 class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
                 id="btn-toggle-add-dev"
-                title="Reduces task duration by 35% and variance σ by 40%"
+                title="Adds +1 FTE with Brooks's Law communication & onboarding drag calibration"
               >
                 ${addDeveloper ? '✓ +1 Developer Added' : '+ Add Developer (+1 FTE)'}
               </button>
@@ -2211,6 +2839,13 @@ function renderScenarioPanel(props) {
                 ${decoupleBlockingEdges ? '✓ Dependency Decoupled' : '✂ Decouple Dependency'}
               </button>
             </div>
+            ${addDeveloper && activeSim.deliveryGovernance?.brooksLawDiagnostic
+        ? `<div class="brooks-advisory-banner" title="Brooks's Law Communication Channels N = n(n-1)/2 & Onboarding Mentoring Drag">
+                     <span><strong>Brooks's Law:</strong> Net <strong>${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays >= 0
+            ? `${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays}d saved`
+            : `${Math.abs(activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays)}d slower`}</strong> (Onboarding drag ${activeSim.deliveryGovernance.brooksLawDiagnostic.onboardingPenaltyDays}d · Channels N: ${activeSim.deliveryGovernance.brooksLawDiagnostic.communicationChannelsBefore} → ${activeSim.deliveryGovernance.brooksLawDiagnostic.communicationChannelsAfter})</span>
+                   </div>`
+        : ''}
           </div>
 
           <!-- Step 2: Release Date Comparison Bars -->
@@ -2315,10 +2950,13 @@ function renderScenarioPanel(props) {
       <div class="panel-card">
         <div class="tab-bar">
           <button class="tab-btn ${activeRightTab === 'cascade' ? 'active' : ''}" data-tab="cascade">
-            Impacted Issues (${activeSim.blastRadiusNodes.length})
+            Impacted (${activeSim.blastRadiusNodes.length})
           </button>
           <button class="tab-btn ${activeRightTab === 'bottlenecks' ? 'active' : ''}" data-tab="bottlenecks">
-            Top Blockers (${activeSim.topBottlenecks.length})
+            Blockers (${activeSim.topBottlenecks.length})
+          </button>
+          <button class="tab-btn ${activeRightTab === 'governance' ? 'active' : ''}" data-tab="governance">
+            Delivery Health
           </button>
           <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
             Math &amp; MCP
@@ -2637,15 +3275,29 @@ function attachCockpitEventListeners(skipMountForSlider) {
                     : info.rippleShift < 0
                         ? `<span style="color:#216E4E;font-weight:700;">${info.rippleShift.toFixed(1)}d faster</span>`
                         : `<span style="color:#626F86;">On Baseline Schedule</span>`;
+                const floatDays = info.totalFloatDays ?? 0;
+                const floatBadge = floatDays < 0
+                    ? `<strong style="color:#AE2E24;">${floatDays.toFixed(1)}d (Super-Critical)</strong>`
+                    : floatDays === 0
+                        ? `<strong style="color:#A54800;">0.0d (Critical Path)</strong>`
+                        : `<strong style="color:#216E4E;">+${floatDays.toFixed(1)}d Slack</strong>`;
+                const stepPct = info.completionStepPct ?? 0;
+                const stepLabel = stepPct === 75
+                    ? '75% (Awaiting Handoff)'
+                    : stepPct === 100
+                        ? '100% (Accepted)'
+                        : `${stepPct}%`;
                 hoverCard.innerHTML = `
           <div class="hover-card-header">
-            <span class="hover-card-key">${escapeHtmlText(info.key)}</span>
+            <span class="hover-card-key">${escapeHtmlText(info.key)}${info.isStageGate ? ' · STAGE GATE' : ''}</span>
             <span class="jira-lozenge jira-lozenge-todo">${escapeHtmlText(info.status.toUpperCase())}</span>
           </div>
           <div class="hover-card-title">${escapeHtmlText(info.summary)}</div>
           <div class="hover-card-meta">
             <div><span>Assignee:</span> <strong>${escapeHtmlText(info.assignee)}</strong></div>
             <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
+            <div><span>Deadline Float:</span> ${floatBadge}</div>
+            <div><span>Completion Step:</span> <strong>${stepLabel}</strong></div>
             <div><span>Schedule Impact:</span> ${shiftLine}</div>
             <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
           </div>
@@ -2653,7 +3305,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
                     ? `<div class="hover-card-adr">📄 ${escapeHtmlText(info.adr)}</div>`
                     : ''}
           <div class="hover-card-math">
-            📐 <code>Est = ${info.estimateDays}d (σ = ±${info.sigma}d) | Criticality = ${info.criticalityPct}%</code>
+            📐 <code>PERT M = ${(info.pertMean ?? info.estimateDays).toFixed(1)}d (σ = ±${(info.pertSigma ?? info.sigma).toFixed(1)}d) | Crit = ${info.criticalityPct}%</code>
           </div>
           <div class="hover-card-tip">Click issue card to select &amp; simulate</div>
         `;

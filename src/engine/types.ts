@@ -1,6 +1,6 @@
 /**
  * Project World Model (PWM) — Core Causal AI & Monte Carlo Simulation Types
- * Zero-dependency TypeScript types for Atlassian Forge (nodejs20.x).
+ * Zero-dependency TypeScript types for Atlassian Forge (nodejs22.x).
  */
 
 export type IssueStatusCategory = 'To Do' | 'In Progress' | 'Blocked' | 'Done' | string;
@@ -13,6 +13,26 @@ export type DependencyType =
   | 'Architecture Gate'
   | 'Relates to'
   | string;
+
+export type PrecedenceType = 'FS' | 'SS' | 'FF' | 'SF';
+
+/**
+ * Discrete technical blocker / pure risk event (Bernoulli shock).
+ */
+export interface PureRiskEvent {
+  id: string;
+  title: string;
+  /** Probability of occurrence in any given world (0..1) */
+  probability: number;
+  /** Schedule slip injected when the event triggers (days) */
+  delayImpactDays: number;
+  /** Upfront engineering effort required to mitigate (dev-days) */
+  mitigationEffortDays?: number;
+  /** Post-mitigation residual probability (0..1) */
+  residualProbability?: number;
+  /** Post-mitigation residual delay impact (days) */
+  residualDelayDays?: number;
+}
 
 /**
  * A node in the Project World Model Directed Acyclic Graph (DAG).
@@ -29,7 +49,7 @@ export interface CausalNode {
   goalId: string;
   /** Optional metadata for Time Machine sprint scrubbing & visual graph rendering */
   sprint?: number;
-  issueType?: 'Epic' | 'Story' | 'Task' | 'Bug' | 'Milestone' | string;
+  issueType?: 'Epic' | 'Story' | 'Task' | 'Bug' | 'Milestone' | 'Gate' | string;
   storyPoints?: number;
   completedDaysAgo?: number;
   dueDate?: string;
@@ -39,6 +59,29 @@ export interface CausalNode {
     title: string;
     spaceKey: string;
   };
+  /** 3-Point PERT Beta estimates (Min / MostLikely / Max in dev-days) */
+  optimisticDays?: number;
+  mostLikelyDays?: number;
+  pessimisticDays?: number;
+  /** Effective uninterrupted engineering work factor (default 0.70) */
+  effectiveWorkFactor?: number;
+  /** Assignee allocation ratio on this task (0.1 to 2.0; <0.2 indicates fragmentation) */
+  allocationRatio?: number;
+  /** Planned effort budget at completion (BAC) in Dev-Days */
+  plannedEffortDays?: number;
+  /** Actual effort logged to date (ACWP) in Dev-Days */
+  actualEffortDays?: number;
+  /** Whether the downstream task owner has accepted the completed handoff (unlocks 75% -> 100% EVM step) */
+  handoffAcceptedByDownstream?: boolean;
+  /** Squad size working on this task (used for N = n(n-1)/2 communication channels & Brooks's Law) */
+  teamSize?: number;
+  /** Optional discrete technical blocker events (Bernoulli shocks) */
+  pureRisks?: PureRiskEvent[];
+  /** Whether this node acts as an Architecture / Release Readiness Stage-Gate */
+  isStageGate?: boolean;
+  gateStatus?: 'Go' | 'Conditional Go' | 'Hold' | 'At Risk';
+  /** Execution ownership mode for cross-team & external dependency risk tracking */
+  executionMode?: 'internal-squad' | 'cross-team-dependency' | 'external-vendor-api';
 }
 
 /**
@@ -50,6 +93,10 @@ export interface CausalEdge {
   to: string;
   dependencyType: DependencyType;
   propagationWeight: number;
+  /** Precedence relationship: FS (Finish-to-Start), SS (Start-to-Start), FF (Finish-to-Finish), SF (Start-to-Finish) */
+  precedenceType?: PrecedenceType;
+  /** Lead/Lag days: > 0 for non-labor waiting lag (e.g. review/bake time), < 0 for fast-tracking overlap */
+  lagDays?: number;
 }
 
 /**
@@ -129,6 +176,13 @@ export interface NodeSimulationStats {
   p95Date: string;
   meanDurationDays: number;
   slackDays: number;
+  /** Signed float relative to forced target deadline (negative when behind target / super-critical) */
+  totalFloatDays?: number;
+  /** Objective step-function completion percentage (0, 25, 50, 75, 100) */
+  completionStepPct?: number;
+  /** 3-Point PERT Beta expected duration & sigma when PERT is active */
+  pertMeanDays?: number;
+  pertSigmaDays?: number;
   /** Fraction of Monte Carlo iterations (0..1) where this node lies on the longest path */
   criticalityIndex: number;
   /** Signed counterfactual ripple shift in days when an intervention is active */
@@ -177,6 +231,10 @@ export interface BottleneckDiagnostic {
   /** Cumulative downstream causal ripple weight across all reachable dependent nodes */
   downstreamRippleWeight: number;
   slackDays: number;
+  /** Signed float relative to target deadline (negative when super-critical) */
+  totalFloatDays?: number;
+  /** Expected schedule risk reduction per day of mitigation effort */
+  mitigationROI?: number;
   riskScore: number;
   recommendation: string;
 }
@@ -210,6 +268,85 @@ export interface TimeMachineEpoch {
 }
 
 /**
+ * Three-Tier Schedule & Effort Reserve Breakdown:
+ * - Target Base (P50)
+ * - PM / Sprint Contingency Reserve (P85 - P50)
+ * - Executive Tail Reserve (CVaR95 - P85)
+ */
+export interface ReserveBreakdown {
+  baseTargetDays: number;
+  pmContingencyReserveDays: number;
+  managementReserveDays: number;
+  bufferBurnRatio: number;
+  committedEffortRatio: number;
+}
+
+/**
+ * Hierarchical Engineering Earned Value Management (EVM) in Dev-Days:
+ * BAC, BCWS, BCWP (Earned Value), ACWP, CV, SV, CPI, SPI, EAC, and WBS squad masking detection.
+ */
+export interface EarnedValueSummary {
+  bacDays: number;
+  bcwsDays: number;
+  bcwpDays: number;
+  acwpDays: number;
+  cvDays: number;
+  svDays: number;
+  cpi: number;
+  spi: number;
+  eacOneOffDays: number;
+  eacTrendDays: number;
+  etcDays: number;
+  maskingWarning: boolean;
+  byTeam: Record<
+    string,
+    {
+      bacDays: number;
+      bcwsDays: number;
+      bcwpDays: number;
+      acwpDays: number;
+      cvDays: number;
+      svDays: number;
+      cpi: number;
+      spi: number;
+      maskingWarning: boolean;
+    }
+  >;
+}
+
+/**
+ * Software Delivery Governance, Brooks's Law, Cross-Team Handoffs, Hypercare & Retro Calibration.
+ */
+export interface DeliveryGovernanceSummary {
+  releaseMode: 'external-commit' | 'target-window' | 'continuous-delivery';
+  slaBreachProbability: number;
+  costOfDelayDevDays: number;
+  brooksLawDiagnostic?: {
+    communicationChannelsBefore: number;
+    communicationChannelsAfter: number;
+    onboardingPenaltyDays: number;
+    netAccelerationDays: number;
+    warning?: string;
+  };
+  overallocatedAssignees: Array<{
+    assignee: string;
+    concurrentIssues: string[];
+    utilizationPct: number;
+  }>;
+  blockedHandoffIdleDays: number;
+  lateChangeEscalationFactor: number;
+  stageGateNodes: string[];
+  hypercareReserveDays: number;
+  sprintReadinessScore: number;
+  lessonsLearntCalibration: {
+    completedCount: number;
+    empiricalVelocityRatio: number;
+    recommendedSigmaMultiplier: number;
+    summary: string;
+  };
+}
+
+/**
  * Output of the Project World Model Monte Carlo & Counterfactual Simulation Engine.
  */
 export interface SimulationResult {
@@ -227,6 +364,8 @@ export interface SimulationResult {
   /** Estimated human rework hours at risk / saved (PWM CRR Engine) */
   estimatedReworkHours: number;
   criticalPathNodes: string[];
+  /** Nodes with negative total float relative to the target goal deadline */
+  superCriticalNodes?: string[];
   blastRadiusNodes: string[];
   rippleDelayDays: number;
   iterations: number;
@@ -241,6 +380,12 @@ export interface SimulationResult {
   topBottlenecks: BottleneckDiagnostic[];
   distributionBuckets: ProbabilityConeBucket[];
   timeMachineEpochs: TimeMachineEpoch[];
+  /** Three-tier schedule buffer decomposition */
+  reserves?: ReserveBreakdown;
+  /** Hierarchical Engineering Earned Value in Dev-Days */
+  earnedValue?: EarnedValueSummary;
+  /** Software Delivery Governance, Brooks's Law, Handoffs & Retro Calibration */
+  deliveryGovernance?: DeliveryGovernanceSummary;
 }
 
 /**

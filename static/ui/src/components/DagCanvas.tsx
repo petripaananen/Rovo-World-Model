@@ -177,9 +177,34 @@ export function renderDagCanvas(props: DagCanvasProps): string {
         markerId = 'url(#arrow-critical)';
       }
 
-      const edgeTooltip = `${edge.from} ${edge.dependencyType} ${edge.to}`;
+      const precType = edge.precedenceType ?? 'FS';
+      const lagDays = edge.lagDays ?? 0;
+      const lagSuffix =
+        lagDays > 0
+          ? ` (+${lagDays}d Lag)`
+          : lagDays < 0
+            ? ` (${lagDays}d Fast-Track)`
+            : '';
+      const edgeTooltip = `${edge.from} ${edge.dependencyType} (${precType}${lagSuffix}) ${edge.to}`;
 
-      return `<path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>`;
+      const hasNonDefaultMeta = precType !== 'FS' || lagDays !== 0;
+      const midX = (x1 + x2) / 2;
+      const midY = (y1 + y2) / 2;
+      const pillLabel =
+        lagDays < 0
+          ? `${precType} ${lagDays}d FT`
+          : lagDays > 0
+            ? `${precType} +${lagDays}d`
+            : precType;
+
+      const edgeMetaBadge = hasNonDefaultMeta
+        ? `<g transform="translate(${midX - 24}, ${midY - 8})">
+             <rect width="48" height="15" rx="3" fill="${lagDays < 0 ? '#FFF7D6' : '#F3F0FF'}" stroke="${lagDays < 0 ? '#E2B203' : '#6E5DC6'}" stroke-width="1" />
+             <text x="24" y="10.5" text-anchor="middle" fill="${lagDays < 0 ? '#A54800' : '#5E4DB2'}" font-size="8.5" font-weight="700">${escapeHtmlText(pillLabel)}</text>
+           </g>`
+        : '';
+
+      return `<g><path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>${edgeMetaBadge}</g>`;
     })
     .join('');
 
@@ -263,6 +288,15 @@ export function renderDagCanvas(props: DagCanvasProps): string {
             </text>
           </g>
         `;
+      } else if (node.isStageGate) {
+        topBadge = `
+          <g transform="translate(${xLeft + nodeW - 48}, ${yTop - 10})">
+            <rect width="48" height="18" rx="3" fill="#6E5DC6" />
+            <text x="24" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="700">
+              GATE
+            </text>
+          </g>
+        `;
       }
 
       const shortSummary =
@@ -277,6 +311,11 @@ export function renderDagCanvas(props: DagCanvasProps): string {
         status: temporalState,
         estimateDays: node.baseEstimateDays,
         sigma: node.uncertaintySigma,
+        pertMean: stat?.pertMeanDays ?? node.baseEstimateDays,
+        pertSigma: stat?.pertSigmaDays ?? node.uncertaintySigma,
+        completionStepPct: stat?.completionStepPct ?? 0,
+        totalFloatDays: stat?.totalFloatDays ?? 0,
+        isStageGate: Boolean(node.isStageGate),
         goalName: goalObj?.name ?? node.goalId,
         p85Date: stat ? formatFriendlyDate(stat.p85Date, true) : 'N/A',
         rippleShift: rippleShift,

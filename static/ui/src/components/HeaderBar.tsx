@@ -71,6 +71,15 @@ export function renderHeaderBar(props: HeaderBarProps): string {
     Math.round(activeSim.p95Days - activeSim.p50Days)
   );
 
+  const superCriticalCount = activeSim.superCriticalNodes?.length ?? 0;
+  const reserves = activeSim.reserves;
+  const pmBufferDays = reserves ? Math.round(reserves.pmContingencyReserveDays) : Math.max(1, Math.round(activeSim.p85Days - activeSim.p50Days));
+  const execReserveDays = reserves ? Math.round(reserves.managementReserveDays) : Math.max(1, Math.round(activeSim.cvar95Days - activeSim.p85Days));
+  const bufferBurnPct = reserves ? Math.round(reserves.bufferBurnRatio * 100) : 0;
+
+  const overallocatedList = activeSim.deliveryGovernance?.overallocatedAssignees ?? [];
+  const evm = activeSim.earnedValue;
+
   const projectList: JiraProjectOption[] =
     availableProjects.length > 0
       ? [...availableProjects]
@@ -176,7 +185,7 @@ export function renderHeaderBar(props: HeaderBarProps): string {
           ${renderInfoTooltip(
             '85% Confidence Commit Date (P85)',
             'Statistically, 85 out of 100 simulated project runs finish on or before this date. Compare with the baseline target to see the impact of your What-If change.',
-            `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d) | Baseline P85 = ${baselineSim.p85Date}`
+            `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d) | Baseline P85 = ${baselineSim.p85Date} | Super-Critical (Float < 0): ${superCriticalCount} issues`
           )}
         </div>
         <div class="kpi-value">
@@ -184,7 +193,11 @@ export function renderHeaderBar(props: HeaderBarProps): string {
           ${releaseLozenge}
         </div>
         <div class="kpi-sub">
-          Baseline Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong> (85% confidence)
+          Baseline Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong>${
+            superCriticalCount > 0
+              ? ` · <strong style="color:#AE2E24;">${superCriticalCount} Negative Float</strong>`
+              : ' (85% confidence)'
+          }
         </div>
       </div>
 
@@ -193,9 +206,9 @@ export function renderHeaderBar(props: HeaderBarProps): string {
         <div class="kpi-label">
           <span>DELIVERY FORECAST WINDOW</span>
           ${renderInfoTooltip(
-            'Probability Cone & Tail Risk (P50 – P95 & CVaR)',
-            'Shows the window between Likely Median completion (50% probability) and Worst-Case Buffer (95% probability).',
-            `P50=${activeSim.p50Date} | P95=${activeSim.p95Date} (${p95Shift >= 0 ? `+${p95Shift}d` : `${p95Shift}d`}) | CVaR₀.₉₅=${activeSim.cvar95Date}`
+            '3-Tier Schedule Buffers & Tail Risk (P50 / P85 / CVaR)',
+            'Decomposes schedule uncertainty into Base Target (P50), PM Contingency Buffer (P85 - P50), and Executive Tail Reserve (CVaR95 - P85).',
+            `Base P50=${activeSim.p50Date} | PM Buffer=+${pmBufferDays}d | Exec Reserve=+${execReserveDays}d | Buffer Burn=${bufferBurnPct}%`
           )}
         </div>
         <div class="kpi-value">
@@ -203,7 +216,7 @@ export function renderHeaderBar(props: HeaderBarProps): string {
           <span class="jira-lozenge jira-lozenge-todo">±${windowBufferDays}D SPREAD</span>
         </div>
         <div class="kpi-sub">
-          Likely (50%): <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · Buffer (95%): <strong>${formatFriendlyDate(activeSim.p95Date)}</strong>
+          Target: <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · PM Buffer: <strong>+${pmBufferDays}d</strong> · Exec: <strong>+${execReserveDays}d</strong>
         </div>
       </div>
 
@@ -212,9 +225,9 @@ export function renderHeaderBar(props: HeaderBarProps): string {
         <div class="kpi-label">
           <span>CRITICAL PATH BLOCKERS</span>
           ${renderInfoTooltip(
-            'Topological Critical Path',
-            'Issues with zero or near-zero schedule slack that directly gate the project completion date.',
-            `Critical Path (${activeSim.criticalPathNodes.length} issues) | Top Blocker ${topBlockerKey} Ripple Weight = ${topBlocker?.downstreamRippleWeight ?? 1.0}`
+            'Topological Critical Path & Resource Contention',
+            'Issues with zero or negative schedule slack that gate project completion, plus parallel assignee multi-tasking contention.',
+            `Critical Path (${activeSim.criticalPathNodes.length} issues) | Top Blocker ${topBlockerKey} ROI = ${topBlocker?.mitigationROI ?? 1.0}d/$ | Overloaded Assignees = ${overallocatedList.length}`
           )}
         </div>
         <div class="kpi-value">
@@ -222,20 +235,24 @@ export function renderHeaderBar(props: HeaderBarProps): string {
           <span class="jira-lozenge jira-lozenge-inprogress">TOP: ${escapeHtmlText(topBlockerKey)}</span>
         </div>
         <div class="kpi-sub">
-          <strong>${escapeHtmlText(topBlockerKey)}</strong> impacts <strong>${topBlocker?.downstreamCount ?? 1} downstream ${
+          <strong>${escapeHtmlText(topBlockerKey)}</strong> gates <strong>${topBlocker?.downstreamCount ?? 1} ${
             (topBlocker?.downstreamCount ?? 1) === 1 ? 'issue' : 'issues'
-          }</strong>
+          }</strong>${
+            overallocatedList.length > 0
+              ? ` · <strong style="color:#A54800;">${overallocatedList.length} Overloaded Dev</strong>`
+              : ''
+          }
         </div>
       </div>
 
       <!-- Card 4: Teamwork Graph Goals -->
-      <div class="kpi-card ${affectedGoalsCount > 0 && p85Shift > 0 ? 'highlight-shift' : ''}">
+      <div class="kpi-card ${(affectedGoalsCount > 0 && p85Shift > 0) || evm?.maskingWarning ? 'highlight-shift' : ''}">
         <div class="kpi-label">
           <span>TEAMWORK GRAPH GOALS</span>
           ${renderInfoTooltip(
-            'Atlassian Teamwork Graph Alignment',
-            'Connects project issues to high-level Teamwork Graph Goals and tracks on-time delivery probability.',
-            `Selected: ${selectedNodeKey} | Downstream Impact: ${activeSim.blastRadiusNodes.length} issues | Friction E = ${activeSim.quasimetricEnergy}`
+            'Teamwork Graph Goals & Engineering Earned Value',
+            'Connects project issues to Teamwork Graph Goals and tracks Dev-Day Earned Value (CPI = BCWP/ACWP, SPI = BCWP/BCWS) across engineering squads.',
+            `Effort CPI = ${evm?.cpi ?? 1.0} | Schedule SPI = ${evm?.spi ?? 1.0} | EAC = ${evm?.eacTrendDays ?? 0}d (BAC ${evm?.bacDays ?? 0}d) | Friction E = ${activeSim.quasimetricEnergy}`
           )}
         </div>
         <div class="kpi-value">
@@ -249,7 +266,7 @@ export function renderHeaderBar(props: HeaderBarProps): string {
           </span>
         </div>
         <div class="kpi-sub">
-          ${activeSim.goalImpacts
+          Effort CPI <strong>${(evm?.cpi ?? 1.0).toFixed(2)}</strong> · Schedule SPI <strong>${(evm?.spi ?? 1.0).toFixed(2)}</strong> · ${activeSim.goalImpacts
             .map((g) => `${escapeHtmlText(g.goalName)} (${g.status})`)
             .join(' · ')}
         </div>

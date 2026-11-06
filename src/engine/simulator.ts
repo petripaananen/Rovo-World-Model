@@ -14,17 +14,24 @@
 import {
   addCalendarDays,
   computeDeterministicCriticalPath,
+  computePertParameters,
   getDownstreamBlastRadius,
   resolveNodeKey,
   topologicalSort,
 } from './dag';
 import {
   BottleneckDiagnostic,
+  CausalEdge,
   CausalGraph,
+  CausalNode,
+  DeliveryGovernanceSummary,
+  EarnedValueSummary,
   GoalImpact,
   InterventionResult,
   NodeSimulationStats,
+  PrecedenceType,
   ProbabilityConeBucket,
+  ReserveBreakdown,
   SimulationResult,
   TimeMachineEpoch,
   WhatIfInterventionOptions,
@@ -74,6 +81,89 @@ function percentileSorted(sorted: Float64Array, q: number): number {
     return sorted[base] + rest * (sorted[base + 1] - sorted[base]);
   }
   return sorted[base];
+}
+
+/**
+ * Computes the objective step-function completion percentage (0%, 25%, 50%, 75%, 100%)
+ * where the final 75% -> 100% transition requires downstream handoff acceptance when
+ * the task gates a downstream dependent task.
+ */
+export function computeNodeCompletionStepPct(
+  node: CausalNode,
+  outgoingEdges: CausalEdge[],
+  nodeByKey: Map<string, CausalNode>
+): number {
+  const statusLower = node.status.toLowerCase();
+  if (statusLower === 'done' || statusLower === 'completed' || statusLower === 'closed') {
+    if (node.handoffAcceptedByDownstream === false) {
+      return 75;
+    }
+    if (node.handoffAcceptedByDownstream === true) {
+      return 100;
+    }
+    const hasUnacceptedCrossTeamHandoff = outgoingEdges.some((edge) => {
+      const target = nodeByKey.get(edge.to);
+      if (!target) return false;
+      const isCrossTeam =
+        target.team !== node.team || edge.dependencyType === 'Cross-Team Handoff';
+      return isCrossTeam && target.status.toLowerCase() === 'to do' && edge.propagationWeight >= 0.95 && node.handoffAcceptedByDownstream !== undefined;
+    });
+    return hasUnacceptedCrossTeamHandoff ? 75 : 100;
+  }
+  if (statusLower.includes('review') || statusLower.includes('qa')) {
+    return 75;
+  }
+  if (statusLower.includes('progress')) {
+    return 50;
+  }
+  if (statusLower.includes('block')) {
+    return 25;
+  }
+  return 0;
+}
+
+/**
+ * Computes Brooks's Law onboarding drag and communication channel complexity N = n(n-1)/2
+ * when adding +1 developer to a squad working on `node`.
+ */
+export function computeBrooksLawMetrics(node: CausalNode): {
+  communicationChannelsBefore: number;
+  communicationChannelsAfter: number;
+  onboardingPenaltyDays: number;
+  netAccelerationDays: number;
+  effectiveSwarmDurationDays: number;
+  warning?: string;
+} {
+  const n = Math.max(2, node.teamSize ?? 3);
+  const communicationChannelsBefore = (n * (n - 1)) / 2;
+  const communicationChannelsAfter = ((n + 1) * n) / 2;
+  const deltaChannels = communicationChannelsAfter - communicationChannelsBefore;
+  const pert = computePertParameters(node);
+  const base = Math.max(0.5, pert.meanDays);
+
+  const onboardingPenaltyDays = Number(
+    Math.min(1.2, 0.08 * base + 0.06 * deltaChannels).toFixed(2)
+  );
+  const parallelCompressed = base * 0.65;
+  const appliedOnboarding = base <= 2.0 ? onboardingPenaltyDays : onboardingPenaltyDays * 0.35;
+  const effectiveSwarmDurationDays = Number(
+    Math.max(0.5, parallelCompressed + appliedOnboarding).toFixed(2)
+  );
+  const netAccelerationDays = Number((base - effectiveSwarmDurationDays).toFixed(2));
+
+  let warning: string | undefined;
+  if (base <= 2.5) {
+    warning = `Short task (${base}d): +${onboardingPenaltyDays}d mentoring & coordination overhead (${communicationChannelsBefore} -> ${communicationChannelsAfter} channels) reduces parallel speedup.`;
+  }
+
+  return {
+    communicationChannelsBefore,
+    communicationChannelsAfter,
+    onboardingPenaltyDays,
+    netAccelerationDays,
+    effectiveSwarmDurationDays,
+    warning,
+  };
 }
 
 /**
@@ -129,21 +219,47 @@ export function runMonteCarloSimulation(
     ? getDownstreamBlastRadius(effectiveGraph, intervenedKey)
     : { targetKey: undefined, blastRadiusKeys: [], effectiveWeights: {} as Record<string, number> };
 
-  // Pre-index incoming edges for each topological index for ultra-fast inner loop
+  // Pre-index incoming and outgoing edges for each topological index
   const predIndices: number[][] = Array.from({ length: n }, () => []);
   const predWeights: number[][] = Array.from({ length: n }, () => []);
+  const predTypes: PrecedenceType[][] = Array.from({ length: n }, () => []);
+  const predLags: number[][] = Array.from({ length: n }, () => []);
+  const outgoingByKey = new Map<string, CausalEdge[]>();
+  for (const node of orderedNodes) {
+    outgoingByKey.set(node.key, []);
+  }
 
   for (const edge of effectiveEdges) {
+    outgoingByKey.get(edge.from)?.push(edge);
     const uIdx = keyToIndex.get(edge.from);
     const vIdx = keyToIndex.get(edge.to);
     if (uIdx !== undefined && vIdx !== undefined) {
       predIndices[vIdx].push(uIdx);
       predWeights[vIdx].push(edge.propagationWeight);
+      predTypes[vIdx].push(edge.precedenceType ?? 'FS');
+      predLags[vIdx].push(edge.lagDays ?? 0);
     }
   }
 
-  // Deterministic CPM metrics (slack, downstream counts, ripple weights)
+  // Detect parallel assignee contention across active non-Done tasks
+  const assigneeActiveTasks = new Map<string, string[]>();
+  for (const node of orderedNodes) {
+    if (
+      node.status.toLowerCase() !== 'done' &&
+      node.assignee &&
+      node.assignee.toLowerCase() !== 'unassigned'
+    ) {
+      const list = assigneeActiveTasks.get(node.assignee) ?? [];
+      list.push(node.key);
+      assigneeActiveTasks.set(node.assignee, list);
+    }
+  }
+
+  // Deterministic CPM metrics (slack, totalFloat, downstream counts, ripple weights)
   const cpmMetrics = computeDeterministicCriticalPath(effectiveGraph);
+
+  // Precompute PERT parameters per node
+  const nodePert = orderedNodes.map((node) => computePertParameters(node));
 
   // Typed storage for Monte Carlo trials
   const nodeStartSamples: Float64Array[] = Array.from(
@@ -171,6 +287,7 @@ export function runMonteCarloSimulation(
 
     for (let i = 0; i < n; i++) {
       const node = orderedNodes[i];
+      const pert = nodePert[i];
       const isTarget = node.key === intervenedKey;
       const isDone = node.status.toLowerCase() === 'done';
 
@@ -179,33 +296,71 @@ export function runMonteCarloSimulation(
       let sampledDuration = 0;
 
       if (!isDone || (isTarget && (interventionDelta !== 0 || addDeveloper))) {
-        let base = isDone ? 0 : Math.max(0.5, node.baseEstimateDays);
-        let sigma = isDone ? 0.25 : Math.max(0.1, node.uncertaintySigma);
+        let base = isDone ? 0 : pert.meanDays;
+        let sigma = isDone ? 0.25 : pert.sigmaDays;
+
+        // Multi-tasking fragmentation / overload adjustment if explicitly configured
+        if (typeof node.allocationRatio === 'number') {
+          if (node.allocationRatio < 0.2) {
+            sigma *= 1.25;
+          } else if (node.allocationRatio > 1.1) {
+            sigma *= 1.2;
+          }
+        }
 
         if (isTarget && addDeveloper) {
-          base = Math.max(0.5, base * 0.65);
+          const brooks = computeBrooksLawMetrics(node);
+          base = brooks.effectiveSwarmDurationDays;
           sigma = Math.max(0.1, sigma * 0.6);
         }
 
         // Right-skewed software engineering tail distribution
         const skewNoise = z >= 0 ? z * sigma * 1.28 : z * sigma * 0.62;
-        const rawDuration = Math.max(base * 0.35, base + skewNoise);
+        let rawDuration = Math.max(base * 0.35, base + skewNoise);
+
+        // Discrete Pure Risk Events (Bernoulli shocks)
+        if (node.pureRisks && node.pureRisks.length > 0) {
+          for (const risk of node.pureRisks) {
+            const u = rng();
+            if (u < Math.max(0, Math.min(1, risk.probability))) {
+              rawDuration += Math.max(0, risk.delayImpactDays);
+            }
+          }
+        }
+
         const shiftedDuration = rawDuration + (isTarget ? interventionDelta : 0);
         sampledDuration = isDone && interventionDelta <= 0 ? 0 : Math.max(0.5, shiftedDuration);
       }
 
-      // Compute earliest start time gated by upstream predecessors
+      // Compute earliest start time gated by upstream predecessors (FS, SS, FF, SF + lagDays)
       const pIdxList = predIndices[i];
       const pWeightList = predWeights[i];
+      const pTypeList = predTypes[i];
+      const pLagList = predLags[i];
       let earliestStart = 0;
       let chosenPred = -1;
 
       for (let p = 0; p < pIdxList.length; p++) {
         const uIdx = pIdxList[p];
         const w = pWeightList[p];
+        const pType = pTypeList[p];
+        const lag = pLagList[p];
         const uStart = trialStart[uIdx];
-        const uDur = Math.max(0, trialEnd[uIdx] - uStart);
-        const candidateStart = uStart + uDur * w;
+        const uEnd = trialEnd[uIdx];
+        const uDur = Math.max(0, uEnd - uStart);
+
+        let candidateStart = 0;
+        if (pType === 'SS') {
+          candidateStart = Math.max(0, uStart + lag);
+        } else if (pType === 'FF') {
+          candidateStart = Math.max(0, uEnd + lag - sampledDuration);
+        } else if (pType === 'SF') {
+          candidateStart = Math.max(0, uStart + lag - sampledDuration);
+        } else {
+          // Default FS (Finish-to-Start)
+          candidateStart = Math.max(0, uStart + uDur * w + lag);
+        }
+
         if (candidateStart > earliestStart) {
           earliestStart = candidateStart;
           chosenPred = uIdx;
@@ -266,6 +421,7 @@ export function runMonteCarloSimulation(
   const nodeStats: Record<string, NodeSimulationStats> = {};
   for (let i = 0; i < n; i++) {
     const node = orderedNodes[i];
+    const pert = nodePert[i];
     const sortedStarts = Float64Array.from(nodeStartSamples[i]).sort();
     const sortedEnds = Float64Array.from(nodeEndSamples[i]).sort();
 
@@ -276,6 +432,11 @@ export function runMonteCarloSimulation(
 
     const criticalityIndex = Number((criticalHits[i] / iterations).toFixed(3));
     const effWeight = blastInfo.effectiveWeights[node.key] ?? 0;
+    const completionStepPct = computeNodeCompletionStepPct(
+      node,
+      outgoingByKey.get(node.key) ?? [],
+      nodeByKey
+    );
 
     nodeStats[node.key] = {
       nodeId: node.id,
@@ -295,6 +456,10 @@ export function runMonteCarloSimulation(
       p95Date: addCalendarDays(graph.referenceDate, Math.ceil(nodeP95End)),
       meanDurationDays: Number((nodeDurationSums[i] / iterations).toFixed(2)),
       slackDays: cpmMetrics[node.key]?.slackDays ?? 0,
+      totalFloatDays: cpmMetrics[node.key]?.totalFloatDays ?? cpmMetrics[node.key]?.slackDays ?? 0,
+      completionStepPct,
+      pertMeanDays: pert.meanDays,
+      pertSigmaDays: pert.sigmaDays,
       criticalityIndex,
       rippleDelayDays: Number((interventionDelta * effWeight).toFixed(1)),
       effectivePropagationWeight: effWeight,
@@ -318,7 +483,13 @@ export function runMonteCarloSimulation(
     criticalPathNodes.push(...sortedByEnd.slice(0, Math.min(5, sortedByEnd.length)));
   }
 
-  // Rank top bottlenecks
+  // Identify super-critical nodes (negative float relative to target deadline)
+  const superCriticalNodes = topoKeys.filter((key) => {
+    const stat = nodeStats[key];
+    return stat.status.toLowerCase() !== 'done' && (stat.totalFloatDays ?? 0) < 0;
+  });
+
+  // Rank top bottlenecks with Mitigation ROI
   const topBottlenecks: BottleneckDiagnostic[] = orderedNodes
     .filter((node) => node.status.toLowerCase() !== 'done')
     .map((node) => {
@@ -327,6 +498,7 @@ export function runMonteCarloSimulation(
       const downstreamCount = cpm?.downstreamCount ?? 0;
       const downstreamRippleWeight = cpm?.downstreamRippleWeight ?? 0;
       const slackDays = cpm?.slackDays ?? 0;
+      const totalFloatDays = cpm?.totalFloatDays ?? slackDays;
 
       // Composite causal bottleneck score (0..100)
       const criticalityTerm = stat.criticalityIndex * 45;
@@ -337,6 +509,20 @@ export function runMonteCarloSimulation(
         99,
         Math.round(criticalityTerm + fanoutTerm + uncertaintyTerm + zeroSlackBonus)
       );
+
+      // Mitigation ROI: expected schedule risk reduction per day of mitigation effort
+      const brooks = computeBrooksLawMetrics(node);
+      const expectedRiskReductionDays = Math.max(
+        0.5,
+        (brooks.netAccelerationDays + node.uncertaintySigma * 0.4) *
+          Math.max(0.25, stat.criticalityIndex) *
+          (1 + Math.min(2.5, downstreamRippleWeight * 0.25))
+      );
+      const mitigationCostDays = Math.max(
+        1.0,
+        node.pureRisks?.[0]?.mitigationEffortDays ?? Math.max(1.0, node.baseEstimateDays * 0.25)
+      );
+      const mitigationROI = Number((expectedRiskReductionDays / mitigationCostDays).toFixed(2));
 
       let recommendation =
         'Monitor standard sprint progress; buffer is currently sufficient.';
@@ -362,6 +548,8 @@ export function runMonteCarloSimulation(
         downstreamCount,
         downstreamRippleWeight,
         slackDays,
+        totalFloatDays,
+        mitigationROI,
         riskScore,
         recommendation,
       };
@@ -571,8 +759,6 @@ export function runMonteCarloSimulation(
     },
   ];
 
-  const executionTimeMs = Number((performance.now() - startClock).toFixed(2));
-
   // Compute Asymmetric Quasimetric Latent Energy E(s -> s' | z_env) & Rework Hours (ported from ProjectWorldModel)
   const gammaRev = decoupleBlockingEdges ? 0.92 : 0.72;
   let quadDiffSum = 0;
@@ -590,14 +776,278 @@ export function runMonteCarloSimulation(
   const quasimetricEnergy = Number(
     (Math.sqrt(Math.max(0, quadDiffSum)) + (1.0 - gammaRev) * posLockInDelta).toFixed(2)
   );
+
+  // Fast-tracking overlap & late scope-change maturity escalation
+  let fastTrackingReworkBonus = 0;
+  for (const edge of effectiveEdges) {
+    if ((edge.lagDays ?? 0) < 0) {
+      fastTrackingReworkBonus += Math.abs(edge.lagDays!) * 1.8;
+    }
+  }
+  const maturityRatio =
+    orderedNodes.length > 0 ? (doneCount + inProgressCount * 0.5) / orderedNodes.length : 0;
+  const lateChangeEscalationFactor = Number(Math.exp(0.65 * maturityRatio).toFixed(2));
+
   const estimatedReworkHours = Number(
     Math.max(
       4,
-      (blastInfo.blastRadiusKeys.length * 3.5 + Math.max(0, interventionDelta) * 5.2) *
+      (blastInfo.blastRadiusKeys.length * 3.5 +
+        Math.max(0, interventionDelta) * 5.2 +
+        fastTrackingReworkBonus) *
+        (interventionDelta > 0 ? lateChangeEscalationFactor * 0.78 : 1.0) *
         (addDeveloper ? 0.65 : 1.0) *
         (decoupleBlockingEdges ? 0.5 : 1.0)
     ).toFixed(1)
   );
+
+  // 1. Three-Tier Schedule Reserve Breakdown (Base P50, PM Contingency P85-P50, Exec Reserve CVaR95-P85)
+  const pmContingencyReserveDays = Number(Math.max(0.5, p85Days - p50Days).toFixed(1));
+  const managementReserveDays = Number(Math.max(0.5, cvar95Days - p85Days).toFixed(1));
+  let totalBac = 0;
+  let committedEffort = 0;
+  for (const node of orderedNodes) {
+    const bac = Math.max(0.5, node.plannedEffortDays ?? node.baseEstimateDays);
+    totalBac += bac;
+    const sLow = node.status.toLowerCase();
+    if (sLow === 'done' || sLow.includes('progress') || sLow.includes('block')) {
+      committedEffort += bac;
+    }
+  }
+  const committedEffortRatio = Number(
+    (totalBac > 0 ? Math.min(1, committedEffort / totalBac) : 0).toFixed(2)
+  );
+  const activeSlipOrBlock = Math.max(0, interventionDelta) + blockedCount * 1.5;
+  const bufferBurnRatio = Number(
+    Math.min(2.0, activeSlipOrBlock / Math.max(1.0, pmContingencyReserveDays)).toFixed(2)
+  );
+
+  const reserves: ReserveBreakdown = {
+    baseTargetDays: p50Days,
+    pmContingencyReserveDays,
+    managementReserveDays,
+    bufferBurnRatio,
+    committedEffortRatio,
+  };
+
+  // 2. Hierarchical Engineering Earned Value (EVM in Dev-Days: BAC, BCWS, BCWP, ACWP, CPI, SPI, EAC)
+  let totalBcws = 0;
+  let totalBcwp = 0;
+  let totalAcwp = 0;
+  const byTeamAccum = new Map<
+    string,
+    { bac: number; bcws: number; bcwp: number; acwp: number }
+  >();
+
+  for (const node of orderedNodes) {
+    const stat = nodeStats[node.key];
+    const bac = Math.max(0.5, node.plannedEffortDays ?? node.baseEstimateDays);
+    const stepPct = (stat?.completionStepPct ?? 0) / 100;
+    const bcwp = bac * stepPct;
+    const sLow = node.status.toLowerCase();
+
+    const plannedPct =
+      sLow === 'done'
+        ? 1.0
+        : sLow.includes('block')
+          ? 0.65
+          : sLow.includes('progress')
+            ? 0.55
+            : 0.0;
+    const bcws = bac * plannedPct;
+
+    let acwp =
+      typeof node.actualEffortDays === 'number'
+        ? node.actualEffortDays
+        : sLow === 'done'
+          ? bac
+          : sLow.includes('block')
+            ? bac * 0.5
+            : sLow.includes('progress')
+              ? bac * 0.52
+              : 0;
+    if (node.key === intervenedKey && interventionDelta > 0) {
+      acwp += interventionDelta * 0.75;
+    }
+
+    totalBcws += bcws;
+    totalBcwp += bcwp;
+    totalAcwp += acwp;
+
+    const tEntry = byTeamAccum.get(node.team) ?? { bac: 0, bcws: 0, bcwp: 0, acwp: 0 };
+    tEntry.bac += bac;
+    tEntry.bcws += bcws;
+    tEntry.bcwp += bcwp;
+    tEntry.acwp += acwp;
+    byTeamAccum.set(node.team, tEntry);
+  }
+
+  const safeDiv = (num: number, den: number) =>
+    den > 0.01 ? Number((num / den).toFixed(2)) : 1.0;
+
+  const projectCpi = safeDiv(totalBcwp, totalAcwp);
+  const projectSpi = safeDiv(totalBcwp, totalBcws);
+  const cvDays = Number((totalBcwp - totalAcwp).toFixed(1));
+  const svDays = Number((totalBcwp - totalBcws).toFixed(1));
+  const eacOneOffDays = Number(Math.max(0.5, totalAcwp + (totalBac - totalBcwp)).toFixed(1));
+  const eacTrendDays = Number(
+    Math.max(0.5, totalBac / Math.max(0.25, projectCpi)).toFixed(1)
+  );
+  const etcDays = Number(
+    Math.max(0, (totalBac - totalBcwp) / Math.max(0.25, projectSpi)).toFixed(1)
+  );
+
+  const byTeam: EarnedValueSummary['byTeam'] = {};
+  let hasUnderperformingTeam = false;
+  let hasOutperformingTeam = false;
+
+  for (const [teamName, acc] of byTeamAccum.entries()) {
+    const tCpi = safeDiv(acc.bcwp, acc.acwp);
+    const tSpi = safeDiv(acc.bcwp, acc.bcws);
+    if (tCpi < 0.88 || tSpi < 0.88) hasUnderperformingTeam = true;
+    if (tCpi >= 1.02 && tSpi >= 0.98) hasOutperformingTeam = true;
+
+    byTeam[teamName] = {
+      bacDays: Number(acc.bac.toFixed(1)),
+      bcwsDays: Number(acc.bcws.toFixed(1)),
+      bcwpDays: Number(acc.bcwp.toFixed(1)),
+      acwpDays: Number(acc.acwp.toFixed(1)),
+      cvDays: Number((acc.bcwp - acc.acwp).toFixed(1)),
+      svDays: Number((acc.bcwp - acc.bcws).toFixed(1)),
+      cpi: tCpi,
+      spi: tSpi,
+      maskingWarning: (tCpi < 0.88 || tSpi < 0.88) && (projectCpi >= 0.92 || projectSpi >= 0.92),
+    };
+  }
+
+  const earnedValue: EarnedValueSummary = {
+    bacDays: Number(totalBac.toFixed(1)),
+    bcwsDays: Number(totalBcws.toFixed(1)),
+    bcwpDays: Number(totalBcwp.toFixed(1)),
+    acwpDays: Number(totalAcwp.toFixed(1)),
+    cvDays,
+    svDays,
+    cpi: projectCpi,
+    spi: projectSpi,
+    eacOneOffDays,
+    eacTrendDays,
+    etcDays,
+    maskingWarning:
+      hasUnderperformingTeam &&
+      (hasOutperformingTeam || projectCpi >= 0.92 || projectSpi >= 0.92),
+    byTeam,
+  };
+
+  // 3. Software Delivery Governance, Brooks's Law, Cross-Team Handoffs, Hypercare & Retro Calibration
+  const inspectNode =
+    (intervenedKey ? nodeByKey.get(intervenedKey) : undefined) ??
+    (topBottlenecks[0] ? nodeByKey.get(topBottlenecks[0].key) : undefined) ??
+    orderedNodes[0];
+
+  const brooksLawDiagnostic = inspectNode
+    ? computeBrooksLawMetrics(inspectNode)
+    : undefined;
+
+  const overallocatedAssignees: DeliveryGovernanceSummary['overallocatedAssignees'] = [];
+  for (const [assignee, issues] of assigneeActiveTasks.entries()) {
+    if (issues.length >= 2) {
+      overallocatedAssignees.push({
+        assignee,
+        concurrentIssues: issues,
+        utilizationPct: Math.min(250, issues.length * 65),
+      });
+    }
+  }
+
+  let blockedHandoffIdleDays = 0;
+  for (const edge of effectiveEdges) {
+    const uNode = nodeByKey.get(edge.from);
+    const vNode = nodeByKey.get(edge.to);
+    if (!uNode || !vNode) continue;
+    const isCrossTeam =
+      uNode.team !== vNode.team ||
+      edge.dependencyType === 'Cross-Team Handoff' ||
+      vNode.executionMode === 'cross-team-dependency' ||
+      vNode.executionMode === 'external-vendor-api';
+    if (isCrossTeam) {
+      const uSlip = Math.max(0, nodeStats[uNode.key]?.rippleDelayDays ?? 0);
+      blockedHandoffIdleDays += uSlip > 0 ? uSlip * edge.propagationWeight : 0.4;
+    }
+  }
+  blockedHandoffIdleDays = Number(blockedHandoffIdleDays.toFixed(1));
+
+  const stageGateNodes = orderedNodes
+    .filter(
+      (nd) =>
+        nd.isStageGate ||
+        nd.issueType?.toLowerCase() === 'milestone' ||
+        nd.issueType?.toLowerCase() === 'gate' ||
+        Boolean(nd.confluenceDecision)
+    )
+    .map((nd) => nd.key);
+
+  const hypercareReserveDays = Number(
+    Math.max(1.0, p50Days * 0.05 + estimatedReworkHours / 16).toFixed(1)
+  );
+
+  let readyNodes = 0;
+  for (const nd of orderedNodes) {
+    const hasAssignee = Boolean(nd.assignee && nd.assignee.toLowerCase() !== 'unassigned');
+    const hasEst = nd.baseEstimateDays > 0;
+    const hasGoal = Boolean(nd.goalId);
+    if (hasAssignee && hasEst && hasGoal) readyNodes++;
+  }
+  const sprintReadinessScore =
+    orderedNodes.length > 0 ? Math.round((readyNodes / orderedNodes.length) * 100) : 100;
+
+  const completedNodes = orderedNodes.filter((nd) => nd.status.toLowerCase() === 'done');
+  const empiricalVelocityRatio =
+    completedNodes.length > 0 ? Number((1 / Math.max(0.5, projectCpi)).toFixed(2)) : 1.0;
+  const recommendedSigmaMultiplier = Number(
+    Math.max(0.85, Math.min(1.45, empiricalVelocityRatio * (blockedCount > 0 ? 1.12 : 1.0))).toFixed(
+      2
+    )
+  );
+
+  const primaryGoalProb = goalImpacts[0]?.probabilityOfOnTime ?? 0.85;
+  const slaBreachProbability = Number(Math.max(0, 1 - primaryGoalProb).toFixed(2));
+  const costOfDelayDevDays = Number(
+    (
+      Math.max(0, p85Days - (goalImpacts[0]?.targetDayOffset ?? p85Days)) * 1.5 +
+      blockedHandoffIdleDays
+    ).toFixed(1)
+  );
+
+  const deliveryGovernance: DeliveryGovernanceSummary = {
+    releaseMode: 'external-commit',
+    slaBreachProbability,
+    costOfDelayDevDays,
+    brooksLawDiagnostic: brooksLawDiagnostic
+      ? {
+          communicationChannelsBefore: brooksLawDiagnostic.communicationChannelsBefore,
+          communicationChannelsAfter: brooksLawDiagnostic.communicationChannelsAfter,
+          onboardingPenaltyDays: brooksLawDiagnostic.onboardingPenaltyDays,
+          netAccelerationDays: brooksLawDiagnostic.netAccelerationDays,
+          warning: brooksLawDiagnostic.warning,
+        }
+      : undefined,
+    overallocatedAssignees,
+    blockedHandoffIdleDays,
+    lateChangeEscalationFactor,
+    stageGateNodes,
+    hypercareReserveDays,
+    sprintReadinessScore,
+    lessonsLearntCalibration: {
+      completedCount: completedNodes.length,
+      empiricalVelocityRatio,
+      recommendedSigmaMultiplier,
+      summary:
+        completedNodes.length > 0
+          ? `Calibrated across ${completedNodes.length} completed tasks (velocity ratio ${empiricalVelocityRatio}x, recommended σ multiplier ${recommendedSigmaMultiplier}x).`
+          : `Baseline prior active (0 completed tasks yet; complete sprint issues to auto-calibrate empirical σ).`,
+    },
+  };
+
+  const executionTimeMs = Number((performance.now() - startClock).toFixed(2));
 
   return {
     p50Date,
@@ -611,6 +1061,7 @@ export function runMonteCarloSimulation(
     quasimetricEnergy,
     estimatedReworkHours,
     criticalPathNodes,
+    superCriticalNodes,
     blastRadiusNodes: blastInfo.blastRadiusKeys,
     rippleDelayDays: interventionDelta,
     iterations,
@@ -625,6 +1076,9 @@ export function runMonteCarloSimulation(
     topBottlenecks,
     distributionBuckets,
     timeMachineEpochs,
+    reserves,
+    earnedValue,
+    deliveryGovernance,
   };
 }
 

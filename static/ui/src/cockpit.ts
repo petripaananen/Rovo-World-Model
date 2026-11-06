@@ -33,7 +33,7 @@ interface CockpitState {
   decoupleBlockingEdges: boolean;
   selectedEpochIndex: number;
   scrubberDayOffset: number;
-  activeRightTab: 'cascade' | 'bottlenecks' | 'rovo-mcp';
+  activeRightTab: 'cascade' | 'bottlenecks' | 'governance' | 'rovo-mcp';
   copiedPromptNotice: boolean;
   statusBanner: string | null;
 }
@@ -396,6 +396,11 @@ function attachCockpitEventListeners(
           status: string;
           estimateDays: number;
           sigma: number;
+          pertMean?: number;
+          pertSigma?: number;
+          completionStepPct?: number;
+          totalFloatDays?: number;
+          isStageGate?: boolean;
           goalName: string;
           p85Date: string;
           rippleShift: number;
@@ -410,15 +415,33 @@ function attachCockpitEventListeners(
               ? `<span style="color:#216E4E;font-weight:700;">${info.rippleShift.toFixed(1)}d faster</span>`
               : `<span style="color:#626F86;">On Baseline Schedule</span>`;
 
+        const floatDays = info.totalFloatDays ?? 0;
+        const floatBadge =
+          floatDays < 0
+            ? `<strong style="color:#AE2E24;">${floatDays.toFixed(1)}d (Super-Critical)</strong>`
+            : floatDays === 0
+              ? `<strong style="color:#A54800;">0.0d (Critical Path)</strong>`
+              : `<strong style="color:#216E4E;">+${floatDays.toFixed(1)}d Slack</strong>`;
+
+        const stepPct = info.completionStepPct ?? 0;
+        const stepLabel =
+          stepPct === 75
+            ? '75% (Awaiting Handoff)'
+            : stepPct === 100
+              ? '100% (Accepted)'
+              : `${stepPct}%`;
+
         hoverCard.innerHTML = `
           <div class="hover-card-header">
-            <span class="hover-card-key">${escapeHtmlText(info.key)}</span>
+            <span class="hover-card-key">${escapeHtmlText(info.key)}${info.isStageGate ? ' · STAGE GATE' : ''}</span>
             <span class="jira-lozenge jira-lozenge-todo">${escapeHtmlText(info.status.toUpperCase())}</span>
           </div>
           <div class="hover-card-title">${escapeHtmlText(info.summary)}</div>
           <div class="hover-card-meta">
             <div><span>Assignee:</span> <strong>${escapeHtmlText(info.assignee)}</strong></div>
             <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
+            <div><span>Deadline Float:</span> ${floatBadge}</div>
+            <div><span>Completion Step:</span> <strong>${stepLabel}</strong></div>
             <div><span>Schedule Impact:</span> ${shiftLine}</div>
             <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
           </div>
@@ -428,7 +451,7 @@ function attachCockpitEventListeners(
               : ''
           }
           <div class="hover-card-math">
-            📐 <code>Est = ${info.estimateDays}d (σ = ±${info.sigma}d) | Criticality = ${info.criticalityPct}%</code>
+            📐 <code>PERT M = ${(info.pertMean ?? info.estimateDays).toFixed(1)}d (σ = ±${(info.pertSigma ?? info.sigma).toFixed(1)}d) | Crit = ${info.criticalityPct}%</code>
           </div>
           <div class="hover-card-tip">Click issue card to select &amp; simulate</div>
         `;

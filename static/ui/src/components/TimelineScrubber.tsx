@@ -135,6 +135,15 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
     ...activeSim.distributionBuckets.map((b) => b.probability)
   );
 
+  const reserves = activeSim.reserves;
+  const baseTargetDays = reserves?.baseTargetDays ?? activeSim.p50Days;
+  const pmBufferDays = reserves?.pmContingencyReserveDays ?? Math.max(0.5, activeSim.p85Days - activeSim.p50Days);
+  const execReserveDays = reserves?.managementReserveDays ?? Math.max(0.5, activeSim.cvar95Days - activeSim.p85Days);
+  const totalReserveSpan = Math.max(1, baseTargetDays + pmBufferDays + execReserveDays);
+  const basePct = Math.max(20, Math.round((baseTargetDays / totalReserveSpan) * 100));
+  const pmPct = Math.max(10, Math.round((pmBufferDays / totalReserveSpan) * 100));
+  const execPct = Math.max(8, 100 - basePct - pmPct);
+
   return `
     <section class="time-machine-panel">
       <div class="tm-header">
@@ -198,6 +207,19 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
               title="Drag to scrub across past sprints and future completion dates"
             />
             <span class="tm-slider-bound">Buffer (${formatFriendlyDate(activeSim.p95Date)})</span>
+          </div>
+
+          <div class="reserve-segmented-wrap" title="3-Tier Schedule Buffer Allocation: Base Target (P50 = ${baseTargetDays.toFixed(1)}d) + PM Contingency Buffer (+${pmBufferDays.toFixed(1)}d) + Executive Tail Reserve (+${execReserveDays.toFixed(1)}d)">
+            <div class="reserve-segmented-bar">
+              <div class="reserve-seg reserve-seg-base" style="width:${basePct}%;" title="Base Target (P50): ${baseTargetDays.toFixed(1)} days"></div>
+              <div class="reserve-seg reserve-seg-pm" style="width:${pmPct}%;" title="PM Contingency Buffer (P85 - P50): +${pmBufferDays.toFixed(1)} days"></div>
+              <div class="reserve-seg reserve-seg-exec" style="width:${execPct}%;" title="Executive Tail Reserve (CVaR95 - P85): +${execReserveDays.toFixed(1)} days"></div>
+            </div>
+            <div class="reserve-segmented-legend">
+              <span><i class="reserve-dot" style="background:#0C66E4;"></i>Base P50 (${Math.round(baseTargetDays)}d)</span>
+              <span><i class="reserve-dot" style="background:#E2B203;"></i>PM Buffer (+${Math.round(pmBufferDays)}d)</span>
+              <span><i class="reserve-dot" style="background:#6E5DC6;"></i>Exec Reserve (+${Math.round(execReserveDays)}d)</span>
+            </div>
           </div>
 
           <div class="tm-status-summary">

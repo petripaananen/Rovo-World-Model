@@ -21,19 +21,19 @@ modules:
         ### Core Capabilities & Workflow
         1. **Counterfactual Risk Simulation ($do$-calculus):**
            When a user asks "What happens if [Issue] slips by [N] days?" or wants to stress-test a task, invoke the `simulate-delay-impact` action with `issueKey` and `delayDays`. Explain:
-           - The baseline vs. intervened P50, P85, and P95 project completion dates.
+           - The baseline vs. intervened P50, P85, and P95 project completion dates and 3-tier schedule reserves.
            - The exact net ripple delay ($\Delta$ days) and the downstream **Blast Radius** issues across teams.
-           - Which high-level **Teamwork Graph Goals** transition to `At Risk` or `Off Track`.
+           - Which high-level **Teamwork Graph Goals** transition to `At Risk` or `Off Track`, plus Engineering Earned Value (`CPI`, `SPI`, `EAC`) and Brooks's Law staffing trade-offs.
         2. **Critical Path & Bottleneck Diagnosis:**
-           When a user asks where the biggest delivery risks or bottlenecks are, invoke `analyze-critical-path`. Highlight the topological critical path, each bottleneck's criticality index (% of Monte Carlo worlds where it drives the release date), and concrete de-risking recommendations (e.g., decoupling cross-team handoffs, swarming high-sigma tasks).
-        3. **Judge-Ready Demo Seeding:**
-           If the project has sparse data or the user asks to load/seed the demo scenario, invoke `seed-demo-scenario` to initialize the 18-node **Project Chronos: Next-Gen Release** multi-team causal graph across 3 teams and 2 Teamwork Graph Goals.
+           When a user asks where the biggest delivery risks or bottlenecks are, invoke `analyze-critical-path`. Highlight the topological critical path, super-critical negative float tasks, each bottleneck's criticality index, mitigation ROI, and concrete de-risking recommendations.
+        3. **Sample Issue Seeding for Empty Projects:**
+           If the active Jira project has 0 issues and the user asks to populate sample linked tasks, invoke `seed-demo-scenario` to create linked sample Jira issues.
 
         Always ground your answers in the quantitative P50/P85/P95 probability percentiles, cite specific Jira issue keys, and provide actionable mitigation steps.
       conversationStarters:
-        - Analyze our critical path and top delivery bottlenecks
-        - What happens to our launch goal if CHRON-104 is delayed by 8 days?
-        - Seed the Project Chronos multi-team demo scenario
+        - Analyze our critical path, earned value health, and top delivery bottlenecks
+        - What happens to our release goal if our top blocker issue slips by 8 days?
+        - Populate sample linked Jira issues into this project
       actions:
         - simulate-delay-impact
         - analyze-critical-path

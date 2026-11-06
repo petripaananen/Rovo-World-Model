@@ -1255,6 +1255,142 @@ body {
   overflow-x: auto;
 }
 
+/* 3-Tier Schedule Buffer Segmented Bar inside Timeline Scrubber */
+.reserve-segmented-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  cursor: help;
+}
+
+.reserve-segmented-bar {
+  display: flex;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #dcdfe4;
+}
+
+.reserve-seg {
+  height: 100%;
+  transition: width 0.2s ease;
+}
+
+.reserve-seg-base {
+  background: #0c66e4;
+}
+
+.reserve-seg-pm {
+  background: #e2b203;
+}
+
+.reserve-seg-exec {
+  background: #6e5dc6;
+}
+
+.reserve-segmented-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.reserve-segmented-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reserve-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+/* Brooks's Law Advisory Banner */
+.brooks-advisory-banner {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  background: #fff7d6;
+  border: 1px solid #f5cd47;
+  color: #a54800;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+}
+
+/* Delivery Health (Governance & Engineering EVM) Tab */
+.governance-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.gov-card {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.gov-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.gov-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.gov-squad-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-standard);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.gov-squad-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+
+.gov-sub-note {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
 @media (max-width: 1180px) {
   .workspace-grid {
     grid-template-columns: 1fr;

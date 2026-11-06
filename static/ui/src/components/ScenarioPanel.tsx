@@ -31,7 +31,7 @@ export interface ScenarioPanelProps {
   delayDays: number;
   addDeveloper: boolean;
   decoupleBlockingEdges: boolean;
-  activeRightTab: 'cascade' | 'bottlenecks' | 'rovo-mcp';
+  activeRightTab: 'cascade' | 'bottlenecks' | 'governance' | 'rovo-mcp';
   copiedPromptNotice: boolean;
 }
 
@@ -124,8 +124,9 @@ function renderTabBody(props: ScenarioPanelProps): string {
             </span>
             <span class="jira-lozenge jira-lozenge-inprogress">GATES ${b.downstreamCount}</span>
           </div>
-          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px;">
-            Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong>
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+            <span>Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong></span>
+            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · ROI: <strong style="color:#216E4E;">${(b.mitigationROI ?? 1.0).toFixed(2)}d/$</strong></span>
           </div>
           <div style="font-size:11.5px;color:#0055CC;margin-top:4px;">
             💡 ${escapeHtmlText(b.recommendation)}
@@ -134,6 +135,112 @@ function renderTabBody(props: ScenarioPanelProps): string {
       `
       )
       .join('');
+  }
+
+  if (activeRightTab === 'governance') {
+    const res = activeSim.reserves;
+    const evm = activeSim.earnedValue;
+    const gov = activeSim.deliveryGovernance;
+
+    const burnPct = res ? Math.round(res.bufferBurnRatio * 100) : 0;
+    const burnLozenge =
+      burnPct >= 80
+        ? `<span class="jira-lozenge jira-lozenge-danger">${burnPct}% BURN</span>`
+        : burnPct >= 50
+          ? `<span class="jira-lozenge jira-lozenge-inprogress">${burnPct}% BURN</span>`
+          : `<span class="jira-lozenge jira-lozenge-done">${burnPct}% BURN</span>`;
+
+    const cpiVal = evm?.cpi ?? 1.0;
+    const spiVal = evm?.spi ?? 1.0;
+    const evmLozenge =
+      evm?.maskingWarning
+        ? `<span class="jira-lozenge jira-lozenge-danger">SQUAD VARIANCE ALERT</span>`
+        : cpiVal < 0.9 || spiVal < 0.9
+          ? `<span class="jira-lozenge jira-lozenge-inprogress">WATCH</span>`
+          : `<span class="jira-lozenge jira-lozenge-done">HEALTHY</span>`;
+
+    const squadRows = Object.entries(evm?.byTeam ?? {})
+      .map(
+        ([teamName, sq]) => `
+          <div class="gov-squad-row">
+            <span>${escapeHtmlText(teamName)}</span>
+            <span>CPI <strong>${sq.cpi.toFixed(2)}</strong> · SPI <strong>${sq.spi.toFixed(2)}</strong></span>
+          </div>
+        `
+      )
+      .join('');
+
+    const stageGateNodes = gov?.stageGateNodes ?? [];
+    const retroCal = gov?.lessonsLearntCalibration;
+
+    return `
+      <div class="governance-grid">
+        <!-- Card 1: 3-Tier Schedule Buffers & Hypercare -->
+        <div class="gov-card">
+          <div class="gov-card-header">
+            <span>1. Schedule Buffers &amp; Hypercare</span>
+            ${burnLozenge}
+          </div>
+          <div class="gov-stat-row">
+            <span>Base Target (P50): <strong>${(res?.baseTargetDays ?? activeSim.p50Days).toFixed(1)}d</strong></span>
+            <span>PM Buffer (P85-P50): <strong>+${(res?.pmContingencyReserveDays ?? 0).toFixed(1)}d</strong></span>
+          </div>
+          <div class="gov-stat-row">
+            <span>Exec Reserve (CVaR): <strong>+${(res?.managementReserveDays ?? 0).toFixed(1)}d</strong></span>
+            <span>Hypercare Buffer: <strong>+${(gov?.hypercareReserveDays ?? 1.5).toFixed(1)}d</strong></span>
+          </div>
+        </div>
+
+        <!-- Card 2: Engineering Earned Value (Dev-Days) -->
+        <div class="gov-card">
+          <div class="gov-card-header">
+            <span>2. Engineering Earned Value (Dev-Days)</span>
+            ${evmLozenge}
+          </div>
+          <div class="gov-stat-row">
+            <span>Effort CPI: <strong>${cpiVal.toFixed(2)}</strong></span>
+            <span>Schedule SPI: <strong>${spiVal.toFixed(2)}</strong></span>
+            <span>EAC: <strong>${(evm?.eacTrendDays ?? 0).toFixed(1)}d</strong> (BAC ${(evm?.bacDays ?? 0).toFixed(1)}d)</span>
+          </div>
+          <div class="gov-squad-list">
+            ${squadRows}
+          </div>
+        </div>
+
+        <!-- Card 3: Resource Contention & Handoffs -->
+        <div class="gov-card">
+          <div class="gov-card-header">
+            <span>3. Resource Contention &amp; Handoffs</span>
+            <span class="jira-lozenge ${(gov?.overallocatedAssignees.length ?? 0) > 0 ? 'jira-lozenge-inprogress' : 'jira-lozenge-done'}">
+              ${gov?.overallocatedAssignees.length ?? 0} OVERLOADED
+            </span>
+          </div>
+          <div class="gov-stat-row">
+            <span>Blocked Handoff Idle: <strong>${(gov?.blockedHandoffIdleDays ?? 0).toFixed(1)}d</strong></span>
+            <span>SLA Breach Risk: <strong>${Math.round((gov?.slaBreachProbability ?? 0) * 100)}%</strong></span>
+          </div>
+          ${
+            (gov?.overallocatedAssignees.length ?? 0) > 0
+              ? `<div class="gov-sub-note">Parallel Contention: ${escapeHtmlText(gov!.overallocatedAssignees.map((a) => `${a.assignee} (${a.utilizationPct}%)`).join(', '))}</div>`
+              : `<div class="gov-sub-note">No parallel critical-path assignee multi-tasking detected.</div>`
+          }
+        </div>
+
+        <!-- Card 4: Sprint Readiness (DoR) & Retro Calibration -->
+        <div class="gov-card">
+          <div class="gov-card-header">
+            <span>4. Sprint Readiness &amp; Stage Gates</span>
+            <span class="jira-lozenge ${(gov?.sprintReadinessScore ?? 100) >= 80 ? 'jira-lozenge-done' : 'jira-lozenge-inprogress'}">
+              DoR ${gov?.sprintReadinessScore ?? 100}%
+            </span>
+          </div>
+          <div class="gov-stat-row">
+            <span>Stage Gates: <strong>${stageGateNodes.length}</strong> (${escapeHtmlText(stageGateNodes.join(', ') || 'None')})</span>
+            <span>Retro Priors: <strong>${retroCal ? `${retroCal.empiricalVelocityRatio}x (${retroCal.completedCount} done)` : '1.0x'}</strong></span>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   const mcpRpcSample = {
@@ -334,7 +441,7 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
               <button
                 class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
                 id="btn-toggle-add-dev"
-                title="Reduces task duration by 35% and variance σ by 40%"
+                title="Adds +1 FTE with Brooks's Law communication & onboarding drag calibration"
               >
                 ${addDeveloper ? '✓ +1 Developer Added' : '+ Add Developer (+1 FTE)'}
               </button>
@@ -346,6 +453,17 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                 ${decoupleBlockingEdges ? '✓ Dependency Decoupled' : '✂ Decouple Dependency'}
               </button>
             </div>
+            ${
+              addDeveloper && activeSim.deliveryGovernance?.brooksLawDiagnostic
+                ? `<div class="brooks-advisory-banner" title="Brooks's Law Communication Channels N = n(n-1)/2 & Onboarding Mentoring Drag">
+                     <span><strong>Brooks's Law:</strong> Net <strong>${
+                       activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays >= 0
+                         ? `${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays}d saved`
+                         : `${Math.abs(activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays)}d slower`
+                     }</strong> (Onboarding drag ${activeSim.deliveryGovernance.brooksLawDiagnostic.onboardingPenaltyDays}d · Channels N: ${activeSim.deliveryGovernance.brooksLawDiagnostic.communicationChannelsBefore} → ${activeSim.deliveryGovernance.brooksLawDiagnostic.communicationChannelsAfter})</span>
+                   </div>`
+                : ''
+            }
           </div>
 
           <!-- Step 2: Release Date Comparison Bars -->
@@ -464,10 +582,13 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
       <div class="panel-card">
         <div class="tab-bar">
           <button class="tab-btn ${activeRightTab === 'cascade' ? 'active' : ''}" data-tab="cascade">
-            Impacted Issues (${activeSim.blastRadiusNodes.length})
+            Impacted (${activeSim.blastRadiusNodes.length})
           </button>
           <button class="tab-btn ${activeRightTab === 'bottlenecks' ? 'active' : ''}" data-tab="bottlenecks">
-            Top Blockers (${activeSim.topBottlenecks.length})
+            Blockers (${activeSim.topBottlenecks.length})
+          </button>
+          <button class="tab-btn ${activeRightTab === 'governance' ? 'active' : ''}" data-tab="governance">
+            Delivery Health
           </button>
           <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
             Math &amp; MCP

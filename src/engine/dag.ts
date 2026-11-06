@@ -30,9 +30,43 @@ export interface DeterministicScheduleNode {
   latestStart: number;
   latestFinish: number;
   slackDays: number;
+  /** Signed float relative to target deadline (negative when behind target / super-critical) */
+  totalFloatDays: number;
   downstreamCount: number;
   downstreamRippleWeight: number;
   isOnCriticalPath: boolean;
+}
+
+/**
+ * Computes 3-Point PERT Beta expected duration (mean M) and standard deviation (sigma)
+ * when `optimisticDays` (Min), `mostLikelyDays` (ML), and `pessimisticDays` (Max) are present.
+ * Formula: M = (Min + 4 * ML + Max) / 6, Sigma = (Max - Min) / 6.
+ */
+export function computePertParameters(node: CausalNode): {
+  meanDays: number;
+  sigmaDays: number;
+  isPertActive: boolean;
+} {
+  const hasPert =
+    typeof node.optimisticDays === 'number' &&
+    typeof node.mostLikelyDays === 'number' &&
+    typeof node.pessimisticDays === 'number' &&
+    node.pessimisticDays >= node.optimisticDays;
+
+  if (hasPert) {
+    const minD = Math.max(0.25, node.optimisticDays!);
+    const mlD = Math.max(minD, node.mostLikelyDays!);
+    const maxD = Math.max(mlD, node.pessimisticDays!);
+    const meanDays = Number(((minD + 4 * mlD + maxD) / 6).toFixed(2));
+    const sigmaDays = Number(Math.max(0.1, (maxD - minD) / 6).toFixed(2));
+    return { meanDays, sigmaDays, isPertActive: true };
+  }
+
+  return {
+    meanDays: Math.max(0.5, node.baseEstimateDays),
+    sigmaDays: Math.max(0.1, node.uncertaintySigma),
+    isPertActive: false,
+  };
 }
 
 /**
@@ -95,6 +129,8 @@ export function detectAndBreakCycles(
         to: toKey,
         dependencyType: edge.dependencyType || 'Blocks',
         propagationWeight: clampedWeight,
+        precedenceType: edge.precedenceType ?? existing?.precedenceType ?? 'FS',
+        lagDays: edge.lagDays ?? existing?.lagDays ?? 0,
       });
     }
   }
@@ -337,11 +373,13 @@ export function getDownstreamBlastRadius(
 /**
  * Computes deterministic Critical Path Method (CPM) forward/backward pass metrics:
  * Earliest Start (ES), Earliest Finish (EF), Latest Start (LS), Latest Finish (LF),
- * Total Float (`slackDays`), transitive downstream dependency count, and cumulative
- * downstream ripple weight.
+ * Total Float (`slackDays`), Forced-Deadline Signed Float (`totalFloatDays`),
+ * transitive downstream dependency count, and cumulative downstream ripple weight.
+ * Supports all 4 precedence types (`FS`, `SS`, `FF`, `SF`) and lead/lag (`lagDays`).
  */
 export function computeDeterministicCriticalPath(
-  graph: CausalGraph
+  graph: CausalGraph,
+  forcedTargetDays?: number
 ): Record<string, DeterministicScheduleNode> {
   const topo =
     graph.topologicalOrder.length === graph.nodes.length
@@ -365,29 +403,47 @@ export function computeDeterministicCriticalPath(
     if (node.status.toLowerCase() === 'done') {
       return 0;
     }
-    return Math.max(0.5, node.baseEstimateDays);
+    const pert = computePertParameters(node);
+    return Math.max(0.5, pert.meanDays);
   };
 
-  // Forward pass
+  // Forward pass supporting FS, SS, FF, SF precedence and lagDays
   const ES = new Map<string, number>();
   const EF = new Map<string, number>();
 
   for (const key of topo) {
     const node = nodeMap.get(key)!;
+    const dur = effectiveDuration(node);
     const preds = incoming.get(key) ?? [];
-    let maxPredFinish = 0;
+    let maxPredStart = 0;
+
     for (const edge of preds) {
       const predES = ES.get(edge.from) ?? 0;
       const predEF = EF.get(edge.from) ?? 0;
       const predDur = Math.max(0, predEF - predES);
-      const weightedFinish = predES + predDur * edge.propagationWeight;
-      if (weightedFinish > maxPredFinish) {
-        maxPredFinish = weightedFinish;
+      const pType = edge.precedenceType ?? 'FS';
+      const lag = edge.lagDays ?? 0;
+
+      let candidateStart = 0;
+      if (pType === 'SS') {
+        candidateStart = predES + lag;
+      } else if (pType === 'FF') {
+        candidateStart = Math.max(0, predEF + lag - dur);
+      } else if (pType === 'SF') {
+        candidateStart = Math.max(0, predES + lag - dur);
+      } else {
+        // Default FS (Finish-to-Start)
+        candidateStart = predES + predDur * edge.propagationWeight + lag;
+      }
+
+      if (candidateStart > maxPredStart) {
+        maxPredStart = candidateStart;
       }
     }
-    const dur = effectiveDuration(node);
-    ES.set(key, maxPredFinish);
-    EF.set(key, maxPredFinish + dur);
+
+    const startVal = Math.max(0, maxPredStart);
+    ES.set(key, startVal);
+    EF.set(key, startVal + dur);
   }
 
   let projectDuration = 0;
@@ -397,9 +453,28 @@ export function computeDeterministicCriticalPath(
     }
   }
 
+  // Determine forced deadline for negative float detection (anchored to goal target if available)
+  const goalOffsetById = new Map<string, number>();
+  for (const g of graph.goals) {
+    if (g.targetDayOffset > 0) {
+      goalOffsetById.set(g.id, g.targetDayOffset);
+    }
+  }
+  const earliestGoalOffset =
+    graph.goals.length > 0
+      ? Math.min(...graph.goals.map((g) => g.targetDayOffset).filter((d) => d > 0), projectDuration)
+      : projectDuration;
+  const targetDeadlineDays =
+    typeof forcedTargetDays === 'number' && Number.isFinite(forcedTargetDays)
+      ? forcedTargetDays
+      : earliestGoalOffset > 0
+        ? earliestGoalOffset
+        : projectDuration;
+
   // Backward pass + transitive downstream count
   const LS = new Map<string, number>();
   const LF = new Map<string, number>();
+  const forcedLS = new Map<string, number>();
   const downstreamSets = new Map<string, Set<string>>();
 
   for (let i = topo.length - 1; i >= 0; i--) {
@@ -408,12 +483,19 @@ export function computeDeterministicCriticalPath(
     const dur = effectiveDuration(node);
     const succs = outgoing.get(key) ?? [];
     const ds = new Set<string>();
+    const nodeGoalDeadline =
+      typeof forcedTargetDays === 'number' && Number.isFinite(forcedTargetDays)
+        ? forcedTargetDays
+        : goalOffsetById.get(node.goalId) ?? targetDeadlineDays;
 
     if (succs.length === 0) {
       LF.set(key, projectDuration);
       LS.set(key, Math.max(0, projectDuration - dur));
+      forcedLS.set(key, nodeGoalDeadline - dur);
     } else {
       let minSuccStart = projectDuration;
+      let minForcedFinish = nodeGoalDeadline;
+
       for (const edge of succs) {
         ds.add(edge.to);
         const childDs = downstreamSets.get(edge.to);
@@ -422,16 +504,24 @@ export function computeDeterministicCriticalPath(
             ds.add(item);
           }
         }
+        const lag = edge.lagDays ?? 0;
         const succLS = LS.get(edge.to) ?? projectDuration;
         const effectiveConstraint =
-          edge.propagationWeight > 0 ? succLS / edge.propagationWeight : succLS;
+          edge.propagationWeight > 0 ? (succLS - lag) / edge.propagationWeight : succLS - lag;
         const boundedConstraint = Math.min(projectDuration, effectiveConstraint);
         if (boundedConstraint < minSuccStart) {
           minSuccStart = boundedConstraint;
         }
+
+        const succForcedLS = forcedLS.get(edge.to) ?? targetDeadlineDays;
+        const forcedConstraint = succForcedLS - lag;
+        if (forcedConstraint < minForcedFinish) {
+          minForcedFinish = forcedConstraint;
+        }
       }
       LF.set(key, minSuccStart);
       LS.set(key, Math.max(0, minSuccStart - dur));
+      forcedLS.set(key, minForcedFinish - dur);
     }
     downstreamSets.set(key, ds);
   }
@@ -443,6 +533,8 @@ export function computeDeterministicCriticalPath(
     const ls = Number((LS.get(key) ?? 0).toFixed(2));
     const lf = Number((LF.get(key) ?? 0).toFixed(2));
     const slackDays = Number(Math.max(0, ls - es).toFixed(2));
+    const fLS = forcedLS.get(key) ?? ls;
+    const totalFloatDays = Number((fLS - es).toFixed(2));
     const node = nodeMap.get(key)!;
     const isDone = node.status.toLowerCase() === 'done';
 
@@ -459,6 +551,7 @@ export function computeDeterministicCriticalPath(
       latestStart: ls,
       latestFinish: lf,
       slackDays,
+      totalFloatDays,
       downstreamCount: downstreamSets.get(key)?.size ?? 0,
       downstreamRippleWeight: Number(cumulativeRippleWeight.toFixed(2)),
       isOnCriticalPath: !isDone && slackDays <= 0.75,
@@ -568,6 +661,29 @@ export function buildDAGFromJiraIssues(
     const labels = issue.fields.labels ?? [];
     const teamLabel = labels.find((l) => l.toLowerCase().startsWith('team:'));
     const goalLabel = labels.find((l) => l.toLowerCase().startsWith('goal:'));
+    const pertLabel = labels.find((l) => l.toLowerCase().startsWith('pert:'));
+
+    let optimisticDays: number | undefined;
+    let mostLikelyDays: number | undefined;
+    let pessimisticDays: number | undefined;
+
+    if (pertLabel) {
+      const parts = pertLabel
+        .slice(5)
+        .split('-')
+        .map((v) => Number(v.trim()));
+      if (parts.length === 3 && parts.every((n) => Number.isFinite(n) && n > 0)) {
+        optimisticDays = parts[0];
+        mostLikelyDays = parts[1];
+        pessimisticDays = parts[2];
+        baseEstimateDays = Number(
+          ((optimisticDays + 4 * mostLikelyDays + pessimisticDays) / 6).toFixed(1)
+        );
+        uncertaintySigma = Number(
+          Math.max(0.2, (pessimisticDays - optimisticDays) / 6).toFixed(2)
+        );
+      }
+    }
 
     const assignedTeam = teamLabel
       ? teamLabel.slice(5)
@@ -576,17 +692,40 @@ export function buildDAGFromJiraIssues(
       ? goalLabel.slice(5).toUpperCase()
       : defaultGoals[index < Math.ceil(rawIssues.length * 0.55) ? 0 : 1].id;
 
+    const issueTypeName = issue.fields.issuetype?.name || 'Task';
+    const isStageGate =
+      issueTypeName.toLowerCase() === 'milestone' ||
+      issueTypeName.toLowerCase() === 'gate' ||
+      (issue.fields.summary ?? '').toLowerCase().includes('gate');
+
+    const normalizedStat = normalizeStatus(statusName);
+    const plannedEffortDays = baseEstimateDays;
+    const actualEffortDays =
+      normalizedStat === 'Done'
+        ? baseEstimateDays
+        : normalizedStat === 'In Progress'
+          ? Number((baseEstimateDays * 0.55).toFixed(1))
+          : normalizedStat === 'Blocked'
+            ? Number((baseEstimateDays * 0.4).toFixed(1))
+            : 0;
+
     nodes.push({
       id: issue.id || issue.key,
       key: issue.key,
       summary: issue.fields.summary || `Untitled Issue ${issue.key}`,
-      status: normalizeStatus(statusName),
+      status: normalizedStat,
       baseEstimateDays,
       uncertaintySigma,
+      optimisticDays,
+      mostLikelyDays,
+      pessimisticDays,
+      plannedEffortDays,
+      actualEffortDays,
+      isStageGate,
       assignee: issue.fields.assignee?.displayName || 'Unassigned',
       team: assignedTeam,
       goalId: assignedGoalId,
-      issueType: issue.fields.issuetype?.name || 'Task',
+      issueType: issueTypeName,
       storyPoints: storyPoints ?? baseEstimateDays,
       dueDate: issue.fields.duedate ?? undefined,
     });
