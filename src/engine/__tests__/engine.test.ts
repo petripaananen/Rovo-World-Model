@@ -429,4 +429,71 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
     assert.ok((sim.deliveryGovernance?.hypercareReserveDays ?? 0) >= 0.5);
     assert.ok((sim.deliveryGovernance?.lessonsLearntCalibration.empiricalVelocityRatio ?? 0) > 0);
   });
+
+  it('uses a single No Team Assigned swimlane when a Jira project has no teams configured and splits by real Jira Team fields or team: labels when present', () => {
+    // 1. Project with NO Jira teams configured (like Triton KAN) -> must NOT invent fake teams
+    const tritonNoTeamsGraph = buildDAGFromJiraIssues('KAN', [
+      {
+        id: '5001',
+        key: 'KAN-1',
+        fields: {
+          summary: '[AI Core] Implement Multi-Agent Workflow Simulation',
+          status: { name: 'In Progress' },
+          assignee: { displayName: 'Petri Paananen' },
+        },
+      },
+      {
+        id: '5004',
+        key: 'KAN-4',
+        fields: {
+          summary: '[Frontend] Real-time Timeline Scrubber',
+          status: { name: 'To Do' },
+          assignee: { displayName: 'Petri Paananen' },
+        },
+      },
+      {
+        id: '5006',
+        key: 'KAN-6',
+        fields: {
+          summary: '[Backend] Simulation Engine API',
+          status: { name: 'To Do' },
+          assignee: { displayName: 'Petri Paananen' },
+        },
+      },
+    ]);
+
+    assert.equal(tritonNoTeamsGraph.teams.length, 1);
+    assert.equal(tritonNoTeamsGraph.teams[0].name, 'No Team Assigned');
+    assert.equal(tritonNoTeamsGraph.teams[0].lead, 'Petri Paananen');
+    for (const node of tritonNoTeamsGraph.nodes) {
+      assert.equal(node.team, 'No Team Assigned');
+    }
+
+    // 2. Project WITH real Jira Team customfield_10001 and team: labels -> splits into real team swimlanes
+    const multiTeamGraph = buildDAGFromJiraIssues('TEAMPROJ', [
+      {
+        id: '6001',
+        key: 'TEAMPROJ-1',
+        fields: {
+          summary: 'Auth Service',
+          status: { name: 'In Progress' },
+          customfield_10001: { name: 'Platform Security' },
+        },
+      },
+      {
+        id: '6002',
+        key: 'TEAMPROJ-2',
+        fields: {
+          summary: 'Mobile Checkout',
+          status: { name: 'To Do' },
+          labels: ['team:Mobile App'],
+        },
+      },
+    ]);
+
+    assert.deepEqual(
+      multiTeamGraph.teams.map((t) => t.name),
+      ['Platform Security', 'Mobile App']
+    );
+  });
 });

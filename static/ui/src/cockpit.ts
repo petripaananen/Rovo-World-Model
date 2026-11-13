@@ -13,7 +13,11 @@ import {
   SimulationResult,
 } from '../../../src/engine/types';
 import { renderDagCanvas } from './components/DagCanvas';
-import { JiraProjectOption, renderHeaderBar } from './components/HeaderBar';
+import {
+  JiraProjectOption,
+  renderLeftStatusRail,
+  renderTopAppBar,
+} from './components/HeaderBar';
 import {
   buildRovoMitigationPrompt,
   renderScenarioPanel,
@@ -113,7 +117,7 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
         name: `${projectName} Sprint Delivery`,
         targetDate: '2026-11-18',
         targetDayOffset: 18,
-        ownerTeam: `${projectName} Engineering`,
+        ownerTeam: 'No Team Assigned',
         status: 'On Track',
       },
       {
@@ -122,19 +126,11 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
         name: `${projectName} Release Milestone`,
         targetDate: '2026-12-02',
         targetDayOffset: 32,
-        ownerTeam: `${projectName} Engineering`,
+        ownerTeam: 'No Team Assigned',
         status: 'On Track',
       },
     ],
-    [
-      {
-        id: 'team-1',
-        name: `${projectName} Engineering`,
-        lead: 'Petri Paananen',
-        color: '#0C66E4',
-        cognitiveLoad: 65,
-      },
-    ],
+    [],
     '2026-10-30'
   );
 
@@ -193,16 +189,39 @@ function recomputeSimulation(): void {
   }
 }
 
+function scrollDagToSelectedNode(smooth = true): void {
+  const viewport = document.getElementById('dag-viewport-container');
+  if (!viewport) return;
+  const selectedEl = viewport.querySelector<SVGGElement>(
+    `.dag-node-group[data-node-key="${state.selectedNodeKey}"]`
+  );
+  if (!selectedEl) return;
+  const nodeX = Number(selectedEl.getAttribute('data-node-x') ?? 0);
+  const targetLeft = Math.max(0, nodeX - viewport.clientWidth / 2 + 100);
+  if (typeof viewport.scrollTo === 'function') {
+    viewport.scrollTo({
+      left: targetLeft,
+      behavior: smooth ? 'smooth' : 'auto',
+    });
+  } else {
+    viewport.scrollLeft = targetLeft;
+  }
+}
+
 export function renderCockpit(
   activeSliderId?: 'delay-slider-input' | 'time-machine-range'
 ): void {
   const root = document.getElementById('app-root');
   if (!root) return;
 
+  const dagViewport = document.getElementById('dag-viewport-container');
+  const prevDagScrollLeft = dagViewport?.scrollLeft ?? 0;
+  const prevDagScrollTop = dagViewport?.scrollTop ?? 0;
+
   const hasActiveIntervention =
     state.delayDays !== 0 || state.addDeveloper || state.decoupleBlockingEdges;
 
-  const headerHtml = renderHeaderBar({
+  const headerProps = {
     availableProjects: state.availableProjects,
     graph: state.graph,
     baselineSim: state.baselineSim,
@@ -213,7 +232,10 @@ export function renderCockpit(
     addDeveloper: state.addDeveloper,
     decoupleBlockingEdges: state.decoupleBlockingEdges,
     statusBanner: state.statusBanner,
-  });
+  };
+
+  const headerHtml = renderTopAppBar(headerProps);
+  const leftRailHtml = renderLeftStatusRail(headerProps);
 
   const scrubberHtml = renderTimelineScrubber({
     graph: state.graph,
@@ -247,29 +269,43 @@ export function renderCockpit(
   });
 
   const headerMount = document.getElementById('header-mount');
+  const leftRailMount = document.getElementById('left-rail-mount');
   const scrubberMount = document.getElementById('scrubber-mount');
   const dagMount = document.getElementById('dag-mount');
   const scenarioMount = document.getElementById('scenario-mount');
 
-  if (activeSliderId && headerMount && scrubberMount && dagMount && scenarioMount) {
+  if (
+    activeSliderId &&
+    headerMount &&
+    leftRailMount &&
+    scrubberMount &&
+    dagMount &&
+    scenarioMount
+  ) {
     headerMount.innerHTML = headerHtml;
+    leftRailMount.innerHTML = leftRailHtml;
     dagMount.innerHTML = dagHtml;
+    const nextViewport = document.getElementById('dag-viewport-container');
+    if (nextViewport) {
+      nextViewport.scrollLeft = prevDagScrollLeft;
+      nextViewport.scrollTop = prevDagScrollTop;
+    }
     if (activeSliderId === 'delay-slider-input') {
       scrubberMount.innerHTML = scrubberHtml;
-      const readoutEl = scenarioMount.querySelector('.slider-value-readout');
+      const readoutEl = scenarioMount.querySelector('.slider-readout');
       if (readoutEl) {
         readoutEl.textContent =
           state.delayDays > 0
-            ? `+${state.delayDays} Days (Delayed)`
+            ? `+${state.delayDays} Days Delay`
             : state.delayDays < 0
-              ? `${state.delayDays} Days (Accelerated)`
+              ? `${state.delayDays} Days Faster`
               : '0 Days (Baseline)';
-        readoutEl.className = `slider-value-readout ${
-          state.delayDays > 0
-            ? 'delay-positive'
-            : state.delayDays < 0
-              ? 'delay-negative'
-              : 'delay-zero'
+        readoutEl.className = `slider-readout ${
+          state.delayDays < 0
+            ? 'accel-text'
+            : state.delayDays === 0
+              ? 'neutral-text'
+              : ''
         }`;
       }
       scenarioMount
@@ -293,14 +329,23 @@ export function renderCockpit(
 
   root.innerHTML = `
     <div class="cockpit-shell">
-      <div id="header-mount" style="display:contents">${headerHtml}</div>
-      <div id="scrubber-mount" style="display:contents">${scrubberHtml}</div>
-      <section class="workspace-grid">
-        <div id="dag-mount" style="display:contents">${dagHtml}</div>
-        <div id="scenario-mount" style="display:contents">${scenarioHtml}</div>
+      <div id="header-mount" class="mount-contents">${headerHtml}</div>
+      <section class="workspace-grid-3col">
+        <div id="left-rail-mount" class="mount-contents">${leftRailHtml}</div>
+        <div class="center-stage-column">
+          <div id="dag-mount" class="mount-contents">${dagHtml}</div>
+          <div id="scrubber-mount" class="mount-contents">${scrubberHtml}</div>
+        </div>
+        <div id="scenario-mount" class="mount-contents">${scenarioHtml}</div>
       </section>
     </div>
   `;
+
+  const restoredViewport = document.getElementById('dag-viewport-container');
+  if (restoredViewport) {
+    if (prevDagScrollLeft > 0) restoredViewport.scrollLeft = prevDagScrollLeft;
+    if (prevDagScrollTop > 0) restoredViewport.scrollTop = prevDagScrollTop;
+  }
 
   attachCockpitEventListeners();
 }
@@ -367,9 +412,30 @@ function attachCockpitEventListeners(
     });
   }
 
-  // 1. Node click + hover inspector on SVG DAG
+  // 1. Node click + hover inspector + horizontal pan controls on SVG DAG
   const hoverCard = document.getElementById('dag-node-hover-card');
   const viewportContainer = document.getElementById('dag-viewport-container');
+
+  const btnPanLeft = document.getElementById('btn-dag-pan-left');
+  if (btnPanLeft && viewportContainer) {
+    btnPanLeft.addEventListener('click', () => {
+      viewportContainer.scrollBy({ left: -340, behavior: 'smooth' });
+    });
+  }
+
+  const btnPanRight = document.getElementById('btn-dag-pan-right');
+  if (btnPanRight && viewportContainer) {
+    btnPanRight.addEventListener('click', () => {
+      viewportContainer.scrollBy({ left: 340, behavior: 'smooth' });
+    });
+  }
+
+  const btnCenterSelected = document.getElementById('btn-dag-center-selected');
+  if (btnCenterSelected) {
+    btnCenterSelected.addEventListener('click', () => {
+      scrollDagToSelectedNode(true);
+    });
+  }
 
   document.querySelectorAll<SVGGElement>('.dag-node-group').forEach((el) => {
     el.addEventListener('click', () => {
@@ -383,8 +449,8 @@ function attachCockpitEventListeners(
       }
     });
 
-    el.addEventListener('mouseenter', (evt) => {
-      if (!hoverCard || !viewportContainer) return;
+    el.addEventListener('mouseenter', () => {
+      if (!hoverCard) return;
       const rawHover = el.getAttribute('data-node-hover');
       if (!rawHover) return;
       try {
@@ -399,6 +465,7 @@ function attachCockpitEventListeners(
           pertMean?: number;
           pertSigma?: number;
           completionStepPct?: number;
+          subtaskLabel?: string;
           totalFloatDays?: number;
           isStageGate?: boolean;
           goalName: string;
@@ -410,26 +477,27 @@ function attachCockpitEventListeners(
 
         const shiftLine =
           info.rippleShift > 0
-            ? `<span style="color:#AE2E24;font-weight:700;">+${info.rippleShift.toFixed(1)}d downstream slip</span>`
+            ? `<strong class="text-danger">+${info.rippleShift.toFixed(1)}d downstream slip</strong>`
             : info.rippleShift < 0
-              ? `<span style="color:#216E4E;font-weight:700;">${info.rippleShift.toFixed(1)}d faster</span>`
-              : `<span style="color:#626F86;">On Baseline Schedule</span>`;
+              ? `<strong class="text-success">${info.rippleShift.toFixed(1)}d faster</strong>`
+              : `<span class="text-muted">On Baseline Schedule</span>`;
 
         const floatDays = info.totalFloatDays ?? 0;
         const floatBadge =
           floatDays < 0
-            ? `<strong style="color:#AE2E24;">${floatDays.toFixed(1)}d (Super-Critical)</strong>`
+            ? `<strong class="text-danger">${floatDays.toFixed(1)}d (Super-Critical)</strong>`
             : floatDays === 0
-              ? `<strong style="color:#A54800;">0.0d (Critical Path)</strong>`
-              : `<strong style="color:#216E4E;">+${floatDays.toFixed(1)}d Slack</strong>`;
+              ? `<strong class="text-warning">0.0d (Critical Path)</strong>`
+              : `<strong class="text-success">+${floatDays.toFixed(1)}d Slack</strong>`;
 
         const stepPct = info.completionStepPct ?? 0;
         const stepLabel =
-          stepPct === 75
+          info.subtaskLabel ??
+          (stepPct === 75
             ? '75% (Awaiting Handoff)'
             : stepPct === 100
               ? '100% (Accepted)'
-              : `${stepPct}%`;
+              : `${stepPct}%`);
 
         hoverCard.innerHTML = `
           <div class="hover-card-header">
@@ -439,9 +507,9 @@ function attachCockpitEventListeners(
           <div class="hover-card-title">${escapeHtmlText(info.summary)}</div>
           <div class="hover-card-meta">
             <div><span>Assignee:</span> <strong>${escapeHtmlText(info.assignee)}</strong></div>
+            <div><span>Overall Progress:</span> <strong>${escapeHtmlText(stepLabel)}</strong></div>
             <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
             <div><span>Deadline Float:</span> ${floatBadge}</div>
-            <div><span>Completion Step:</span> <strong>${stepLabel}</strong></div>
             <div><span>Schedule Impact:</span> ${shiftLine}</div>
             <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
           </div>
@@ -451,23 +519,11 @@ function attachCockpitEventListeners(
               : ''
           }
           <div class="hover-card-math">
-            📐 <code>PERT M = ${(info.pertMean ?? info.estimateDays).toFixed(1)}d (σ = ±${(info.pertSigma ?? info.sigma).toFixed(1)}d) | Crit = ${info.criticalityPct}%</code>
+            📐 <code>Expected: ${(info.pertMean ?? info.estimateDays).toFixed(1)}d (±${(info.pertSigma ?? info.sigma).toFixed(1)}d) | Critical Path Risk: ${info.criticalityPct}%</code>
           </div>
           <div class="hover-card-tip">Click issue card to select &amp; simulate</div>
         `;
-        hoverCard.style.display = 'block';
-
-        const vpRect = viewportContainer.getBoundingClientRect();
-        const mouseX = evt.clientX - vpRect.left + viewportContainer.scrollLeft;
-        const mouseY = evt.clientY - vpRect.top + viewportContainer.scrollTop;
-
-        const leftPos = Math.min(
-          Math.max(12, mouseX + 16),
-          viewportContainer.scrollWidth - 310
-        );
-        const topPos = Math.max(12, mouseY - 24);
-        hoverCard.style.left = `${leftPos}px`;
-        hoverCard.style.top = `${topPos}px`;
+        hoverCard.classList.add('is-visible');
       } catch {
         // Ignore parse issues
       }
@@ -475,7 +531,7 @@ function attachCockpitEventListeners(
 
     el.addEventListener('mouseleave', () => {
       if (hoverCard) {
-        hoverCard.style.display = 'none';
+        hoverCard.classList.remove('is-visible');
       }
     });
   });
@@ -582,6 +638,7 @@ function attachCockpitEventListeners(
           if (state.delayDays === 0) state.delayDays = 5;
           recomputeSimulation();
           renderCockpit();
+          scrollDagToSelectedNode(true);
         }
       });
     });
@@ -672,6 +729,7 @@ function attachCockpitEventListeners(
       recomputeSimulation();
       state.statusBanner = `Focused #1 Critical Blocker (${topKey}) — simulating a +${state.delayDays} day delay.`;
       renderCockpit();
+      scrollDagToSelectedNode(true);
     });
   }
 

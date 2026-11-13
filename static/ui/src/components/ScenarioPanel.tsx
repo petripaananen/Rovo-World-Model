@@ -86,7 +86,7 @@ function renderTabBody(props: ScenarioPanelProps): string {
         const signStr = d.shiftDays > 0 ? `+${d.shiftDays}d` : `${d.shiftDays}d`;
         const lozClass = d.shiftDays > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-done';
         return `
-          <tr data-select-node="${escapeHtmlText(d.key)}" style="cursor:pointer;" title="Click to inspect ${escapeHtmlText(d.key)} (${escapeHtmlText(d.summary)})">
+          <tr data-select-node="${escapeHtmlText(d.key)}" class="clickable-row" title="Click to inspect ${escapeHtmlText(d.key)} (${escapeHtmlText(d.summary)})">
             <td><strong class="jira-issue-key">${escapeHtmlText(d.key)}</strong></td>
             <td>${escapeHtmlText(d.summary.slice(0, 30))}${d.summary.length > 30 ? '…' : ''}</td>
             <td>${formatFriendlyDate(d.intervenedP85Date)}</td>
@@ -117,18 +117,18 @@ function renderTabBody(props: ScenarioPanelProps): string {
       .map(
         (b, idx) => `
         <div class="bottleneck-item" data-select-node="${escapeHtmlText(b.key)}" title="Click to select ${escapeHtmlText(b.key)} | Ripple Weight: ${b.downstreamRippleWeight}">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="bottleneck-row-top">
             <span>
-              <strong style="color:#0C66E4;">#${idx + 1} ${escapeHtmlText(b.key)}</strong>
-              — <strong style="font-size:12px;">${escapeHtmlText(b.summary)}</strong>
+              <strong class="text-brand">#${idx + 1} ${escapeHtmlText(b.key)}</strong>
+              — <strong class="bottleneck-summary-title">${escapeHtmlText(b.summary)}</strong>
             </span>
             <span class="jira-lozenge jira-lozenge-inprogress">GATES ${b.downstreamCount}</span>
           </div>
-          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+          <div class="bottleneck-row-meta">
             <span>Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong></span>
-            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · ROI: <strong style="color:#216E4E;">${(b.mitigationROI ?? 1.0).toFixed(2)}d/$</strong></span>
+            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · ROI: <strong class="text-success">${(b.mitigationROI ?? 1.0).toFixed(2)}d/$</strong></span>
           </div>
-          <div style="font-size:11.5px;color:#0055CC;margin-top:4px;">
+          <div class="bottleneck-row-rec">
             💡 ${escapeHtmlText(b.recommendation)}
           </div>
         </div>
@@ -182,11 +182,11 @@ function renderTabBody(props: ScenarioPanelProps): string {
             ${burnLozenge}
           </div>
           <div class="gov-stat-row">
-            <span>Base Target (P50): <strong>${(res?.baseTargetDays ?? activeSim.p50Days).toFixed(1)}d</strong></span>
-            <span>PM Buffer (P85-P50): <strong>+${(res?.pmContingencyReserveDays ?? 0).toFixed(1)}d</strong></span>
+            <span>Core Work Estimate: <strong>${(res?.baseTargetDays ?? activeSim.p50Days).toFixed(1)}d</strong></span>
+            <span>Team Risk Buffer: <strong>+${(res?.pmContingencyReserveDays ?? 0).toFixed(1)}d</strong></span>
           </div>
           <div class="gov-stat-row">
-            <span>Exec Reserve (CVaR): <strong>+${(res?.managementReserveDays ?? 0).toFixed(1)}d</strong></span>
+            <span>Executive Contingency: <strong>+${(res?.managementReserveDays ?? 0).toFixed(1)}d</strong></span>
             <span>Hypercare Buffer: <strong>+${(gov?.hypercareReserveDays ?? 1.5).toFixed(1)}d</strong></span>
           </div>
         </div>
@@ -243,45 +243,129 @@ function renderTabBody(props: ScenarioPanelProps): string {
     `;
   }
 
-  const mcpRpcSample = {
-    jsonrpc: '2.0',
-    method: 'tools/call',
-    params: {
-      name: 'pwm_simulate_intervention',
-      arguments: {
-        projectKey: graph.projectKey,
-        issueKey: selectedNodeKey,
-        delayDays,
-        addDeveloper,
-        decoupleBlockingEdges,
-      },
-    },
-    statisticalDiagnostics: {
-      cvar95TailRiskDate: `${activeSim.cvar95Date} (+${activeSim.cvar95Days}d)`,
-      quasimetricLatentEnergyE: activeSim.quasimetricEnergy,
-      estimatedReworkHours: `${activeSim.estimatedReworkHours}h`,
-      monteCarloIterations: 500,
-      registeredMcpTools: MCP_TOOLS_MANIFEST.map((t) => t.name),
-    },
-  };
+  const selectedNode =
+    graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
+  const selectedStat = activeSim.nodeStats[selectedNode.key];
+  const matchedBottleneck = activeSim.topBottlenecks.find(
+    (b) => b.key === selectedNode.key
+  );
+  const downstreamCount =
+    matchedBottleneck?.downstreamCount ??
+    graph.edges.filter((e) => e.from === selectedNode.key).length;
+  const critPct = Math.round((selectedStat?.criticalityIndex ?? 0) * 100);
+
+  const primaryActionRec =
+    selectedNode.baseEstimateDays <= 2
+      ? `Task is small (${selectedNode.baseEstimateDays}d) — adding another developer would add handoff overhead. Best move: split or mock the dependency so downstream issues can start early.`
+      : critPct >= 60
+        ? `High-priority critical path issue (${critPct}% risk) blocking ${downstreamCount} downstream ${downstreamCount === 1 ? 'issue' : 'issues'}. Assign an extra developer to pair on ${selectedNode.key} and share early interface contracts.`
+        : `Has ${Math.max(0, selectedStat?.slackDays ?? 0).toFixed(1)}d of schedule slack. Keep current owner (${selectedNode.assignee}) focused and avoid context-switching.`;
 
   return `
-    <div style="display:flex;flex-direction:column;gap:10px;">
-      <div class="advanced-math-grid">
-        <div class="math-stat-box" title="Conditional Value-at-Risk (CVaR 0.95): Expected finish date across the worst 5% tail-risk simulation runs">
-          <span>Worst 5% Tail (CVaR₀.₉₅)</span>
-          <strong style="color:#AE2E24;">${formatFriendlyDate(activeSim.cvar95Date, true)}</strong>
+    <div class="gov-card-stack">
+      <!-- Card 1: Concrete Recovery Action Plan for Selected Issue -->
+      <div class="gov-card">
+        <div class="gov-card-header">
+          <span>1. Recommended Action Plan (${escapeHtmlText(selectedNode.key)})</span>
+          <span class="jira-lozenge ${critPct >= 60 ? 'jira-lozenge-inprogress' : 'jira-lozenge-done'}">
+            ${critPct >= 60 ? 'CRITICAL PATH' : 'ON TRACK'}
+          </span>
         </div>
-        <div class="math-stat-box" title="Quasimetric Latent Energy E(s -> s'): Measures asymmetric schedule friction required to recover baseline dates">
-          <span>Schedule Friction (E)</span>
-          <strong style="color:#0055CC;">${activeSim.quasimetricEnergy}</strong>
+        <div class="gov-sub-note">
+          💡 <strong>Triage Advice:</strong> ${escapeHtmlText(primaryActionRec)}
         </div>
-        <div class="math-stat-box" title="Expected downstream context-switching & interface rework hours">
-          <span>Est. Rework Risk</span>
-          <strong style="color:#A54800;">${activeSim.estimatedReworkHours} hrs</strong>
+        <div class="gov-stat-row">
+          <span title="Estimated hours of downstream code/interface rework if this issue changes late">Rework Risk: <strong class="text-warning">~${activeSim.estimatedReworkHours} hrs</strong></span>
+          <span title="Worst-case finish date across the 5% most delayed scenarios">Worst-Case Date: <strong class="text-danger">${formatFriendlyDate(activeSim.cvar95Date, true)}</strong></span>
         </div>
       </div>
-      <pre class="code-console">${escapeHtmlText(JSON.stringify(mcpRpcSample, null, 2))}</pre>
+
+      <!-- Card 2: Why Rovo & MCP Matter to Your Team -->
+      <div class="gov-card">
+        <div class="gov-card-header">
+          <span>2. Connected AI Agents (Rovo &amp; IDE MCP)</span>
+          <span class="jira-lozenge jira-lozenge-goal">${MCP_TOOLS_MANIFEST.length} LIVE TOOLS</span>
+        </div>
+        <div class="gov-sub-note">
+          Allows <strong>Atlassian Rovo Chat</strong> and IDE coding agents (<strong>Cursor, Claude, VS Code</strong>) to query live Jira blockers and test schedule changes automatically:
+        </div>
+        <div class="gov-squad-list">
+          <div class="gov-squad-row" title="MCP Tool: pwm_simulate_intervention | Rovo Action: simulate-delay-impact">
+            <span><strong>Simulate Delay Impact</strong></span>
+            <span class="text-brand">Tests +days, extra dev, or split links</span>
+          </div>
+          <div class="gov-squad-row" title="MCP Tool: pwm_get_critical_path | Rovo Action: analyze-critical-path">
+            <span><strong>Find Top Blockers</strong></span>
+            <span class="text-brand">Ranks #1–#3 sprint bottlenecks</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+export function renderGoalsCard(activeSim: SimulationResult): string {
+  return `
+    <div class="panel-card goals-panel-card">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>Teamwork Graph Goals</span>
+          ${renderInfoTooltip(
+            'Teamwork Graph Goal Alignment',
+            'Tracks how issue schedule changes ripple up to linked Teamwork Graph Goals.'
+          )}
+        </div>
+        <span class="jira-lozenge jira-lozenge-goal">${activeSim.goalImpacts.length} GOALS</span>
+      </div>
+      <div class="goals-list-horizontal">
+        ${activeSim.goalImpacts
+          .map((goal) => {
+            const statusClass =
+              goal.status === 'Off Track'
+                ? 'off-track'
+                : goal.status === 'At Risk'
+                  ? 'at-risk'
+                  : '';
+            const probPct = Math.round(goal.probabilityOfOnTime * 100);
+            const barColor =
+              goal.status === 'Off Track'
+                ? '#CA3521'
+                : goal.status === 'At Risk'
+                  ? '#D97706'
+                  : '#1F845A';
+            const shiftSign =
+              goal.rippleDelayDays > 0
+                ? `+${goal.rippleDelayDays}d`
+                : goal.rippleDelayDays < 0
+                  ? `${goal.rippleDelayDays}d`
+                  : '';
+            const shiftClass = goal.rippleDelayDays > 0 ? 'text-danger' : 'text-success';
+
+            return `
+              <div class="goal-card ${statusClass}" title="Goal Key: ${escapeHtmlText(goal.goalKey)} | Owner: ${escapeHtmlText(goal.ownerTeam)}">
+                <div class="goal-top">
+                  <div>
+                    <div class="goal-name">${escapeHtmlText(goal.goalName)}</div>
+                    <div class="goal-owner-sub">
+                      Owner: ${escapeHtmlText(goal.ownerTeam)}
+                    </div>
+                  </div>
+                  ${renderJiraStatusLozenge(goal.status)}
+                </div>
+                <div class="goal-dates-row">
+                  <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
+                  <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em class="${shiftClass}">(${shiftSign})</em>` : ''}</span>
+                  <span>On-Time: <strong>${probPct}%</strong></span>
+                </div>
+                <svg width="100%" height="6" class="prob-bar-svg">
+                  <rect x="0" y="0" width="100%" height="6" rx="3" fill="#DCDFE4" />
+                  <rect x="0" y="0" width="${Math.max(4, probPct)}%" height="6" rx="3" fill="${barColor}" />
+                </svg>
+              </div>
+            `;
+          })
+          .join('')}
+      </div>
     </div>
   `;
 }
@@ -336,26 +420,67 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
         ? 'Medium'
         : 'Low';
 
+  const getInitials = (name: string) =>
+    name
+      .split(/\s+/)
+      .map((part) => part[0]?.toUpperCase() ?? '')
+      .join('')
+      .slice(0, 2) || 'DEV';
+
+  const assigneeInitials = getInitials(selectedNode.assignee);
+  const doneSub = selectedNode.subtaskDoneCount ?? 0;
+  const totalSub = selectedNode.subtaskTotalCount ?? 4;
+  const progPct =
+    selectedNode.subtaskProgressPct ??
+    selectedStat?.completionStepPct ??
+    (selectedNode.status === 'Done' ? 100 : selectedNode.status === 'In Progress' ? 50 : 0);
+
+  const isTopBlocker =
+    activeSim.topBottlenecks.slice(0, 3).some((b) => b.key === selectedNode.key) ||
+    selectedNode.status.toLowerCase() === 'blocked' ||
+    delayDays > 0;
+  const isStageGate =
+    Boolean(selectedNode.isStageGate) ||
+    Boolean(selectedNode.confluenceDecision);
+
+  const shapeTaxonomyBadge = isStageGate
+    ? `<span class="shape-badge-diamond">◆ STAGE GATE</span>`
+    : isTopBlocker
+      ? `<span class="shape-badge-hex">⬢ BLOCKER</span>`
+      : `<span class="shape-badge-circle">● TASK / EPIC</span>`;
+
+  const progBarColor =
+    progPct >= 100
+      ? '#10B981'
+      : isTopBlocker
+        ? '#F59E0B'
+        : '#0C66E4';
+
+  const baseP50X = Math.max(24, Math.min(240, Math.round((baselineSim.p50Days / maxTimelineScale) * 260)));
+  const simP85X = Math.max(36, Math.min(265, Math.round((activeSim.p85Days / maxTimelineScale) * 260)));
+  const bellStroke = delayDays > 0 ? '#E11D48' : delayDays < 0 ? '#10B981' : '#4F46E5';
+  const bellFill = delayDays > 0 ? '#FFE4E6' : delayDays < 0 ? '#D1FAE5' : '#E0E7FF';
+
   const forecastRows = [
     {
-      label: 'Likely Finish (50%)',
-      tooltip: 'Median P50 Forecast: 50% of simulated runs finish on or before this date.',
+      label: 'Likely Finish (50% odds)',
+      tooltip: 'Likely Delivery Date: 50% of simulated runs finish on or before this date (normal sprint pace without unexpected blockers).',
       baseDays: baselineSim.p50Days,
       intDays: activeSim.p50Days,
       baseDate: baselineSim.p50Date,
       intDate: activeSim.p50Date,
     },
     {
-      label: 'Commit Target (85%)',
-      tooltip: 'Recommended P85 Commitment Date: 85% probability of finishing on or before this date.',
+      label: 'Target Commit Date (85% safe)',
+      tooltip: 'Recommended Target Commit Date: 85% probability of finishing on or before this date (includes Team Risk Buffer).',
       baseDays: baselineSim.p85Days,
       intDays: activeSim.p85Days,
       baseDate: baselineSim.p85Date,
       intDate: activeSim.p85Date,
     },
     {
-      label: 'Buffer Cutoff (95%)',
-      tooltip: `Conservative P95 Buffer Date. Extreme 5% tail risk (CVaR₀.₉₅) = ${activeSim.cvar95Date}.`,
+      label: 'Safe Buffer Date (95% cutoff)',
+      tooltip: `Safe Buffer Cutoff Date (95% confidence). Worst-case 5% blocker scenario finishes around ${formatFriendlyDate(activeSim.cvar95Date, true)}.`,
       baseDays: baselineSim.p95Days,
       intDays: activeSim.p95Days,
       baseDate: baselineSim.p95Date,
@@ -373,7 +498,7 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
             ${renderInfoTooltip(
               'What-If Scenario Simulator',
               'Select any issue from your Jira project and test how a delay, acceleration, or resource change affects the overall delivery date and Teamwork Graph goals.',
-              `Active Intervention: do(${selectedNode.key} = ${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`})`
+              `Active Scenario: ${selectedNode.key} (${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`})`
             )}
           </div>
           ${activeLozenge}
@@ -383,10 +508,24 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
           <!-- Selected Issue Card -->
           <div class="selected-node-banner">
             <div class="node-banner-top">
-              <span class="node-key-tag">${escapeHtmlText(selectedNode.key)}</span>
+              <div class="node-banner-id-cluster">
+                <span class="node-avatar-circle" title="Responsible Assignee: ${escapeHtmlText(selectedNode.assignee)}">${escapeHtmlText(assigneeInitials)}</span>
+                <span class="node-key-tag">${escapeHtmlText(selectedNode.key)}</span>
+                ${shapeTaxonomyBadge}
+              </div>
               ${renderJiraStatusLozenge(selectedNode.status)}
             </div>
             <div class="node-summary-text">${escapeHtmlText(selectedNode.summary)}</div>
+            <div class="node-subtask-bar-wrap" title="Overall Issue / Epic Sub-task Completion: ${doneSub}/${totalSub} Sub-tasks (${progPct}%)">
+              <div class="node-subtask-bar-labels">
+                <span>Sub-tasks / Epic Progress</span>
+                <strong>${doneSub}/${totalSub} Done (${progPct}%)</strong>
+              </div>
+              <svg width="100%" height="6" class="subtask-bar-svg">
+                <rect x="0" y="0" width="100%" height="6" rx="3" fill="#E2E8F0" />
+                <rect x="0" y="0" width="${Math.max(4, progPct)}%" height="6" rx="3" fill="${progBarColor}" />
+              </svg>
+            </div>
             <div class="node-meta-grid">
               <div class="meta-cell">
                 <span>Assignee</span>
@@ -396,7 +535,7 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                 <span>Estimate</span>
                 <strong>${selectedNode.baseEstimateDays} Days</strong>
               </div>
-              <div class="meta-cell" title="Log-normal uncertainty standard deviation σ = ±${selectedNode.uncertaintySigma} days">
+              <div class="meta-cell" title="Estimate Uncertainty: ±${selectedNode.uncertaintySigma} days of potential schedule variance">
                 <span>Uncertainty ⓘ</span>
                 <strong>${uncertaintyLabel}</strong>
               </div>
@@ -441,26 +580,26 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
               <button
                 class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
                 id="btn-toggle-add-dev"
-                title="Adds +1 FTE with Brooks's Law communication & onboarding drag calibration"
+                title="Assign 1 extra full-time developer to help finish this issue faster (automatically accounts for ramp-up and coordination time)"
               >
-                ${addDeveloper ? '✓ +1 Developer Added' : '+ Add Developer (+1 FTE)'}
+                ${addDeveloper ? '✓ Extra Developer Assigned' : '+ Assign Extra Developer'}
               </button>
               <button
                 class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
                 id="btn-toggle-decouple-edge"
-                title="Reduces outgoing blocking dependency propagation weight to 0.25"
+                title="Split or mock the blocking interface so downstream issues can start work in parallel without waiting for this issue to finish 100%"
               >
-                ${decoupleBlockingEdges ? '✓ Dependency Decoupled' : '✂ Decouple Dependency'}
+                ${decoupleBlockingEdges ? '✓ Dependency Split / Mocked' : '✂ Decouple Dependency'}
               </button>
             </div>
             ${
               addDeveloper && activeSim.deliveryGovernance?.brooksLawDiagnostic
-                ? `<div class="brooks-advisory-banner" title="Brooks's Law Communication Channels N = n(n-1)/2 & Onboarding Mentoring Drag">
-                     <span><strong>Brooks's Law:</strong> Net <strong>${
+                ? `<div class="brooks-advisory-banner" title="Accounts for realistic developer onboarding and team sync time">
+                     <span><strong>Team Ramp-Up Note:</strong> Net <strong>${
                        activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays >= 0
                          ? `${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays}d saved`
                          : `${Math.abs(activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays)}d slower`
-                     }</strong> (Onboarding drag ${activeSim.deliveryGovernance.brooksLawDiagnostic.onboardingPenaltyDays}d · Channels N: ${activeSim.deliveryGovernance.brooksLawDiagnostic.communicationChannelsBefore} → ${activeSim.deliveryGovernance.brooksLawDiagnostic.communicationChannelsAfter})</span>
+                     }</strong> after ${activeSim.deliveryGovernance.brooksLawDiagnostic.onboardingPenaltyDays}d of ramp-up &amp; handoff sync</span>
                    </div>`
                 : ''
             }
@@ -468,13 +607,24 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
 
           <!-- Step 2: Release Date Comparison Bars -->
           <div class="comparison-bars-card">
-            <div style="font-size:12px;font-weight:700;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+            <div class="comparison-card-header">
               <span>Projected Release Impact</span>
               ${renderInfoTooltip(
                 'Baseline vs. Simulated Forecast',
-                `Compares your baseline schedule against the simulated What-If change across 500 paired runs. Worst 5% Tail Date: ${formatFriendlyDate(activeSim.cvar95Date, true)}.`,
-                `ΔP85 = ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | CVaR₀.₉₅ = ${activeSim.cvar95Date}`
+                `Compares your baseline schedule against the simulated What-If change across 500 paired runs. Worst-case 5% blocker scenario finishes around ${formatFriendlyDate(activeSim.cvar95Date, true)}.`,
+                `Release Shift: ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | Worst-Case Date: ${activeSim.cvar95Date}`
               )}
+            </div>
+
+            <div class="mc-bell-curve-wrap" title="500-Run Monte Carlo Release Probability Curve (Likely Finish / Target Commit Date / Safe Buffer Date)">
+              <svg width="100%" height="44" viewBox="0 0 280 44" class="mc-bell-svg">
+                <path d="M 8 40 C 60 40, ${Math.max(40, simP85X - 45)} 6, ${simP85X - 14} 6 C ${simP85X + 18} 6, 235 40, 272 40 Z" fill="${bellFill}" />
+                <path d="M 8 40 C 60 40, ${Math.max(40, simP85X - 45)} 6, ${simP85X - 14} 6 C ${simP85X + 18} 6, 235 40, 272 40" fill="none" stroke="${bellStroke}" stroke-width="2" />
+                <line x1="${baseP50X}" y1="6" x2="${baseP50X}" y2="40" stroke="#64748B" stroke-width="1.2" stroke-dasharray="3 2" />
+                <line x1="${simP85X}" y1="4" x2="${simP85X}" y2="40" stroke="${bellStroke}" stroke-width="1.8" />
+                <rect x="8" y="3" width="94" height="14" rx="4" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1" />
+                <text x="55" y="13" text-anchor="middle" fill="${bellStroke}" font-size="8.5" font-weight="700">Target: ${escapeHtmlText(formatFriendlyDate(activeSim.p85Date))}</text>
+              </svg>
             </div>
 
             ${forecastRows
@@ -484,10 +634,10 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                   diff > 0 ? '#CA3521' : diff < 0 ? '#1F845A' : '#0C66E4';
                 const diffBadge =
                   diff > 0
-                    ? `<span style="color:#AE2E24;font-weight:700;">(+${diff}d)</span>`
+                    ? `<span class="text-danger">(+${diff}d)</span>`
                     : diff < 0
-                      ? `<span style="color:#216E4E;font-weight:700;">(${diff}d)</span>`
-                      : `<span style="color:#626F86;">(0d)</span>`;
+                      ? `<span class="text-success">(${diff}d)</span>`
+                      : `<span class="text-muted">(0d)</span>`;
 
                 return `
                   <div class="dist-compare-group" title="${escapeHtmlText(row.tooltip)}">
@@ -497,14 +647,12 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                         ${formatFriendlyDate(row.baseDate)} → <strong>${formatFriendlyDate(row.intDate)}</strong> ${diffBadge}
                       </span>
                     </div>
-                    <div class="dual-bar-stack">
-                      <div class="bar-track-line">
-                        <div class="bar-fill-base" style="width:${pct(row.baseDays)}%;"></div>
-                      </div>
-                      <div class="bar-track-line">
-                        <div class="bar-fill-sim" style="width:${pct(row.intDays)}%;background:${intBarColor};"></div>
-                      </div>
-                    </div>
+                    <svg width="100%" height="12" class="dual-bar-svg">
+                      <rect x="0" y="0" width="100%" height="5" rx="2.5" fill="#DCDFE4" />
+                      <rect x="0" y="0" width="${pct(row.baseDays)}%" height="5" rx="2.5" fill="#8590A2" />
+                      <rect x="0" y="7" width="100%" height="5" rx="2.5" fill="#DCDFE4" />
+                      <rect x="0" y="7" width="${pct(row.intDays)}%" height="5" rx="2.5" fill="${intBarColor}" />
+                    </svg>
                   </div>
                 `;
               })
@@ -514,67 +662,6 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
               ${copiedPromptNotice ? '✓ Copied Prompt for @Rovo-World-Model Agent!' : '✨ Ask @Rovo-World-Model Agent'}
             </button>
           </div>
-        </div>
-      </div>
-
-      <!-- Teamwork Graph Goals Card -->
-      <div class="panel-card">
-        <div class="panel-header">
-          <div class="panel-title">
-            <span>Teamwork Graph Goals</span>
-            ${renderInfoTooltip(
-              'Teamwork Graph Goal Alignment',
-              'Tracks how issue schedule changes ripple up to linked Teamwork Graph Goals.'
-            )}
-          </div>
-          <span class="jira-lozenge jira-lozenge-goal">${activeSim.goalImpacts.length} GOALS</span>
-        </div>
-        <div class="goals-list">
-          ${activeSim.goalImpacts
-            .map((goal) => {
-              const statusClass =
-                goal.status === 'Off Track'
-                  ? 'off-track'
-                  : goal.status === 'At Risk'
-                    ? 'at-risk'
-                    : '';
-              const probPct = Math.round(goal.probabilityOfOnTime * 100);
-              const barColor =
-                goal.status === 'Off Track'
-                  ? '#CA3521'
-                  : goal.status === 'At Risk'
-                    ? '#D97706'
-                    : '#1F845A';
-              const shiftSign =
-                goal.rippleDelayDays > 0
-                  ? `+${goal.rippleDelayDays}d`
-                  : goal.rippleDelayDays < 0
-                    ? `${goal.rippleDelayDays}d`
-                    : '';
-
-              return `
-                <div class="goal-card ${statusClass}" title="Goal Key: ${escapeHtmlText(goal.goalKey)} | Owner: ${escapeHtmlText(goal.ownerTeam)}">
-                  <div class="goal-top">
-                    <div>
-                      <div class="goal-name">${escapeHtmlText(goal.goalName)}</div>
-                      <div style="font-size:11px;color:var(--text-secondary);">
-                        Owner: ${escapeHtmlText(goal.ownerTeam)}
-                      </div>
-                    </div>
-                    ${renderJiraStatusLozenge(goal.status)}
-                  </div>
-                  <div class="goal-dates-row">
-                    <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
-                    <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em style="color:${goal.rippleDelayDays > 0 ? '#AE2E24' : '#216E4E'};">(${shiftSign})</em>` : ''}</span>
-                    <span>On-Time: <strong>${probPct}%</strong></span>
-                  </div>
-                  <div class="prob-bar-track">
-                    <div class="prob-bar-fill" style="width:${probPct}%;background:${barColor};"></div>
-                  </div>
-                </div>
-              `;
-            })
-            .join('')}
         </div>
       </div>
 
@@ -591,7 +678,7 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
             Delivery Health
           </button>
           <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
-            Math &amp; MCP
+            AI Action Plan
           </button>
         </div>
         <div class="tab-body">

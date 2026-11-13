@@ -162,7 +162,7 @@ export async function fetchProjectCausalGraph(
     const projectName = projectMeta ? projectMeta.name : `${projectKey} Project`;
 
     const fields =
-      'summary,status,issuelinks,assignee,timetracking,duedate,issuetype,timeoriginalestimate,timeestimate,customfield_10016,labels,parent';
+      'summary,status,issuelinks,assignee,timetracking,duedate,issuetype,timeoriginalestimate,timeestimate,customfield_10016,customfield_10001,components,labels,parent,subtasks';
 
     // Query Jira REST v3 search endpoint for the project
     let response = await requestJiraWithUserFallback(
@@ -256,10 +256,17 @@ async function fetchTeamworkGraphMetadata(
     },
     {
       id: 'team-2',
-      name: 'Platform & Delivery',
+      name: 'Platform & Cloud Infra',
       lead: 'Tech Lead',
       color: '#1F845A',
       cognitiveLoad: 62,
+    },
+    {
+      id: 'team-3',
+      name: 'Product & Client UI',
+      lead: 'Frontend Lead',
+      color: '#6E5DC6',
+      cognitiveLoad: 64,
     },
   ];
 
@@ -323,14 +330,14 @@ async function fetchTeamworkGraphMetadata(
         if (parsedGoals.size > 0) {
           return {
             goals: Array.from(parsedGoals.values()),
-            teams: defaultTeams,
+            teams: [],
           };
         }
       }
     }
   } catch {
-    // Fallback to project-aligned TWG Goals & Teams
+    // Fallback to project-aligned TWG Goals & dynamic issue-derived Teams
   }
 
-  return { goals: defaultGoals, teams: defaultTeams };
+  return { goals: defaultGoals, teams: [] };
 }

@@ -82,6 +82,12 @@ export interface CausalNode {
   gateStatus?: 'Go' | 'Conditional Go' | 'Hold' | 'At Risk';
   /** Execution ownership mode for cross-team & external dependency risk tracking */
   executionMode?: 'internal-squad' | 'cross-team-dependency' | 'external-vendor-api';
+  /** Completed sub-task or child issue count (for Epic / parent story completion rings) */
+  subtaskDoneCount?: number;
+  /** Total sub-task or child issue count (for Epic / parent story completion rings) */
+  subtaskTotalCount?: number;
+  /** Overall completion percentage (0..100) for outer node progress ring */
+  subtaskProgressPct?: number;
 }
 
 /**
@@ -480,6 +486,11 @@ export interface RawJiraIssue {
     timeoriginalestimate?: number | null;
     timeestimate?: number | null;
     customfield_10016?: number | null; // Story points
+    customfield_10001?: { name?: string; title?: string } | string | null; // Atlassian Team field
+    components?: Array<{
+      id?: string;
+      name?: string;
+    }>;
     labels?: string[];
     issuelinks?: RawJiraIssueLink[];
     parent?: {
@@ -487,5 +498,13 @@ export interface RawJiraIssue {
       key?: string;
       fields?: { summary?: string };
     };
+    subtasks?: Array<{
+      id?: string;
+      key?: string;
+      fields?: {
+        summary?: string;
+        status?: { name?: string };
+      };
+    }>;
   };
 }

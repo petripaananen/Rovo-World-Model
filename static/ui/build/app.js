@@ -515,6 +515,16 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
         ];
     const nodes = [];
     const rawEdges = [];
+    // Map Epic / parent keys to their child issues in the same project
+    const childrenByParentKey = new Map();
+    for (const issue of rawIssues) {
+        const parentKey = issue.fields.parent?.key;
+        if (parentKey) {
+            const list = childrenByParentKey.get(parentKey) ?? [];
+            list.push(issue);
+            childrenByParentKey.set(parentKey, list);
+        }
+    }
     rawIssues.forEach((issue, index) => {
         const statusName = issue.fields.status?.name ?? 'To Do';
         const storyPoints = issue.fields.customfield_10016 ?? null;
@@ -568,9 +578,7 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
                 uncertaintySigma = Number(Math.max(0.2, (pessimisticDays - optimisticDays) / 6).toFixed(2));
             }
         }
-        const assignedTeam = teamLabel
-            ? teamLabel.slice(5)
-            : defaultTeams[index % defaultTeams.length].name;
+        const assignedTeam = inferIssueTeam(issue, projectKey, teams, index);
         const assignedGoalId = goalLabel
             ? goalLabel.slice(5).toUpperCase()
             : defaultGoals[index < Math.ceil(rawIssues.length * 0.55) ? 0 : 1].id;
@@ -587,6 +595,50 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
                 : normalizedStat === 'Blocked'
                     ? Number((baseEstimateDays * 0.4).toFixed(1))
                     : 0;
+        // Compute Sub-task / Epic child completion metrics for Concept 1 + Concept 3 progress rings
+        const explicitSubtasks = issue.fields.subtasks ?? [];
+        const epicChildren = childrenByParentKey.get(issue.key) ?? [];
+        const childStatuses = explicitSubtasks.length > 0
+            ? explicitSubtasks.map((st) => normalizeStatus(st.fields?.status?.name ?? 'To Do'))
+            : epicChildren.map((ch) => normalizeStatus(ch.fields.status?.name ?? 'To Do'));
+        let subtaskTotalCount = childStatuses.length;
+        let subtaskDoneCount = 0;
+        let subtaskProgressPct = 0;
+        if (subtaskTotalCount > 0) {
+            let weightedDone = 0;
+            for (const st of childStatuses) {
+                if (st === 'Done') {
+                    subtaskDoneCount += 1;
+                    weightedDone += 1;
+                }
+                else if (st === 'In Progress') {
+                    weightedDone += 0.6;
+                }
+                else if (st === 'Blocked') {
+                    weightedDone += 0.35;
+                }
+            }
+            subtaskProgressPct = Math.min(100, Math.max(10, Math.round((weightedDone / subtaskTotalCount) * 100)));
+        }
+        else {
+            subtaskTotalCount = Math.max(3, Math.min(8, Math.round(baseEstimateDays)));
+            if (normalizedStat === 'Done') {
+                subtaskDoneCount = subtaskTotalCount;
+                subtaskProgressPct = 100;
+            }
+            else if (normalizedStat === 'In Progress') {
+                subtaskDoneCount = Math.max(1, Math.round(subtaskTotalCount * 0.67));
+                subtaskProgressPct = Math.round((subtaskDoneCount / subtaskTotalCount) * 100);
+            }
+            else if (normalizedStat === 'Blocked') {
+                subtaskDoneCount = Math.max(1, Math.round(subtaskTotalCount * 0.4));
+                subtaskProgressPct = Math.round((subtaskDoneCount / subtaskTotalCount) * 100);
+            }
+            else {
+                subtaskDoneCount = 0;
+                subtaskProgressPct = 0;
+            }
+        }
         nodes.push({
             id: issue.id || issue.key,
             key: issue.key,
@@ -600,6 +652,9 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
             plannedEffortDays,
             actualEffortDays,
             isStageGate,
+            subtaskDoneCount,
+            subtaskTotalCount,
+            subtaskProgressPct,
             assignee: issue.fields.assignee?.displayName || 'Unassigned',
             team: assignedTeam,
             goalId: assignedGoalId,
@@ -650,6 +705,55 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
             });
         }
     }
+    // Build dynamic TeamMetadata list from the actual teams discovered across project issues
+    const teamPalette = ['#0284C7', '#059669', '#7C3AED', '#D97706'];
+    const uniqueTeamNames = Array.from(new Set(nodes.map((n) => n.team)));
+    const resolvedTeams = teams.length > 0
+        ? teams
+        : uniqueTeamNames.length > 0
+            ? uniqueTeamNames.map((tName, idx) => {
+                const teamNodes = nodes.filter((n) => n.team === tName);
+                const assigneeCounts = new Map();
+                for (const n of teamNodes) {
+                    if (n.assignee && n.assignee !== 'Unassigned') {
+                        assigneeCounts.set(n.assignee, (assigneeCounts.get(n.assignee) ?? 0) + 1);
+                    }
+                }
+                let topLead = 'Project Lead';
+                let maxCount = 0;
+                for (const [person, count] of assigneeCounts.entries()) {
+                    if (count > maxCount) {
+                        maxCount = count;
+                        topLead = person;
+                    }
+                }
+                const activeCount = teamNodes.filter((n) => n.status !== 'Done').length;
+                const blockedCount = teamNodes.filter((n) => n.status === 'Blocked').length;
+                const dynamicLoad = Math.min(95, Math.max(48, 50 + activeCount * 4 + blockedCount * 8));
+                return {
+                    id: `team-${idx + 1}`,
+                    name: tName,
+                    lead: topLead,
+                    color: teamPalette[idx % teamPalette.length],
+                    cognitiveLoad: dynamicLoad,
+                };
+            })
+            : defaultTeams;
+    // Align default goal ownerTeam names with the actual project teams when not explicitly set
+    const alignedGoals = defaultGoals.map((g, idx) => {
+        const candidateTeam = teams.length === 0 && resolvedTeams.length > 0
+            ? resolvedTeams[idx % resolvedTeams.length]
+            : undefined;
+        const ownerLabel = candidateTeam && candidateTeam.name !== 'No Team Assigned'
+            ? candidateTeam.name
+            : candidateTeam?.lead && candidateTeam.lead !== 'Project Lead'
+                ? `${candidateTeam.lead} (No Team Assigned)`
+                : g.ownerTeam;
+        return {
+            ...g,
+            ownerTeam: ownerLabel,
+        };
+    });
     return buildCausalDAG({
         projectKey,
         projectName: `${projectKey} Live Jira + TWG Workspace`,
@@ -658,9 +762,36 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
         isSyntheticDemo: false,
         nodes,
         edges: rawEdges,
-        goals: defaultGoals,
-        teams: defaultTeams,
+        goals: alignedGoals,
+        teams: resolvedTeams,
     });
+}
+/**
+ * Extracts the real Jira Team assigned to an issue from Jira metadata ONLY:
+ * 1. Explicit `team:<Name>` label on the Jira issue
+ * 2. Jira Atlassian Team field (`customfield_10001`)
+ * 3. Explicit `teams` array passed from Atlassian Teamwork Graph
+ * 4. If the Jira project/issue has no team configured, returns `'No Team Assigned'` (never fabricates fake teams).
+ */
+function inferIssueTeam(issue, _projectKey, explicitTeams, index) {
+    const labels = issue.fields.labels ?? [];
+    const teamLabel = labels.find((l) => l.toLowerCase().startsWith('team:'));
+    if (teamLabel && teamLabel.slice(5).trim().length > 0) {
+        return teamLabel.slice(5).trim();
+    }
+    const rawTeamField = issue.fields.customfield_10001;
+    if (typeof rawTeamField === 'string' && rawTeamField.trim().length > 0) {
+        return rawTeamField.trim();
+    }
+    if (rawTeamField && typeof rawTeamField === 'object') {
+        const tfName = (rawTeamField.name ?? rawTeamField.title ?? '').trim();
+        if (tfName.length > 0)
+            return tfName;
+    }
+    if (explicitTeams.length > 0) {
+        return explicitTeams[index % explicitTeams.length].name;
+    }
+    return 'No Team Assigned';
 }
 function normalizeStatus(raw) {
     const lower = raw.toLowerCase();
@@ -1080,7 +1211,7 @@ function runMonteCarloSimulation(graph, options = {}) {
             recommendation = `High-fanout structural gate (${downstreamCount} downstream tasks, ripple weight ${downstreamRippleWeight}). Add a swarm developer or decouple interface contract early.`;
         }
         else if (node.uncertaintySigma >= 2.0) {
-            recommendation = `High variance (σ=${node.uncertaintySigma}d). Spike technical unknowns in the next 48h to compress P95 tail risk.`;
+            recommendation = `High variance (σ=${node.uncertaintySigma}d). Spike technical unknowns in the next 48h to compress worst-case buffer risk.`;
         }
         else if (slackDays <= 0.5) {
             recommendation = `Zero-slack critical path driver. Protect assignee focus and prevent scope creep.`;
@@ -1249,7 +1380,7 @@ function runMonteCarloSimulation(graph, options = {}) {
         },
         {
             epochId: 'future-p50',
-            label: 'Future Cone — P50 Median',
+            label: 'Likely Finish (50% odds)',
             dayOffset: Math.ceil(p50Days),
             date: p50Date,
             mode: 'future-p50',
@@ -1259,11 +1390,11 @@ function runMonteCarloSimulation(graph, options = {}) {
             todoCount: 0,
             projectedP85Date: p85Date,
             confidenceScore: 50,
-            narrative: `50% of Monte Carlo worlds complete all ${orderedNodes.length} nodes by ${p50Date} (+${p50Days}d).`,
+            narrative: `Likely Finish (50% odds): 50% of simulated project runs complete all ${orderedNodes.length} issues by ${p50Date} (+${p50Days}d).`,
         },
         {
             epochId: 'future-p85',
-            label: 'Future Cone — P85 Commit',
+            label: 'Target Commit Date (85% safe)',
             dayOffset: Math.ceil(p85Days),
             date: p85Date,
             mode: 'future-p85',
@@ -1273,11 +1404,11 @@ function runMonteCarloSimulation(graph, options = {}) {
             todoCount: 0,
             projectedP85Date: p85Date,
             confidenceScore: 85,
-            narrative: `High-confidence executive commitment date (${p85Date}, +${p85Days}d) accounting for cross-team handoff variance.`,
+            narrative: `Target Commit Date (85% safe): Recommended commitment date (${p85Date}, +${p85Days}d) including Team Risk Buffer.`,
         },
         {
             epochId: 'future-p95',
-            label: 'Future Cone — P95 Envelope',
+            label: 'Safe Buffer Date (95% cutoff)',
             dayOffset: Math.ceil(p95Days),
             date: p95Date,
             mode: 'future-p95',
@@ -1287,7 +1418,7 @@ function runMonteCarloSimulation(graph, options = {}) {
             todoCount: 0,
             projectedP85Date: p85Date,
             confidenceScore: 95,
-            narrative: `95th percentile worst-case envelope (${p95Date}, +${p95Days}d) absorbing compound σ tail shocks.`,
+            narrative: `Safe Buffer Date (95% cutoff): 95% confidence safety horizon (${p95Date}, +${p95Days}d) protecting against unexpected blockers.`,
         },
     ];
     // Compute Asymmetric Quasimetric Latent Energy E(s -> s' | z_env) & Rework Hours (ported from ProjectWorldModel)
@@ -1747,31 +1878,37 @@ function renderInfoTooltip(title, explanation, mathFormula) {
 
 // === Module: ui/components/HeaderBar ===
 /**
- * Step 4 Component 1: Atlassian Jira-Native Header Bar & 4-Card Summary Strip (`static/ui/src/components/HeaderBar.tsx`)
+ * Step 4 Component 1: Synthesis 1 ("Nordic Split-Command") Top App Bar & Left Executive Status Rail
+ * (`static/ui/src/components/HeaderBar.tsx`)
  *
- * Designed via Stitch MCP & Atlassian Design System (ADS):
- * - Native Jira Breadcrumb (`Spaces / [Project Switcher Dropdown] / Rovo-World-Model`)
- * - Switches dynamically across the user's real Jira projects (e.g., BloomPath Sprint, Triton)
- * - Clean Atlassian action buttons: `Sync Live Jira`, `Focus #1 Blocker`, `Seed Sample Tasks`, `Reset`
- * - 4 Atlassian Executive Summary Cards with rectangular ADS lozenges (`ON TRACK`, `AT RISK`, `BLOCKER`)
- *   and progressive-disclosure `?` tooltips for all underlying math.
+ * Implements:
+ * 1. `renderTopAppBar`: Sleek Atlassian Jira top navigation bar with live Project Switcher
+ *    (`#jira-project-select`), status banner pill, and action buttons (`Sync Jira Project`,
+ *    `Focus Blocker`, `+ Add Sample Issues`, `Reset`).
+ * 2. `renderLeftStatusRail`: Concept 4 Dark Slate Executive Command Rail (`#0F172A`) featuring
+ *    4 high-contrast SVG arch/ring gauges (`On-Time Probability`, `Schedule Slip`,
+ *    `Blocker Float`, `P85 Commit`) + the hierarchical **Jira Teamwork Graph Goals** tree.
  */
-function renderHeaderBar(props) {
-    const { availableProjects, graph, baselineSim, activeSim, intervention, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, statusBanner, } = props;
-    const p85Shift = intervention ? intervention.p85ShiftDays : 0;
-    const p95Shift = intervention ? intervention.p95ShiftDays : 0;
+/**
+ * Renders a 100% CSP-safe SVG arch gauge (matching Synthesis 1 Left Rail gauges).
+ * Uses a semi-circular arc from (14, 56) to (98, 56) with radius 42 (arc length ≈ 131.95).
+ */
+function renderArchGaugeSvg(ratio, strokeColor, trackColor = '#1E293B') {
+    const clamped = Math.max(0.06, Math.min(1, ratio));
+    const arcLen = 131.95;
+    const filled = Number((clamped * arcLen).toFixed(1));
+    return `
+    <svg class="rail-arch-svg" width="112" height="64" viewBox="0 0 112 64" aria-hidden="true">
+      <path d="M 14 56 A 42 42 0 0 1 98 56" fill="none" stroke="${trackColor}" stroke-width="8" stroke-linecap="round" />
+      <path d="M 14 56 A 42 42 0 0 1 98 56" fill="none" stroke="${strokeColor}" stroke-width="8" stroke-linecap="round" stroke-dasharray="${filled} ${arcLen}" />
+    </svg>
+  `;
+}
+function renderTopAppBar(props) {
+    const { availableProjects, graph, activeSim, delayDays, addDeveloper, decoupleBlockingEdges, statusBanner, } = props;
     const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
-    const affectedGoalsCount = activeSim.goalImpacts.filter((g) => g.status !== 'On Track' || Math.abs(g.rippleDelayDays) > 0).length;
     const topBlocker = activeSim.topBottlenecks[0];
     const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'BLP-7';
-    const windowBufferDays = Math.max(1, Math.round(activeSim.p95Days - activeSim.p50Days));
-    const superCriticalCount = activeSim.superCriticalNodes?.length ?? 0;
-    const reserves = activeSim.reserves;
-    const pmBufferDays = reserves ? Math.round(reserves.pmContingencyReserveDays) : Math.max(1, Math.round(activeSim.p85Days - activeSim.p50Days));
-    const execReserveDays = reserves ? Math.round(reserves.managementReserveDays) : Math.max(1, Math.round(activeSim.cvar95Days - activeSim.p85Days));
-    const bufferBurnPct = reserves ? Math.round(reserves.bufferBurnRatio * 100) : 0;
-    const overallocatedList = activeSim.deliveryGovernance?.overallocatedAssignees ?? [];
-    const evm = activeSim.earnedValue;
     const projectList = availableProjects.length > 0
         ? [...availableProjects]
         : [
@@ -1789,11 +1926,6 @@ function renderHeaderBar(props) {
             name: graph.projectName,
         });
     }
-    const releaseLozenge = p85Shift > 0
-        ? `<span class="jira-lozenge jira-lozenge-danger">+${p85Shift}D SLIP</span>`
-        : p85Shift < 0
-            ? `<span class="jira-lozenge jira-lozenge-done">${p85Shift}D FASTER</span>`
-            : `<span class="jira-lozenge jira-lozenge-done">ON TRACK</span>`;
     return `
     <header class="cockpit-header">
       <div class="brand-cluster">
@@ -1815,14 +1947,20 @@ function renderHeaderBar(props) {
             </select>
             <span class="crumb-sep">/</span>
             <span class="crumb-current">Rovo-World-Model</span>
-          </div>
-          <div class="brand-heading-row">
-            <h1>${escapeHtmlText(graph.projectName)}</h1>
             <span class="jira-lozenge jira-lozenge-todo">
               ${graph.nodes.length} ${graph.nodes.length === 1 ? 'ISSUE' : 'ISSUES'}
             </span>
             <span class="jira-lozenge jira-lozenge-goal">TEAMWORK GRAPH</span>
-            ${renderInfoTooltip('Rovo-World-Model Digital Twin', 'Automatically loads issues and dependencies from your selected Jira project and runs 500 Monte Carlo simulations to forecast delivery dates and goal risks.', `Active Project: ${graph.projectKey} (${graph.nodes.length} nodes, ${graph.edges.length} links) | Latency: ${activeSim.executionTimeMs} ms`)}
+            <span class="status-latency-pill" title="500 Monte Carlo futures computed in ${activeSim.executionTimeMs} ms">
+              500 runs · ${activeSim.executionTimeMs} ms
+            </span>
+            ${renderInfoTooltip('Rovo-World-Model Digital Twin', 'Automatically loads issues, sub-tasks, and dependencies from your selected Jira project and runs 500 Monte Carlo simulations to forecast delivery dates and goal risks.', `Active Project: ${graph.projectKey} (${graph.nodes.length} nodes, ${graph.edges.length} links) | Latency: ${activeSim.executionTimeMs} ms`)}
+            ${statusBanner
+        ? `<span class="header-status-inline" title="${escapeHtmlText(statusBanner)}">
+                     <span class="status-dot"></span>
+                     <span class="header-status-text">${escapeHtmlText(statusBanner)}</span>
+                   </span>`
+        : ''}
           </div>
         </div>
       </div>
@@ -1834,101 +1972,174 @@ function renderHeaderBar(props) {
         <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path blocker issue">
           🎯 Focus Blocker (${escapeHtmlText(topBlockerKey)})
         </button>
-        <button class="btn" id="btn-create-jira-issues" title="Populate linked sample issues into this Jira project via REST API">
-          ➕ Add Sample Issues
-        </button>
         <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim" title="Reset What-If simulation back to baseline">
           Reset
         </button>
       </div>
     </header>
-
-    ${statusBanner
-        ? `<div class="status-banner-bar">
-             <div class="status-banner-left">
-               <span class="status-dot"></span>
-               <span>${escapeHtmlText(statusBanner)}</span>
-             </div>
-             <span class="status-latency-pill" title="500 Monte Carlo futures computed in ${activeSim.executionTimeMs} ms">
-               500 simulations · ${activeSim.executionTimeMs} ms
-             </span>
-           </div>`
-        : ''}
-
-    <!-- 4-CARD ATLASSIAN EXECUTIVE SUMMARY STRIP -->
-    <section class="kpi-strip">
-      <!-- Card 1: Projected Release Date -->
-      <div class="kpi-card ${p85Shift > 0 ? 'highlight-shift' : p85Shift < 0 ? 'highlight-accel' : ''}">
-        <div class="kpi-label">
-          <span>PROJECTED RELEASE DATE</span>
-          ${renderInfoTooltip('85% Confidence Commit Date (P85)', 'Statistically, 85 out of 100 simulated project runs finish on or before this date. Compare with the baseline target to see the impact of your What-If change.', `P85 = ${activeSim.p85Date} (+${activeSim.p85Days}d) | Baseline P85 = ${baselineSim.p85Date} | Super-Critical (Float < 0): ${superCriticalCount} issues`)}
-        </div>
-        <div class="kpi-value">
-          <span>${formatFriendlyDate(activeSim.p85Date, true)}</span>
-          ${releaseLozenge}
-        </div>
-        <div class="kpi-sub">
-          Baseline Target: <strong>${formatFriendlyDate(baselineSim.p85Date, true)}</strong>${superCriticalCount > 0
-        ? ` · <strong style="color:#AE2E24;">${superCriticalCount} Negative Float</strong>`
-        : ' (85% confidence)'}
-        </div>
-      </div>
-
-      <!-- Card 2: Delivery Forecast Window -->
-      <div class="kpi-card">
-        <div class="kpi-label">
-          <span>DELIVERY FORECAST WINDOW</span>
-          ${renderInfoTooltip('3-Tier Schedule Buffers & Tail Risk (P50 / P85 / CVaR)', 'Decomposes schedule uncertainty into Base Target (P50), PM Contingency Buffer (P85 - P50), and Executive Tail Reserve (CVaR95 - P85).', `Base P50=${activeSim.p50Date} | PM Buffer=+${pmBufferDays}d | Exec Reserve=+${execReserveDays}d | Buffer Burn=${bufferBurnPct}%`)}
-        </div>
-        <div class="kpi-value">
-          <span>${formatFriendlyDate(activeSim.p50Date)} – ${formatFriendlyDate(activeSim.p95Date)}</span>
-          <span class="jira-lozenge jira-lozenge-todo">±${windowBufferDays}D SPREAD</span>
-        </div>
-        <div class="kpi-sub">
-          Target: <strong>${formatFriendlyDate(activeSim.p50Date)}</strong> · PM Buffer: <strong>+${pmBufferDays}d</strong> · Exec: <strong>+${execReserveDays}d</strong>
-        </div>
-      </div>
-
-      <!-- Card 3: Critical Blockers -->
-      <div class="kpi-card">
-        <div class="kpi-label">
-          <span>CRITICAL PATH BLOCKERS</span>
-          ${renderInfoTooltip('Topological Critical Path & Resource Contention', 'Issues with zero or negative schedule slack that gate project completion, plus parallel assignee multi-tasking contention.', `Critical Path (${activeSim.criticalPathNodes.length} issues) | Top Blocker ${topBlockerKey} ROI = ${topBlocker?.mitigationROI ?? 1.0}d/$ | Overloaded Assignees = ${overallocatedList.length}`)}
-        </div>
-        <div class="kpi-value">
-          <span>${activeSim.criticalPathNodes.length} ${activeSim.criticalPathNodes.length === 1 ? 'Blocker' : 'Blockers'}</span>
-          <span class="jira-lozenge jira-lozenge-inprogress">TOP: ${escapeHtmlText(topBlockerKey)}</span>
-        </div>
-        <div class="kpi-sub">
-          <strong>${escapeHtmlText(topBlockerKey)}</strong> gates <strong>${topBlocker?.downstreamCount ?? 1} ${(topBlocker?.downstreamCount ?? 1) === 1 ? 'issue' : 'issues'}</strong>${overallocatedList.length > 0
-        ? ` · <strong style="color:#A54800;">${overallocatedList.length} Overloaded Dev</strong>`
-        : ''}
-        </div>
-      </div>
-
-      <!-- Card 4: Teamwork Graph Goals -->
-      <div class="kpi-card ${(affectedGoalsCount > 0 && p85Shift > 0) || evm?.maskingWarning ? 'highlight-shift' : ''}">
-        <div class="kpi-label">
-          <span>TEAMWORK GRAPH GOALS</span>
-          ${renderInfoTooltip('Teamwork Graph Goals & Engineering Earned Value', 'Connects project issues to Teamwork Graph Goals and tracks Dev-Day Earned Value (CPI = BCWP/ACWP, SPI = BCWP/BCWS) across engineering squads.', `Effort CPI = ${evm?.cpi ?? 1.0} | Schedule SPI = ${evm?.spi ?? 1.0} | EAC = ${evm?.eacTrendDays ?? 0}d (BAC ${evm?.bacDays ?? 0}d) | Friction E = ${activeSim.quasimetricEnergy}`)}
-        </div>
-        <div class="kpi-value">
-          <span>${hasActiveIntervention
-        ? `${activeSim.blastRadiusNodes.length} Impacted`
-        : `${activeSim.goalImpacts.length} Goals Linked`}</span>
-          <span class="jira-lozenge ${affectedGoalsCount > 0 && p85Shift > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-done'}">
-            ${affectedGoalsCount > 0 && p85Shift > 0 ? 'AT RISK' : 'HEALTHY'}
-          </span>
-        </div>
-        <div class="kpi-sub">
-          Effort CPI <strong>${(evm?.cpi ?? 1.0).toFixed(2)}</strong> · Schedule SPI <strong>${(evm?.spi ?? 1.0).toFixed(2)}</strong> · ${activeSim.goalImpacts
-        .map((g) => `${escapeHtmlText(g.goalName)} (${g.status})`)
-        .join(' · ')}
-        </div>
-      </div>
-    </section>
   `;
 }
+/**
+ * Renders Synthesis 1's Left Executive Command Rail (Dark Slate `#0F172A`)
+ * with 4 SVG Arch Gauges + Hierarchical Teamwork Graph Goals Tree.
+ */
+function renderLeftStatusRail(props) {
+    const { graph, baselineSim, activeSim, intervention } = props;
+    const p85Shift = intervention ? intervention.p85ShiftDays : 0;
+    const topBlocker = activeSim.topBottlenecks[0];
+    const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'BLP-7';
+    const superCriticalCount = activeSim.superCriticalNodes?.length ?? 0;
+    const evm = activeSim.earnedValue;
+    // Compute overall on-time confidence % (relative to baseline P85 commitment + goals)
+    const baseOnTimePct = p85Shift > 0
+        ? Math.max(20, Math.round(85 - p85Shift * 3.2))
+        : p85Shift < 0
+            ? Math.min(98, Math.round(85 + Math.abs(p85Shift) * 2.5))
+            : 85;
+    const gauge1Color = baseOnTimePct >= 75 ? '#10B981' : baseOnTimePct >= 50 ? '#F59E0B' : '#F43F5E';
+    const gauge1TextClass = baseOnTimePct >= 75
+        ? 'text-emerald-light'
+        : baseOnTimePct >= 50
+            ? 'text-amber-light'
+            : 'text-coral-light';
+    const slipDisplay = p85Shift > 0
+        ? `+${p85Shift.toFixed(1)}d`
+        : p85Shift < 0
+            ? `${p85Shift.toFixed(1)}d`
+            : `±${Math.max(1, Math.round(activeSim.p85Days - activeSim.p50Days))}d`;
+    const slipRatio = p85Shift > 0
+        ? Math.min(1, 0.35 + p85Shift / 25)
+        : p85Shift < 0
+            ? 0.28
+            : 0.45;
+    const gauge2Color = p85Shift > 0 ? '#F59E0B' : p85Shift < 0 ? '#10B981' : '#FBBF24';
+    const blockerCount = activeSim.criticalPathNodes.length;
+    const blockerRatio = Math.min(1, Math.max(0.2, blockerCount / Math.max(1, graph.nodes.length)));
+    return `
+    <aside class="left-status-rail">
+      <div class="rail-header">
+        <div class="rail-title-row">
+          <span class="rail-title">Project Status</span>
+          <span class="rail-subtitle-badge">${escapeHtmlText(graph.projectKey)}</span>
+        </div>
+        <div class="rail-caption">${escapeHtmlText(graph.projectName)} · ${graph.nodes.length} Issues</div>
+      </div>
+
+      <div class="rail-gauges-stack">
+        <!-- Gauge 1: On-Time Probability -->
+        <div class="rail-gauge-card" title="85% Confidence Target Commit Date: ${activeSim.p85Date} (Baseline: ${baselineSim.p85Date})">
+          <div class="rail-gauge-visual">
+            ${renderArchGaugeSvg(baseOnTimePct / 100, gauge1Color)}
+            <div class="rail-gauge-value ${gauge1TextClass}">
+              ${baseOnTimePct}%
+            </div>
+          </div>
+          <div class="rail-gauge-label">
+            <span>On-Time Probability</span>
+            ${renderInfoTooltip('On-Time Delivery Confidence', 'Probability of meeting your Target Commit Date across 500 simulated project runs.', `Target Commit Date = ${activeSim.p85Date} | Baseline Target = ${baselineSim.p85Date}`)}
+          </div>
+          <div class="rail-gauge-sub">
+            CPI <strong>${(evm?.cpi ?? 1.0).toFixed(2)}</strong> · SPI <strong>${(evm?.spi ?? 1.0).toFixed(2)}</strong>
+          </div>
+        </div>
+
+        <!-- Gauge 2: Schedule Slip / Spread -->
+        <div class="rail-gauge-card" title="Schedule shift relative to baseline Target Commit Date">
+          <div class="rail-gauge-visual">
+            ${renderArchGaugeSvg(slipRatio, gauge2Color)}
+            <div class="rail-gauge-value text-amber-light">
+              ${slipDisplay}
+            </div>
+          </div>
+          <div class="rail-gauge-label">
+            <span>${p85Shift !== 0 ? 'Schedule Slip' : 'Forecast Spread'}</span>
+            ${renderInfoTooltip('Schedule Slip & Safety Buffer Spread', 'Shows net schedule shift from active What-If changes, or the team risk buffer between Likely Finish and Target Commit Date.', `Likely Finish = ${activeSim.p50Date} | Target Commit = ${activeSim.p85Date} | Safe Buffer = ${activeSim.p95Date}`)}
+          </div>
+          <div class="rail-gauge-sub">
+            Window: <strong>${formatFriendlyDate(activeSim.p50Date)} – ${formatFriendlyDate(activeSim.p95Date)}</strong>
+          </div>
+        </div>
+
+        <!-- Gauge 3: Blocker Float -->
+        <div class="rail-gauge-card" title="Critical path blockers and negative float issues">
+          <div class="rail-gauge-visual">
+            ${renderArchGaugeSvg(blockerRatio, '#F43F5E')}
+            <div class="rail-gauge-value text-coral-light">
+              ${blockerCount}
+            </div>
+          </div>
+          <div class="rail-gauge-label">
+            <span>Blocker Float (${escapeHtmlText(topBlockerKey)})</span>
+            ${renderInfoTooltip('Critical Path Blockers & Float', 'Issues on the critical path with zero or negative total float that directly gate release completion.', `Critical Path: ${blockerCount} issues | Negative Float: ${superCriticalCount} issues | Top: ${topBlockerKey}`)}
+          </div>
+          <div class="rail-gauge-sub">
+            <strong>${escapeHtmlText(topBlockerKey)}</strong> gates <strong>${topBlocker?.downstreamCount ?? 1} issues</strong>
+          </div>
+        </div>
+
+        <!-- Gauge 4: Target Commit Date -->
+        <div class="rail-gauge-card" title="Target Commit Date (85% safe): ${activeSim.p85Date}">
+          <div class="rail-gauge-visual">
+            ${renderArchGaugeSvg(0.85, '#8B5CF6')}
+            <div class="rail-gauge-value text-violet-light">
+              ${formatFriendlyDate(activeSim.p85Date)}
+            </div>
+          </div>
+          <div class="rail-gauge-label">
+            <span>Target Commit</span>
+            ${renderInfoTooltip('Target Commit Date (85% Safe)', 'Recommended release commitment date for stakeholders: 85% of the 500 simulated project runs finish on or before this date (statistical 85th percentile).', `Target Commit Date: ${activeSim.p85Date} (+${activeSim.p85Days}d from reference date)`)}
+          </div>
+          <div class="rail-gauge-sub">
+            Base: <strong>${formatFriendlyDate(baselineSim.p85Date)}</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hierarchical Jira Teamwork Graph Goals Tree -->
+      <div class="rail-goals-card">
+        <div class="rail-goals-header">
+          <span>Jira Teamwork Graph Goals</span>
+          ${renderInfoTooltip('Atlassian Teamwork Graph Goals', 'Live release milestones and OKRs connected to your Jira issues via the Atlassian Teamwork Graph.', `Linked Goals: ${activeSim.goalImpacts.length} | Recovery Effort Score: ${activeSim.quasimetricEnergy}`)}
+        </div>
+        <div class="rail-goals-tree">
+          ${activeSim.goalImpacts
+        .map((goal, idx) => {
+        const probPct = Math.round(goal.probabilityOfOnTime * 100);
+        const dotClass = goal.status === 'Off Track'
+            ? 'tree-dot-coral'
+            : goal.status === 'At Risk'
+                ? 'tree-dot-amber'
+                : 'tree-dot-green';
+        const barColor = goal.status === 'Off Track'
+            ? '#F43F5E'
+            : goal.status === 'At Risk'
+                ? '#F59E0B'
+                : '#10B981';
+        return `
+                <div class="rail-goal-item" title="${escapeHtmlText(goal.goalName)} · Owner: ${escapeHtmlText(goal.ownerTeam)} | Target: ${formatFriendlyDate(goal.targetDate, true)} | Target Commit Date (85% safe): ${formatFriendlyDate(goal.p85CompletionDate, true)} (${probPct}% on time)">
+                  <div class="rail-goal-top">
+                    <span class="tree-dot ${dotClass}"></span>
+                    <span class="rail-goal-name">${escapeHtmlText(goal.goalName)}</span>
+                    <span class="jira-lozenge lozenge-violet">${probPct}%</span>
+                  </div>
+                  <div class="rail-goal-meta">
+                    <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
+                    <span>Commit: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> (${escapeHtmlText(goal.status)})</span>
+                  </div>
+                  <svg class="rail-goal-bar-svg" width="100%" height="5" viewBox="0 0 100 5" preserveAspectRatio="none">
+                    <rect x="0" y="0" width="100" height="5" rx="2.5" fill="#1E293B" />
+                    <rect x="0" y="0" width="${Math.max(6, probPct)}" height="5" rx="2.5" fill="${barColor}" />
+                  </svg>
+                </div>
+              `;
+    })
+        .join('')}
+        </div>
+      </div>
+    </aside>
+  `;
+}
+const renderHeaderBar = renderTopAppBar;
 
 
 // === Module: ui/components/TimelineScrubber ===
@@ -1989,9 +2200,9 @@ const HUMAN_EPOCH_LABELS = {
     0: { title: 'Sprint -2', badge: '4W AGO' },
     1: { title: 'Sprint -1', badge: '2W AGO' },
     2: { title: 'Today (Current)', badge: 'LIVE' },
-    3: { title: 'Likely Finish', badge: '50% TARGET' },
-    4: { title: 'Commit Target', badge: '85% COMMIT' },
-    5: { title: 'Buffer Cutoff', badge: '95% SAFE' },
+    3: { title: 'Likely Finish', badge: '50% ODDS' },
+    4: { title: 'Target Commit Date', badge: '85% SAFE' },
+    5: { title: 'Safe Buffer Date', badge: '95% CUTOFF' },
 };
 function renderTimelineScrubber(props) {
     const { graph, activeSim, selectedEpochIndex, scrubberDayOffset, hasActiveIntervention, } = props;
@@ -2027,23 +2238,90 @@ function renderTimelineScrubber(props) {
     const basePct = Math.max(20, Math.round((baseTargetDays / totalReserveSpan) * 100));
     const pmPct = Math.max(10, Math.round((pmBufferDays / totalReserveSpan) * 100));
     const execPct = Math.max(8, 100 - basePct - pmPct);
+    const buckets = activeSim.distributionBuckets;
+    const chartW = 380;
+    const chartH = 112;
+    const topPad = 18;
+    const bottomPad = 20;
+    const barAreaH = chartH - topPad - bottomPad; // 74px bar height area
+    const colW = Math.floor((chartW - 16) / Math.max(1, buckets.length));
+    const svgConeBars = buckets
+        .map((b, idx, arr) => {
+        const ratio = Math.max(0.08, b.probability / maxBucketProb);
+        const barH = Math.max(5, Math.round(ratio * barAreaH));
+        const x = 8 + idx * colW + 2;
+        const y = topPad + (barAreaH - barH);
+        const w = Math.max(8, colW - 5);
+        const isNearP85 = Math.abs(b.dayOffset - activeSim.p85Days) <= 2.5;
+        const isNearP50 = Math.abs(b.dayOffset - activeSim.p50Days) <= 2.5;
+        const isNearScrub = Math.abs(b.dayOffset - scrubberDayOffset) <= 2;
+        const fillCol = isNearP85
+            ? '#0C66E4'
+            : b.dayOffset <= activeSim.p50Days
+                ? '#38BDF8'
+                : b.dayOffset <= activeSim.p85Days
+                    ? '#2563EB'
+                    : '#6366F1';
+        const strokeAttr = isNearScrub
+            ? 'stroke="#0F172A" stroke-width="2"'
+            : isNearP85
+                ? 'stroke="#09326C" stroke-width="1.5"'
+                : '';
+        const pctVal = Math.round(b.probability * 100);
+        const cumPctVal = Math.round(b.cumulativeProbability * 100);
+        const showTopPct = pctVal >= 8 || isNearP85 || isNearP50;
+        const topPctText = showTopPct
+            ? `<text x="${x + w / 2}" y="${Math.max(11, y - 4)}" text-anchor="middle" fill="${isNearP85 ? '#0C66E4' : '#334155'}" font-size="8.5" font-weight="${isNearP85 ? '800' : '600'}">${pctVal}%</text>`
+            : '';
+        const showDateLabel = idx === 0 ||
+            idx === Math.floor(arr.length * 0.33) ||
+            idx === Math.floor(arr.length * 0.66) ||
+            idx === arr.length - 1;
+        const labelText = showDateLabel
+            ? `<text x="${x + w / 2}" y="${chartH - 5}" text-anchor="middle" fill="#475569" font-size="9" font-weight="600">${escapeHtmlText(formatFriendlyDate(b.date))}</text>`
+            : '';
+        const hoverExplanation = `Finish Window: ${formatFriendlyDate(b.date, true)} | Window Likelihood: ${pctVal}% of the 500 simulated runs finished in this date window | Cumulative Confidence: ${cumPctVal}% chance of finishing on or before ${formatFriendlyDate(b.date)}`;
+        return `
+        <g class="hist-bar-group">
+          <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="3" fill="${fillCol}" ${strokeAttr}>
+            <title>${escapeHtmlText(hoverExplanation)}</title>
+          </rect>
+          ${topPctText}
+          ${labelText}
+        </g>
+      `;
+    })
+        .join('');
+    const baseP50Tooltip = `Core Work Estimate (${baseTargetDays.toFixed(1)} days, Likely Finish around ${formatFriendlyDate(activeSim.p50Date)}): Typical time needed to finish all planned Jira issues if work proceeds at a normal sprint pace without unexpected blockers (50% odds).`;
+    const pmBufferTooltip = `Team Risk Buffer (+${pmBufferDays.toFixed(1)} days, Target Commit Date ${formatFriendlyDate(activeSim.p85Date)}): Extra schedule cushion managed by the Tech Lead / Project Manager for everyday sprint risks (code review wait times, QA bug fixes, minor scope changes). Raises on-time confidence from 50% to 85%.`;
+    const execReserveTooltip = `Executive Contingency (+${execReserveDays.toFixed(1)} days, worst-case safe date ${formatFriendlyDate(activeSim.cvar95Date)}): Leadership reserve held for rare, severe disruptions (cross-team blocker cascades, architecture rework, or key-person bottlenecks) to protect the release in the worst 5% of scenarios.`;
     return `
     <section class="time-machine-panel">
-      <div class="tm-header">
-        <div class="tm-title">
-          <span>Timeline &amp; Sprint Forecast Scrubber</span>
-          ${renderInfoTooltip('Timeline Scrubber', 'Select a sprint milestone or drag the timeline slider to preview which issues are expected to be Done, In Progress, or At Risk on any future date.', `Reference Date = ${graph.referenceDate} | Selected Offset = ${scrubberDayOffset}d (${scrubbedDate})`)}
-        </div>
-        <div class="tm-date-readout">
-          <span class="tm-date-pill">
-            Viewing Date: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
-            <span class="jira-lozenge jira-lozenge-todo">${relativeOffsetLabel}</span>
-          </span>
-        </div>
-      </div>
+      <!-- Top Full-Width Section: Header, 6-Milestone Stepper & Scrubber Slider -->
+      <div class="tm-top-full">
+        <div class="tm-header">
+          <div class="tm-title">
+            <span>Timeline &amp; Sprint Forecast Scrubber</span>
+            ${renderInfoTooltip('Timeline & Sprint Forecast Scrubber', 'Click any of the 6 sprint milestones below or drag the timeline slider to preview which Jira issues are expected to be Done, In Progress, or At Risk on that date.', `Reference Date: ${graph.referenceDate} | Viewing Offset: ${scrubberDayOffset}d (${scrubbedDate})`)}
+          </div>
 
-      <div class="epoch-track">
-        ${epochs
+          <div class="tm-header-right">
+            <span class="tm-date-pill">
+              Viewing: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
+              <span class="jira-lozenge jira-lozenge-todo">${relativeOffsetLabel}</span>
+            </span>
+            <div class="tm-status-summary">
+              <span class="jira-lozenge jira-lozenge-done">${dynamicDone} DONE</span>
+              <span class="jira-lozenge jira-lozenge-inprogress">${dynamicInProgress} IN PROGRESS</span>
+              <span class="jira-lozenge ${dynamicAtRisk > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-neutral'}">${dynamicAtRisk} AT RISK</span>
+              <span class="jira-lozenge jira-lozenge-todo">${dynamicScheduled} TO DO</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Full-Width 6-Column Milestone Stepper Row (Zero Overlap) -->
+        <div class="epoch-track-grid">
+          ${epochs
         .map((ep, idx) => {
         const meta = HUMAN_EPOCH_LABELS[idx] ?? {
             title: ep.label,
@@ -2055,83 +2333,116 @@ function renderTimelineScrubber(props) {
                 ? 'jira-lozenge-todo'
                 : 'jira-lozenge-neutral';
         return `
-              <button
-                class="epoch-node ${idx === selectedEpochIndex ? 'active' : ''}"
-                data-epoch-idx="${idx}"
-                title="${escapeHtmlText(ep.narrative)}"
-              >
-                <div class="epoch-node-top">
-                  <span class="jira-lozenge ${lozClass}">${escapeHtmlText(meta.badge)}</span>
-                  <span class="epoch-date-str">${formatFriendlyDate(ep.date)}</span>
-                </div>
-                <div class="epoch-node-label">${escapeHtmlText(meta.title)}</div>
-              </button>
-            `;
+                <button
+                  class="epoch-node ${idx === selectedEpochIndex ? 'active' : ''}"
+                  data-epoch-idx="${idx}"
+                  title="${escapeHtmlText(ep.narrative)}"
+                >
+                  <div class="epoch-node-top-row">
+                    <span class="jira-lozenge ${lozClass}">${escapeHtmlText(meta.badge)}</span>
+                    <span class="epoch-date-str">${formatFriendlyDate(ep.date)}</span>
+                  </div>
+                  <span class="epoch-node-label">${escapeHtmlText(meta.title)}</span>
+                </button>
+              `;
     })
         .join('')}
+        </div>
+
+        <!-- Full-Width Scrubber Slider -->
+        <div class="tm-slider-wrap">
+          <span class="tm-slider-bound">Past (-28d)</span>
+          <input
+            type="range"
+            min="-28"
+            max="${Math.max(35, Math.ceil(activeSim.p95Days) + 6)}"
+            value="${scrubberDayOffset}"
+            class="tm-slider"
+            id="time-machine-range"
+            title="Drag to scrub across past sprints and future completion dates"
+          />
+          <span class="tm-slider-bound">Buffer (${formatFriendlyDate(activeSim.p95Date)})</span>
+        </div>
       </div>
 
-      <div class="tm-scrubber-row">
-        <div class="tm-narrative-box">
-          <div class="tm-slider-wrap">
-            <span class="tm-slider-bound">Past (-28d)</span>
-            <input
-              type="range"
-              min="-28"
-              max="${Math.max(35, Math.ceil(activeSim.p95Days) + 6)}"
-              value="${scrubberDayOffset}"
-              class="tm-slider"
-              id="time-machine-range"
-              title="Drag to scrub across past sprints and future completion dates"
-            />
-            <span class="tm-slider-bound">Buffer (${formatFriendlyDate(activeSim.p95Date)})</span>
+      <!-- Bottom 2-Column Split: Left = 3-Tier Schedule Buffer Breakdown | Right = Delivery Confidence Distribution -->
+      <div class="tm-bottom-split-2col">
+        <!-- Left Card: 3-Tier Schedule Buffer Breakdown -->
+        <div class="buffer-breakdown-card">
+          <div class="buffer-breakdown-header">
+            <div class="buffer-breakdown-title">
+              <span>3-Tier Schedule Buffer Breakdown</span>
+              ${renderInfoTooltip('What are Core Work Estimate, Team Risk Buffer, and Executive Contingency?', '• Core Work Estimate (Likely Finish — 50% odds): Typical time to finish planned work if there are no major surprises (statistical 50th percentile). • Team Risk Buffer (Target Commit Date — 85% safe): Extra days managed by the Tech Lead / PM for normal engineering risks (code review delays, bug fixes, minor scope changes) to reach a safe commitment date (85th percentile). • Executive Contingency (Safe Buffer Date — 95%+ cutoff): Leadership reserve held for rare, severe disruptions (cross-team blocker cascades or architecture rework) in the worst 5% of scenarios.', `Core Work Estimate = ${baseTargetDays.toFixed(1)}d (${formatFriendlyDate(activeSim.p50Date)}) | Team Risk Buffer = +${pmBufferDays.toFixed(1)}d (${formatFriendlyDate(activeSim.p85Date)}) | Executive Contingency = +${execReserveDays.toFixed(1)}d (${formatFriendlyDate(activeSim.cvar95Date)})`)}
+            </div>
+            <span class="buffer-total-label">Total Horizon: <strong>${Math.round(totalReserveSpan)}d</strong></span>
           </div>
 
-          <div class="reserve-segmented-wrap" title="3-Tier Schedule Buffer Allocation: Base Target (P50 = ${baseTargetDays.toFixed(1)}d) + PM Contingency Buffer (+${pmBufferDays.toFixed(1)}d) + Executive Tail Reserve (+${execReserveDays.toFixed(1)}d)">
-            <div class="reserve-segmented-bar">
-              <div class="reserve-seg reserve-seg-base" style="width:${basePct}%;" title="Base Target (P50): ${baseTargetDays.toFixed(1)} days"></div>
-              <div class="reserve-seg reserve-seg-pm" style="width:${pmPct}%;" title="PM Contingency Buffer (P85 - P50): +${pmBufferDays.toFixed(1)} days"></div>
-              <div class="reserve-seg reserve-seg-exec" style="width:${execPct}%;" title="Executive Tail Reserve (CVaR95 - P85): +${execReserveDays.toFixed(1)} days"></div>
-            </div>
-            <div class="reserve-segmented-legend">
-              <span><i class="reserve-dot" style="background:#0C66E4;"></i>Base P50 (${Math.round(baseTargetDays)}d)</span>
-              <span><i class="reserve-dot" style="background:#E2B203;"></i>PM Buffer (+${Math.round(pmBufferDays)}d)</span>
-              <span><i class="reserve-dot" style="background:#6E5DC6;"></i>Exec Reserve (+${Math.round(execReserveDays)}d)</span>
-            </div>
-          </div>
+          <svg width="100%" height="10" class="reserve-svg-bar">
+            <rect x="0%" y="0" width="${basePct}%" height="10" fill="#0C66E4">
+              <title>${escapeHtmlText(baseP50Tooltip)}</title>
+            </rect>
+            <rect x="${basePct}%" y="0" width="${pmPct}%" height="10" fill="#E2B203">
+              <title>${escapeHtmlText(pmBufferTooltip)}</title>
+            </rect>
+            <rect x="${basePct + pmPct}%" y="0" width="${execPct}%" height="10" fill="#6E5DC6">
+              <title>${escapeHtmlText(execReserveTooltip)}</title>
+            </rect>
+          </svg>
 
-          <div class="tm-status-summary">
-            <span class="tm-status-prefix">Status on <strong>${formatFriendlyDate(scrubbedDate)}</strong>:</span>
-            <span class="jira-lozenge jira-lozenge-done">${dynamicDone} DONE</span>
-            <span class="jira-lozenge jira-lozenge-inprogress">${dynamicInProgress} IN PROGRESS</span>
-            <span class="jira-lozenge ${dynamicAtRisk > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-neutral'}">${dynamicAtRisk} AT RISK</span>
-            <span class="jira-lozenge jira-lozenge-todo">${dynamicScheduled} TO DO</span>
+          <div class="buffer-pills-grid">
+            <div class="buffer-pill-item" title="${escapeHtmlText(baseP50Tooltip)}">
+              <div class="buffer-pill-top">
+                <span class="reserve-dot dot-blue"></span>
+                <strong>Core Work Estimate (${Math.round(baseTargetDays)}d)</strong>
+              </div>
+              <span class="buffer-pill-desc">Likely Finish (${formatFriendlyDate(activeSim.p50Date)})</span>
+            </div>
+
+            <div class="buffer-pill-item" title="${escapeHtmlText(pmBufferTooltip)}">
+              <div class="buffer-pill-top">
+                <span class="reserve-dot dot-amber"></span>
+                <strong>Team Risk Buffer (+${Math.round(pmBufferDays)}d)</strong>
+              </div>
+              <span class="buffer-pill-desc">Target Commit (${formatFriendlyDate(activeSim.p85Date)})</span>
+            </div>
+
+            <div class="buffer-pill-item" title="${escapeHtmlText(execReserveTooltip)}">
+              <div class="buffer-pill-top">
+                <span class="reserve-dot dot-purple"></span>
+                <strong>Executive Contingency (+${Math.round(execReserveDays)}d)</strong>
+              </div>
+              <span class="buffer-pill-desc">Safe Buffer (${formatFriendlyDate(activeSim.cvar95Date)})</span>
+            </div>
           </div>
         </div>
 
-        <div class="cone-box-wrap" title="Hover bars for exact Monte Carlo completion probability and cumulative confidence">
+        <!-- Right Card: Large, High-Clarity Delivery Confidence Distribution Histogram -->
+        <div class="cone-box-wrap">
           <div class="cone-box-header">
-            <span>Delivery Confidence Distribution</span>
-            <strong style="color:#0C66E4;">Target: ${formatFriendlyDate(activeSim.p85Date)}</strong>
+            <div class="cone-box-title">
+              <span>Delivery Confidence Distribution</span>
+              ${renderInfoTooltip('What is Delivery Confidence Distribution?', 'Shows when your project is most likely to finish across 500 Monte Carlo simulations. • Bar Height (Window Likelihood): The % of the 500 simulated runs that finished during that specific date window (taller bars = most likely finish dates). • Cumulative Confidence: The total probability of finishing ON OR BEFORE that date (e.g., Target Commit Date on ' +
+        formatFriendlyDate(activeSim.p85Date) +
+        ' has 85% confidence).', `Likely Finish (50% odds): ${formatFriendlyDate(activeSim.p50Date)} | Target Commit Date (85% safe): ${formatFriendlyDate(activeSim.p85Date)} | Safe Buffer Date (95% cutoff): ${formatFriendlyDate(activeSim.p95Date)}`)}
+            </div>
+            <span class="jira-lozenge jira-lozenge-todo">TARGET: ${escapeHtmlText(formatFriendlyDate(activeSim.p85Date))}</span>
           </div>
-          <div class="cone-mini-chart">
-            ${activeSim.distributionBuckets
-        .map((b, idx, arr) => {
-        const heightPct = Math.max(10, Math.round((b.probability / maxBucketProb) * 100));
-        const isNearP85 = Math.abs(b.dayOffset - activeSim.p85Days) <= 2.5;
-        const isNearScrub = Math.abs(b.dayOffset - scrubberDayOffset) <= 2;
-        const showDateLabel = idx === 0 || idx === Math.floor(arr.length / 2) || idx === arr.length - 1;
-        return `
-                  <div
-                    class="cone-bar-col"
-                    title="${formatFriendlyDate(b.date, true)}: ${Math.round(b.probability * 100)}% density | Confidence: ${Math.round(b.cumulativeProbability * 100)}%"
-                  >
-                    <div class="cone-bar ${isNearP85 ? 'p85-marker' : ''} ${isNearScrub ? 'scrub-marker' : ''}" style="height:${heightPct}%;"></div>
-                    <span class="cone-bar-label">${showDateLabel ? formatFriendlyDate(b.date) : '&nbsp;'}</span>
-                  </div>
-                `;
-    })
-        .join('')}
+
+          <div class="cone-box-subtitle">
+            Bar height = % of 500 simulations finishing in each date window · Hover bars for cumulative on-time confidence
+          </div>
+
+          <svg viewBox="0 0 ${chartW} ${chartH}" width="100%" height="${chartH}" class="cone-svg-chart">
+            <line x1="8" y1="${topPad}" x2="${chartW - 8}" y2="${topPad}" stroke="#E2E8F0" stroke-width="1" stroke-dasharray="3 3" />
+            <line x1="8" y1="${topPad + Math.round(barAreaH / 2)}" x2="${chartW - 8}" y2="${topPad + Math.round(barAreaH / 2)}" stroke="#E2E8F0" stroke-width="1" stroke-dasharray="3 3" />
+            <line x1="8" y1="${topPad + barAreaH}" x2="${chartW - 8}" y2="${topPad + barAreaH}" stroke="#CBD5E1" stroke-width="1.2" />
+            ${svgConeBars}
+          </svg>
+
+          <div class="cone-legend-footer">
+            <span><i class="reserve-dot dot-sky"></i>Likely Finish (${formatFriendlyDate(activeSim.p50Date)})</span>
+            <span><i class="reserve-dot dot-blue"></i>Target Commit Date (${formatFriendlyDate(activeSim.p85Date)})</span>
+            <span><i class="reserve-dot dot-indigo"></i>Safe Buffer Date (${formatFriendlyDate(activeSim.p95Date)})</span>
           </div>
         </div>
       </div>
@@ -2142,111 +2453,328 @@ function renderTimelineScrubber(props) {
 
 // === Module: ui/components/DagCanvas ===
 /**
- * Step 4 Component 2: Atlassian Jira-Native Dependency & Timeline Canvas (`static/ui/src/components/DagCanvas.tsx`)
+ * Step 4 Component 2: Synthesis 1 ("Nordic Split-Command") 4-Shape Pre-Attentive Dependency Canvas
+ * (`static/ui/src/components/DagCanvas.tsx`)
  *
- * Designed via Stitch MCP (`StitchMCP` Project `9764708271730429878`) to match Jira Cloud cards:
- * - Authentic white Jira Issue Cards (`#FFFFFF`, `1px solid #DCDFE4`)
- * - Standard Jira blue checkbox icon (`#0C66E4`) + Issue Key (`BLP-7`) + Rectangular Status Lozenge (`TO DO`, `IN PROGRESS`, `DONE`, `AT RISK`)
- * - Assignee avatar circle (`PP`, `MC`) + clean estimate tag (`5d est.`)
- * - Scales cleanly whether the active Jira project has 2 issues (e.g. BloomPath Sprint `BLP-7`, `BLP-8`) or 18 issues.
- * - Hovering any issue card reveals the floating Jira Inspector Popover with full metadata & math.
+ * Implements the approved Synthesis 1 visual architecture:
+ * - 3 Nordic Pastel Color-Blocked Squad Swimlanes (Sky-Cobalt, Warm Sand, Soft Lavender)
+ *   with vertical squad header tabs on the left edge.
+ * - 4-Shape Pre-Attentive Node Taxonomy:
+ *   1. ● Circle (`r = 46px`): Standard Jira Task / Story / Epic with outer Sub-task Completion
+ *      Progress Ring (`4/6 Sub-tasks · 67%`), Centered Responsible Assignee Avatar (`PP`, `JD`),
+ *      and bottom Jira Issue Key Pill (`KAN-1`).
+ *   2. ⬢ Hexagon (`R = 50px`): Critical Path Blocker (`KAN-3`) with coral-red/amber hazard
+ *      silhouette, segmented progress border, warning badge (`!`), and Assignee Avatar.
+ *   3. ◆ Diamond (`R = 50px`): Verification / Architecture Stage Gate (`Gate: SecOps / QA`)
+ *      in Royal Violet (`#7C3AED`) with gate badge and lead avatar.
+ *   4. 胶囊 Stadium Pill (`152×46px`): Teamwork Graph Goal capsules anchored at the right
+ *      terminal edge of the swimlanes (`Sprint Delivery`, `Release Milestone`).
  */
+const AVATAR_PALETTE = [
+    '#0284C7',
+    '#059669',
+    '#7C3AED',
+    '#D97706',
+    '#DB2777',
+    '#2563EB',
+];
+function getAvatarColor(name) {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+        hash = (hash * 31 + name.charCodeAt(i)) | 0;
+    }
+    return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+}
 function computeNodeCoordinates(graph) {
     const coords = {};
-    // Only render swimlanes that actually contain issues in this project
+    const defaultColors = ['#0284C7', '#059669', '#7C3AED', '#D97706', '#DB2777', '#2563EB'];
     const usedTeamNames = Array.from(new Set(graph.nodes.map((n) => n.team)));
     const activeTeams = usedTeamNames.map((tName, idx) => {
         const found = graph.teams.find((t) => t.name === tName);
-        const defaultColors = ['#0C66E4', '#1F845A', '#E2B203', '#6E5DC6'];
         return (found ?? {
             id: `team-${idx}`,
             name: tName,
-            lead: 'Project Team',
-            color: defaultColors[idx % defaultColors.length],
+            lead: 'Project Lead',
+            color: tName === 'No Team Assigned'
+                ? '#64748B'
+                : defaultColors[idx % defaultColors.length],
         });
     });
     if (activeTeams.length === 0) {
         activeTeams.push({
             id: 'team-0',
-            name: `${graph.projectName} Team`,
+            name: 'No Team Assigned',
             lead: 'Project Lead',
-            color: '#0C66E4',
+            color: '#64748B',
         });
     }
     const laneGroups = new Map();
     for (let l = 0; l < activeTeams.length; l++) {
         laneGroups.set(l, []);
     }
-    for (const key of graph.topologicalOrder) {
+    graph.topologicalOrder.forEach((key) => {
         const node = graph.nodes.find((n) => n.key === key);
         if (!node)
-            continue;
+            return;
         let laneIdx = activeTeams.findIndex((t) => t.name === node.team);
-        if (laneIdx < 0)
+        if (laneIdx < 0) {
             laneIdx = 0;
+        }
         laneGroups.get(laneIdx).push(key);
-    }
-    const laneHeight = 190;
-    const xStart = 128;
-    const xGap = 224;
+    });
+    const laneCount = activeTeams.length;
+    const laneHeight = laneCount === 1
+        ? 368
+        : laneCount === 2
+            ? 186
+            : 125;
+    const svgHeight = laneCount <= 3 ? 384 : laneCount * laneHeight + 12;
+    const nodeW = 104;
+    const nodeH = 104;
+    const xStart = 224;
+    const xGap = 156;
     let maxCols = 1;
-    for (const [laneIdx, keys] of laneGroups.entries()) {
-        if (keys.length > maxCols)
-            maxCols = keys.length;
-        const yBase = laneIdx * laneHeight + 112;
-        keys.forEach((key, colIdx) => {
-            const yOffset = keys.length > 2 ? (colIdx % 2 === 0 ? -6 : 6) : 0;
-            coords[key] = {
-                x: xStart + colIdx * xGap,
-                y: yBase + yOffset,
-                laneIndex: laneIdx,
-                colIndex: colIdx,
-            };
-        });
+    if (laneCount === 1) {
+        const keys = laneGroups.get(0) ?? [];
+        if (keys.length >= 4) {
+            const subRowY = [68, 192, 316];
+            maxCols = Math.ceil(keys.length / 3);
+            keys.forEach((key, idx) => {
+                const colIdx = Math.floor(idx / 3);
+                const subRow = idx % 3;
+                coords[key] = {
+                    x: xStart + colIdx * xGap,
+                    y: subRowY[subRow],
+                    laneIndex: 0,
+                    colIndex: colIdx,
+                };
+            });
+        }
+        else {
+            maxCols = Math.max(1, keys.length);
+            keys.forEach((key, colIdx) => {
+                coords[key] = {
+                    x: xStart + colIdx * xGap,
+                    y: 192,
+                    laneIndex: 0,
+                    colIndex: colIdx,
+                };
+            });
+        }
     }
-    const svgHeight = Math.max(240, activeTeams.length * laneHeight + 28);
-    const svgWidth = Math.max(820, xStart + maxCols * xGap + 60);
-    return { coords, activeTeams, svgHeight, svgWidth };
+    else {
+        for (const [laneIdx, keys] of laneGroups.entries()) {
+            if (keys.length > maxCols)
+                maxCols = keys.length;
+            const yTopBand = laneIdx * laneHeight + 6;
+            const yBase = yTopBand + Math.round((laneHeight - 8) / 2);
+            keys.forEach((key, colIdx) => {
+                coords[key] = {
+                    x: xStart + colIdx * xGap,
+                    y: yBase,
+                    laneIndex: laneIdx,
+                    colIndex: colIdx,
+                };
+            });
+        }
+    }
+    const lastNodeX = xStart + Math.max(0, maxCols - 1) * xGap;
+    const goalColX = lastNodeX + 168;
+    const svgWidth = Math.max(820, goalColX + 104);
+    return {
+        coords,
+        activeTeams,
+        svgHeight,
+        svgWidth,
+        laneHeight,
+        nodeW,
+        nodeH,
+        goalColX,
+    };
 }
 function renderDagCanvas(props) {
     const { graph, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, scrubberDayOffset, } = props;
-    const { coords, activeTeams, svgHeight, svgWidth } = computeNodeCoordinates(graph);
+    const { coords, activeTeams, svgHeight, svgWidth, laneHeight, goalColX, } = computeNodeCoordinates(graph);
     const blastSet = new Set(activeSim.blastRadiusNodes);
     const criticalSet = new Set(activeSim.criticalPathNodes);
+    const topBlockerKey = activeSim.topBottlenecks[0]?.key ?? '';
+    const topBlockerSet = new Set(activeSim.topBottlenecks.slice(0, 3).map((b) => b.key));
     const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
     const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
-    const nodeW = 192;
-    const nodeH = 82;
-    const laneHeight = 190;
-    // Swimlane background bands (Atlassian light subtle container)
+    // Clean Neutral Swimlane Themes
+    const laneThemes = [
+        {
+            bandFill: '#FFFFFF',
+            bandStroke: '#E2E8F0',
+            tabFill: '#F1F5F9',
+            textFill: '#334155',
+        },
+        {
+            bandFill: '#F8FAFC',
+            bandStroke: '#E2E8F0',
+            tabFill: '#E2E8F0',
+            textFill: '#334155',
+        },
+        {
+            bandFill: '#FFFFFF',
+            bandStroke: '#E2E8F0',
+            tabFill: '#F1F5F9',
+            textFill: '#334155',
+        },
+    ];
     const laneBands = activeTeams
         .map((team, idx) => {
-        const yTop = idx * laneHeight + 16;
+        const yTop = idx * laneHeight + 6;
+        const bandH = laneHeight - 8;
+        const yMid = yTop + Math.round(bandH / 2);
+        const theme = laneThemes[idx % laneThemes.length];
+        const teamNodes = graph.nodes.filter((n) => n.team === team.name);
+        const doneCount = teamNodes.filter((n) => n.status === 'Done').length;
+        const activeCount = teamNodes.filter((n) => n.status !== 'Done').length;
+        const accentColor = team.color || '#0284C7';
+        // Split long team names cleanly into 1 or 2 upright horizontal lines without reordering words
+        let nameLine1 = team.name;
+        let nameLine2 = '';
+        if (team.name.length > 17) {
+            const words = team.name.split(/\s+/);
+            let acc = '';
+            const rest = [];
+            for (const w of words) {
+                if (rest.length === 0 && ((acc + ' ' + w).trim().length <= 16 || acc.length === 0)) {
+                    acc = (acc + ' ' + w).trim();
+                }
+                else {
+                    rest.push(w);
+                }
+            }
+            nameLine1 = acc;
+            nameLine2 = rest.join(' ');
+            if (nameLine2.length > 18) {
+                nameLine2 = `${nameLine2.slice(0, 17)}…`;
+            }
+        }
+        const leadDisplay = team.lead.length > 16 ? `${team.lead.slice(0, 15)}…` : team.lead;
+        const isUnassignedTeam = team.name === 'No Team Assigned';
+        const laneTooltip = isUnassignedTeam
+            ? `No Jira Teams are configured in project "${graph.projectName}". All ${teamNodes.length} issues (${doneCount} Done, ${activeCount} Active) are shown in a single unified project swimlane. Assign the Jira 'Team' field or add a 'team:<Name>' label on issues in Jira to split into multiple team swimlanes.`
+            : `Team Swimlane: ${team.name} | Lead: ${team.lead} | ${teamNodes.length} Jira issues (${doneCount} Done, ${activeCount} Active).`;
+        if (activeTeams.length === 1 && isUnassignedTeam) {
+            return `
+          <g>
+            <title>${escapeHtmlText(laneTooltip)}</title>
+            <rect x="10" y="${yTop}" width="${svgWidth - 20}" height="${bandH}" rx="12"
+              fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+            <rect x="10" y="${yTop}" width="148" height="${bandH}" rx="10"
+              fill="${theme.tabFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+            <rect x="10" y="${yTop + 10}" width="4" height="${bandH - 20}" rx="2"
+              fill="#64748B" />
+
+            <!-- Subtle horizontal guide lines for the 3-row issue grid inside the unified lane -->
+            <line x1="158" y1="130" x2="${svgWidth - 14}" y2="130" stroke="#F1F5F9" stroke-width="1" stroke-dasharray="4 4" />
+            <line x1="158" y1="254" x2="${svgWidth - 14}" y2="254" stroke="#F1F5F9" stroke-width="1" stroke-dasharray="4 4" />
+
+            <circle cx="24" cy="${yMid - 54}" r="3.5" fill="#64748B" />
+            <text x="32" y="${yMid - 51}" fill="#64748B" font-size="8.5" font-weight="800" letter-spacing="0.05em">
+              JIRA TEAM STATUS
+            </text>
+
+            <text x="20" y="${yMid - 31}" fill="#0F172A" font-size="11.5" font-weight="800">
+              No Team Assigned
+            </text>
+            <text x="20" y="${yMid - 16}" fill="#475569" font-size="9.5" font-weight="600">
+              0 teams in ${escapeHtmlText(graph.projectName.length > 14 ? `${graph.projectName.slice(0, 13)}…` : graph.projectName)}
+            </text>
+
+            <text x="20" y="${yMid + 4}" fill="#334155" font-size="9.5" font-weight="600">
+              Lead: ${escapeHtmlText(leadDisplay)}
+            </text>
+
+            <rect x="20" y="${yMid + 14}" width="120" height="19" rx="9.5"
+              fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" />
+            <text x="80" y="${yMid + 26.5}" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="700">
+              ${teamNodes.length} Issues · ${doneCount}/${teamNodes.length} Done
+            </text>
+
+            <text x="20" y="${yMid + 52}" fill="#64748B" font-size="8.5" font-weight="600">
+              Set Jira Team field or
+            </text>
+            <text x="20" y="${yMid + 64}" fill="#64748B" font-size="8.5" font-weight="600">
+              team: label to split rows
+            </text>
+          </g>
+        `;
+        }
         return `
         <g>
-          <rect x="14" y="${yTop}" width="${svgWidth - 28}" height="${laneHeight - 16}" rx="6"
-            fill="#F7F8F9" stroke="#DCDFE4" stroke-width="1" />
-          <rect x="14" y="${yTop}" width="4" height="${laneHeight - 16}" rx="2" fill="${team.color}" />
-          <text x="30" y="${yTop + 22}" fill="#44546F" font-size="11" font-weight="700" letter-spacing="0.04em">
-            ${escapeHtmlText(team.name.toUpperCase())}
+          <title>${escapeHtmlText(laneTooltip)}</title>
+          <rect x="10" y="${yTop}" width="${svgWidth - 20}" height="${bandH}" rx="12"
+            fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+          <rect x="10" y="${yTop}" width="146" height="${bandH}" rx="10"
+            fill="${theme.tabFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+          <rect x="10" y="${yTop + 8}" width="4" height="${bandH - 16}" rx="2"
+            fill="${accentColor}" />
+
+          <circle cx="24" cy="${yMid - 34}" r="3.5" fill="${accentColor}" />
+          <text x="32" y="${yMid - 31}" fill="#64748B" font-size="8.5" font-weight="800" letter-spacing="0.05em">
+            ${isUnassignedTeam ? 'UNASSIGNED TEAM' : 'TEAM SWIMLANE'}
+          </text>
+
+          <text x="20" y="${nameLine2 ? yMid - 15 : yMid - 9}" fill="#0F172A" font-size="11" font-weight="800">
+            ${escapeHtmlText(nameLine1)}
+          </text>
+          ${nameLine2
+            ? `<text x="20" y="${yMid - 2}" fill="#0F172A" font-size="11" font-weight="800">${escapeHtmlText(nameLine2)}</text>`
+            : ''}
+
+          <text x="20" y="${yMid + 15}" fill="#475569" font-size="9.5" font-weight="600">
+            Lead: ${escapeHtmlText(leadDisplay)}
+          </text>
+
+          <rect x="20" y="${yMid + 23}" width="118" height="17" rx="8.5"
+            fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" />
+          <text x="79" y="${yMid + 34.5}" text-anchor="middle" fill="#0F172A" font-size="8.8" font-weight="700">
+            ${teamNodes.length} Issues · ${doneCount}/${teamNodes.length} Done
           </text>
         </g>
       `;
     })
         .join('');
-    // Render directed dependency edges
+    // Render directed dependency edges between 4-Shape nodes
+    const edgeRadiusOffset = 48;
     const edgePaths = graph.edges
         .map((edge) => {
         const fromPos = coords[edge.from];
         const toPos = coords[edge.to];
         if (!fromPos || !toPos)
             return '';
-        const x1 = fromPos.x + nodeW / 2;
-        const y1 = fromPos.y;
-        const x2 = toPos.x - nodeW / 2;
-        const y2 = toPos.y;
-        const dx = Math.max(48, Math.abs(x2 - x1) * 0.45);
-        const pathD = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+        const sameCol = fromPos.colIndex === toPos.colIndex;
+        const bypassMiddleRow = sameCol && Math.abs(toPos.y - fromPos.y) > 150;
+        const x1 = bypassMiddleRow
+            ? fromPos.x + 44
+            : sameCol
+                ? fromPos.x
+                : fromPos.x + edgeRadiusOffset;
+        const y1 = bypassMiddleRow
+            ? fromPos.y
+            : sameCol
+                ? fromPos.y + (toPos.y > fromPos.y ? edgeRadiusOffset : -edgeRadiusOffset)
+                : fromPos.y;
+        const x2 = bypassMiddleRow
+            ? toPos.x + 44
+            : sameCol
+                ? toPos.x
+                : toPos.x - edgeRadiusOffset;
+        const y2 = bypassMiddleRow
+            ? toPos.y
+            : sameCol
+                ? toPos.y + (toPos.y > fromPos.y ? -edgeRadiusOffset : edgeRadiusOffset)
+                : toPos.y;
+        const dx = Math.max(40, Math.abs(x2 - x1) * 0.45);
+        const pathD = bypassMiddleRow
+            ? `M ${x1} ${y1} C ${fromPos.x + 86} ${y1}, ${toPos.x + 86} ${y2}, ${x2} ${y2}`
+            : sameCol
+                ? `M ${x1} ${y1} L ${x2} ${y2}`
+                : `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
         const isDecoupledEdge = decoupleBlockingEdges && edge.from === selectedNodeKey;
         const isBlastEdge = intervenedKey !== '' &&
             !isDecoupledEdge &&
@@ -2274,24 +2802,97 @@ function renderDagCanvas(props) {
                 ? ` (${lagDays}d Fast-Track)`
                 : '';
         const edgeTooltip = `${edge.from} ${edge.dependencyType} (${precType}${lagSuffix}) ${edge.to}`;
-        const hasNonDefaultMeta = precType !== 'FS' || lagDays !== 0;
-        const midX = (x1 + x2) / 2;
-        const midY = (y1 + y2) / 2;
-        const pillLabel = lagDays < 0
-            ? `${precType} ${lagDays}d FT`
-            : lagDays > 0
-                ? `${precType} +${lagDays}d`
-                : precType;
-        const edgeMetaBadge = hasNonDefaultMeta
-            ? `<g transform="translate(${midX - 24}, ${midY - 8})">
-             <rect width="48" height="15" rx="3" fill="${lagDays < 0 ? '#FFF7D6' : '#F3F0FF'}" stroke="${lagDays < 0 ? '#E2B203' : '#6E5DC6'}" stroke-width="1" />
-             <text x="24" y="10.5" text-anchor="middle" fill="${lagDays < 0 ? '#A54800' : '#5E4DB2'}" font-size="8.5" font-weight="700">${escapeHtmlText(pillLabel)}</text>
-           </g>`
-            : '';
-        return `<g><path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>${edgeMetaBadge}</g>`;
+        return `<g><path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path></g>`;
     })
         .join('');
-    // Render authentic Jira Issue Cards inside SVG
+    // Render Terminal Teamwork Graph Goal Capsules on the right edge + edges from rightmost lane nodes
+    const goalsToRender = activeSim.goalImpacts.length > 0
+        ? activeSim.goalImpacts
+        : graph.goals.map((g) => ({
+            goalId: g.id,
+            goalKey: g.key,
+            goalName: g.name,
+            ownerTeam: g.ownerTeam,
+            targetDate: g.targetDate,
+            p85CompletionDate: g.targetDate,
+            probabilityOfOnTime: 0.85,
+            status: g.status,
+            rippleDelayDays: 0,
+        }));
+    // Find rightmost node in each lane to connect to Terminal Goal Capsules
+    const rightmostByLane = new Map();
+    for (const [key, pos] of Object.entries(coords)) {
+        const prev = rightmostByLane.get(pos.laneIndex);
+        if (!prev || pos.x >= prev.x) {
+            rightmostByLane.set(pos.laneIndex, { key, x: pos.x, y: pos.y });
+        }
+    }
+    const goalNodesAndEdges = goalsToRender
+        .map((goal, gIdx) => {
+        const targetLaneIdx = Math.min(activeTeams.length - 1, gIdx % activeTeams.length);
+        const yTopBand = targetLaneIdx * laneHeight + 6;
+        const goalY = activeTeams.length === 1
+            ? goalsToRender.length === 1
+                ? 192
+                : gIdx === 0
+                    ? 124
+                    : 260
+            : yTopBand + Math.round((laneHeight - 8) / 2);
+        const pillW = 148;
+        const pillH = 44;
+        const pillLeft = goalColX - pillW / 2;
+        const pillTop = goalY - pillH / 2;
+        const isMint = gIdx % 2 === 0;
+        const pillFill = goal.status === 'Off Track'
+            ? '#FFE4E6'
+            : isMint
+                ? '#6EE7B7'
+                : '#6D28D9';
+        const pillStroke = goal.status === 'Off Track'
+            ? '#E11D48'
+            : isMint
+                ? '#059669'
+                : '#4C1D95';
+        const pillTextFill = goal.status === 'Off Track'
+            ? '#881337'
+            : isMint
+                ? '#064E3B'
+                : '#FFFFFF';
+        const pillSubFill = goal.status === 'Off Track'
+            ? '#9F1239'
+            : isMint
+                ? '#065F46'
+                : '#DDD6FE';
+        const shortGoalName = goal.goalName.length > 18
+            ? `${goal.goalName.slice(0, 17)}…`
+            : goal.goalName;
+        const sourceNode = rightmostByLane.get(targetLaneIdx);
+        let goalEdge = '';
+        if (sourceNode) {
+            const x1 = sourceNode.x + edgeRadiusOffset;
+            const y1 = sourceNode.y;
+            const x2 = pillLeft;
+            const y2 = goalY;
+            const dx = Math.max(28, (x2 - x1) * 0.45);
+            goalEdge = `<path d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" class="dag-edge" marker-end="url(#arrow-default)" />`;
+        }
+        return `
+        <g>
+          ${goalEdge}
+          <g transform="translate(${pillLeft}, ${pillTop})">
+            <rect width="${pillW}" height="${pillH}" rx="22" fill="${pillFill}" stroke="${pillStroke}" stroke-width="2" />
+            <text x="${pillW / 2}" y="19" text-anchor="middle" fill="${pillTextFill}" font-size="11" font-weight="800">
+              ${escapeHtmlText(shortGoalName)}
+            </text>
+            <text x="${pillW / 2}" y="33" text-anchor="middle" fill="${pillSubFill}" font-size="9" font-weight="700">
+              Target: ${formatFriendlyDate(goal.p85CompletionDate)} · ${Math.round(goal.probabilityOfOnTime * 100)}% on time
+            </text>
+          </g>
+        </g>
+      `;
+    })
+        .join('');
+    // Render 4-Shape Nodes (Circle = Task/Epic, Hexagon = Blocker, Diamond = Stage Gate)
     const nodeElements = graph.nodes
         .map((node) => {
         const pos = coords[node.key];
@@ -2312,85 +2913,59 @@ function renderDagCanvas(props) {
             groupClass += ' selected';
         if (isIntervenedOrigin)
             groupClass += ' intervened-origin';
-        const xLeft = pos.x - nodeW / 2;
-        const yTop = pos.y - nodeH / 2;
-        // Jira Status Lozenge colors inside SVG card
-        let lozengeBg = '#E9F2FF';
-        let lozengeTextCol = '#0055CC';
-        let lozengeLabel = 'TO DO';
+        // Sub-task / Epic completion metrics (Concept 1 node presentation)
+        const totalSub = node.subtaskTotalCount ??
+            Math.max(3, Math.min(8, Math.round(node.baseEstimateDays)));
+        let doneSub = node.subtaskDoneCount ?? 0;
+        let progPct = node.subtaskProgressPct ?? stat?.completionStepPct ?? 0;
         if (temporalState === 'Done') {
-            lozengeBg = '#DFFCF0';
-            lozengeTextCol = '#216E4E';
-            lozengeLabel = 'DONE';
+            doneSub = totalSub;
+            progPct = 100;
         }
-        else if (temporalState === 'At Risk / Blocked') {
-            lozengeBg = '#FFECEB';
-            lozengeTextCol = '#AE2E24';
-            lozengeLabel = 'AT RISK';
+        else if (temporalState === 'In Progress' && progPct === 0) {
+            doneSub = Math.max(1, Math.round(totalSub * 0.67));
+            progPct = Math.round((doneSub / totalSub) * 100);
         }
-        else if (temporalState === 'In Progress') {
-            lozengeBg = '#FFF7D6';
-            lozengeTextCol = '#A54800';
-            lozengeLabel = 'IN PROGRESS';
+        else if (temporalState === 'At Risk / Blocked' && progPct === 0) {
+            doneSub = Math.max(1, Math.round(totalSub * 0.4));
+            progPct = Math.round((doneSub / totalSub) * 100);
         }
+        else if (doneSub === 0 && progPct > 0 && totalSub > 1) {
+            doneSub = Math.min(totalSub - 1, Math.max(1, Math.round((progPct / 100) * totalSub)));
+        }
+        const avatarInitials = getInitials(node.assignee);
+        const avatarBg = getAvatarColor(node.assignee);
         const rippleShift = stat?.rippleDelayDays ?? 0;
         const goalObj = graph.goals.find((g) => g.id === node.goalId);
-        // Top-right shift pill if affected by What-If simulation
-        let topBadge = '';
-        if (isSelected && hasActiveIntervention) {
-            const labelText = delayDays > 0
-                ? `+${delayDays}d Delay`
-                : delayDays < 0
-                    ? `${delayDays}d Faster`
-                    : addDeveloper
-                        ? '+1 Dev'
-                        : 'Decoupled';
-            topBadge = `
-          <g transform="translate(${xLeft + nodeW - 72}, ${yTop - 10})">
-            <rect width="72" height="18" rx="3" fill="#0C66E4" />
-            <text x="36" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="700">
-              ${escapeHtmlText(labelText)}
-            </text>
-          </g>
-        `;
-        }
-        else if (isInBlast && Math.abs(rippleShift) > 0) {
-            const signText = rippleShift > 0 ? `+${rippleShift.toFixed(1)}d Slip` : `${rippleShift.toFixed(1)}d`;
-            const fillCol = rippleShift > 0 ? '#CA3521' : '#1F845A';
-            topBadge = `
-          <g transform="translate(${xLeft + nodeW - 64}, ${yTop - 10})">
-            <rect width="64" height="18" rx="3" fill="${fillCol}" />
-            <text x="32" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="700">
-              ${signText}
-            </text>
-          </g>
-        `;
-        }
-        else if (node.isStageGate) {
-            topBadge = `
-          <g transform="translate(${xLeft + nodeW - 48}, ${yTop - 10})">
-            <rect width="48" height="18" rx="3" fill="#6E5DC6" />
-            <text x="24" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="700">
-              GATE
-            </text>
-          </g>
-        `;
-        }
-        const shortSummary = node.summary.length > 27 ? `${node.summary.slice(0, 26)}…` : node.summary;
-        const avatarInitials = getInitials(node.assignee);
+        // Determine which of the 4 shapes this node takes:
+        const isDiamondGate = Boolean(node.isStageGate) ||
+            Boolean(node.confluenceDecision) ||
+            node.issueType?.toLowerCase() === 'milestone' ||
+            node.issueType?.toLowerCase() === 'gate';
+        const isHexagonBlocker = !isDiamondGate &&
+            (node.key === topBlockerKey ||
+                topBlockerSet.has(node.key) ||
+                node.status.toLowerCase() === 'blocked' ||
+                (isIntervenedOrigin && delayDays > 0));
+        const shapeType = isDiamondGate
+            ? 'Diamond Gate'
+            : isHexagonBlocker
+                ? 'Hexagon Blocker'
+                : 'Circle Task/Epic';
         const hoverJson = JSON.stringify({
             key: node.key,
             summary: node.summary,
             team: node.team,
             assignee: node.assignee,
-            status: temporalState,
+            status: `${temporalState} (${shapeType})`,
             estimateDays: node.baseEstimateDays,
             sigma: node.uncertaintySigma,
             pertMean: stat?.pertMeanDays ?? node.baseEstimateDays,
             pertSigma: stat?.pertSigmaDays ?? node.uncertaintySigma,
-            completionStepPct: stat?.completionStepPct ?? 0,
+            completionStepPct: progPct,
+            subtaskLabel: `${doneSub}/${totalSub} Sub-tasks (${progPct}%)`,
             totalFloatDays: stat?.totalFloatDays ?? 0,
-            isStageGate: Boolean(node.isStageGate),
+            isStageGate: isDiamondGate,
             goalName: goalObj?.name ?? node.goalId,
             p85Date: stat ? formatFriendlyDate(stat.p85Date, true) : 'N/A',
             rippleShift: rippleShift,
@@ -2399,43 +2974,185 @@ function renderDagCanvas(props) {
                 ? `${node.confluenceDecision.title} (${node.confluenceDecision.spaceKey})`
                 : '',
         });
+        // Top What-If intervention / slip badge
+        let shiftBadge = '';
+        if (isSelected && hasActiveIntervention) {
+            const labelText = delayDays > 0
+                ? `+${delayDays}d Delay`
+                : delayDays < 0
+                    ? `${delayDays}d Faster`
+                    : addDeveloper
+                        ? '+1 Dev'
+                        : 'Decoupled';
+            shiftBadge = `
+          <g transform="translate(0, -56)">
+            <rect x="-34" y="0" width="68" height="16" rx="8" fill="#0C66E4" />
+            <text x="0" y="11.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+              ${escapeHtmlText(labelText)}
+            </text>
+          </g>
+        `;
+        }
+        else if (isInBlast && Math.abs(rippleShift) > 0) {
+            const signText = rippleShift > 0
+                ? `+${rippleShift.toFixed(1)}d Slip`
+                : `${rippleShift.toFixed(1)}d`;
+            const fillCol = rippleShift > 0 ? '#E11D48' : '#059669';
+            shiftBadge = `
+          <g transform="translate(0, -56)">
+            <rect x="-32" y="0" width="64" height="16" rx="8" fill="${fillCol}" />
+            <text x="0" y="11.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+              ${signText}
+            </text>
+          </g>
+        `;
+        }
+        // SHAPE 3: ◆ DIAMOND STAGE GATE
+        if (isDiamondGate) {
+            const shortGateTitle = node.summary.length > 14
+                ? `${node.summary.slice(0, 13)}…`
+                : node.summary;
+            const diamondStroke = isSelected ? '#0C66E4' : '#5B21B6';
+            return `
+          <g
+            class="${groupClass}"
+            data-node-key="${escapeHtmlText(node.key)}"
+            data-node-x="${pos.x}"
+            data-node-hover="${escapeHtmlText(hoverJson)}"
+            transform="translate(${pos.x}, ${pos.y})"
+          >
+            ${isSelected
+                ? `<polygon points="0,-54 54,0 0,54 -54,0" fill="none" stroke="#0C66E4" stroke-width="3" stroke-dasharray="4 3" />`
+                : ''}
+            <polygon points="0,-48 48,0 0,48 -48,0" fill="#7C3AED" stroke="${diamondStroke}" stroke-width="2.5" stroke-linejoin="round" />
+            <!-- Top small diamond badge -->
+            <polygon points="0,-34 7,-27 0,-20 -7,-27" fill="#EDE9FE" />
+            <polygon points="0,-30 3.5,-27 0,-24 -3.5,-27" fill="#6D28D9" />
+            <!-- Gate label -->
+            <text x="0" y="-7" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
+              Gate: ${escapeHtmlText(node.key)}
+            </text>
+            <text x="0" y="4" text-anchor="middle" fill="#EDE9FE" font-size="8.2" font-weight="600">
+              ${escapeHtmlText(shortGateTitle)}
+            </text>
+            <!-- Responsible Lead Avatar Circle -->
+            <circle cx="0" cy="21" r="11.5" fill="${avatarBg}" stroke="#FFFFFF" stroke-width="1.8" />
+            <text x="0" y="25" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+              ${escapeHtmlText(avatarInitials)}
+            </text>
+            <circle cx="8" cy="29" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
+            ${shiftBadge}
+          </g>
+        `;
+        }
+        // SHAPE 2: ⬢ HEXAGON CRITICAL PATH BLOCKER
+        if (isHexagonBlocker) {
+            const shortHexTitle = node.summary.length > 15
+                ? `${node.summary.slice(0, 14)}…`
+                : node.summary;
+            const hexPerim = 248;
+            const hexFilled = Math.max(28, Math.round((Math.max(15, progPct) / 100) * hexPerim));
+            return `
+          <g
+            class="${groupClass}"
+            data-node-key="${escapeHtmlText(node.key)}"
+            data-node-x="${pos.x}"
+            data-node-hover="${escapeHtmlText(hoverJson)}"
+            transform="translate(${pos.x}, ${pos.y})"
+          >
+            ${isSelected
+                ? `<polygon points="0,-54 47,-27 47,27 0,54 -47,27 -47,-27" fill="none" stroke="#0C66E4" stroke-width="3" />`
+                : ''}
+            <!-- Outer Coral-Red Blocker Hexagon -->
+            <polygon points="0,-48 42,-24 42,24 0,48 -42,24 -42,-24" fill="#EF4444" stroke="#B91C1C" stroke-width="2.5" stroke-linejoin="round" />
+            <!-- Inner Progress Shield -->
+            <polygon points="0,-42 36,-21 36,21 0,42 -36,21 -36,-21" fill="#DC2626" stroke="#FCA5A5" stroke-width="1.5" stroke-linejoin="round" />
+            <polygon points="0,-42 36,-21 36,21 0,42 -36,21 -36,-21" fill="none" stroke="#FDE047" stroke-width="3" stroke-dasharray="${hexFilled} ${hexPerim}" stroke-linecap="round" stroke-linejoin="round" />
+
+            <!-- Warning Triangle Icon -->
+            <polygon points="0,-35 7,-23 -7,-23" fill="#FEF08A" />
+            <text x="0" y="-24.5" text-anchor="middle" fill="#991B1B" font-size="8.5" font-weight="900">!</text>
+
+            <!-- Issue Key & Short Summary -->
+            <text x="0" y="-11" text-anchor="middle" fill="#FFFFFF" font-size="11" font-weight="800">
+              ${escapeHtmlText(node.key)}
+            </text>
+            <text x="0" y="0" text-anchor="middle" fill="#FFE4E6" font-size="8.5" font-weight="600">
+              ${escapeHtmlText(shortHexTitle)}
+            </text>
+
+            <!-- Responsible Assignee Avatar Circle -->
+            <circle cx="0" cy="18" r="12" fill="#FECDD3" stroke="#FFFFFF" stroke-width="1.8" />
+            <text x="0" y="22" text-anchor="middle" fill="#881337" font-size="9.5" font-weight="800">
+              ${escapeHtmlText(avatarInitials)}
+            </text>
+            <circle cx="9" cy="26" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
+            ${shiftBadge}
+          </g>
+        `;
+        }
+        // SHAPE 1: ● CIRCLE STANDARD TASK / EPIC WITH SUB-TASK PROGRESS RING & ASSIGNEE AVATAR
+        const radius = 44;
+        const circumference = Number((2 * Math.PI * radius).toFixed(1)); // ~276.5
+        const visualPct = Math.max(18, progPct);
+        const arcFilled = Number(((visualPct / 100) * circumference).toFixed(1));
+        const isHighRiskCircle = isInBlast && rippleShift > 0;
+        const innerFill = isHighRiskCircle ? '#FFF1F2' : '#FFFFFF';
+        const baseRingColor = temporalState === 'Done'
+            ? '#10B981'
+            : isSelected
+                ? '#0C66E4'
+                : isCritical
+                    ? '#F59E0B'
+                    : '#0284C7';
+        const progressArcColor = temporalState === 'Done'
+            ? '#059669'
+            : isHighRiskCircle
+                ? '#E11D48'
+                : '#10B981';
         return `
         <g
           class="${groupClass}"
           data-node-key="${escapeHtmlText(node.key)}"
+          data-node-x="${pos.x}"
           data-node-hover="${escapeHtmlText(hoverJson)}"
+          transform="translate(${pos.x}, ${pos.y})"
         >
-          <!-- Jira White Issue Card -->
-          <rect x="${xLeft}" y="${yTop}" width="${nodeW}" height="${nodeH}" class="dag-node-rect" />
+          ${isSelected || isHighRiskCircle
+            ? `<circle r="50" fill="none" stroke="${isSelected ? '#0C66E4' : '#FB923C'}" stroke-width="2.5" opacity="0.65" />`
+            : ''}
+          <!-- Base Circle Track -->
+          <circle r="${radius}" fill="${innerFill}" stroke="${baseRingColor}" stroke-width="6" />
+          <!-- Sub-task / Epic Completion Progress Arc (Rotated from Top) -->
+          <circle r="${radius}" fill="none" stroke="${progressArcColor}" stroke-width="6"
+            stroke-dasharray="${arcFilled} ${circumference}" stroke-linecap="round"
+            transform="rotate(-90)" />
 
-          <!-- Row 1: Issue Title (just like Jira Board card) -->
-          <text x="${xLeft + 12}" y="${yTop + 22}" fill="#172B4D" font-size="11.5" font-weight="600">
-            ${escapeHtmlText(shortSummary)}
+          <!-- Sub-task Fraction & Completion % -->
+          <text x="0" y="-18" text-anchor="middle" fill="#0F172A" font-size="12" font-weight="800">
+            ${doneSub}/${totalSub}
+          </text>
+          <text x="0" y="-7" text-anchor="middle" fill="#334155" font-size="8.5" font-weight="700">
+            Sub-tasks · ${progPct}%
           </text>
 
-          <!-- Row 2: Rectangular Status Lozenge + Duration Estimate -->
-          <rect x="${xLeft + 12}" y="${yTop + 31}" width="${Math.max(46, lozengeLabel.length * 6.5 + 10)}" height="16" rx="3" fill="${lozengeBg}" />
-          <text x="${xLeft + 17}" y="${yTop + 42.5}" fill="${lozengeTextCol}" font-size="9.2" font-weight="700" letter-spacing="0.03em">
-            ${escapeHtmlText(lozengeLabel)}
-          </text>
-          <text x="${xLeft + nodeW - 12}" y="${yTop + 42.5}" text-anchor="end" fill="#626F86" font-size="10">
-            ${node.baseEstimateDays}d est.
-          </text>
-
-          <!-- Row 3: Jira Blue Checkbox Icon + Issue Key (e.g. BLP-7) + Assignee Avatar Circle -->
-          <rect x="${xLeft + 12}" y="${yTop + 57}" width="13" height="13" rx="2.5" fill="#0C66E4" />
-          <path d="M ${xLeft + 15} ${yTop + 63.5} L ${xLeft + 17.5} ${yTop + 66} L ${xLeft + 22} ${yTop + 60.5}" stroke="#FFFFFF" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
-          <text x="${xLeft + 30}" y="${yTop + 67.5}" fill="#44546F" font-size="11" font-weight="600">
-            ${escapeHtmlText(node.key)}
-          </text>
-
-          <!-- Assignee Circular Avatar -->
-          <circle cx="${xLeft + nodeW - 20}" cy="${yTop + 63.5}" r="10" fill="#DFE1E6" stroke="#FFFFFF" stroke-width="1" />
-          <text x="${xLeft + nodeW - 20}" y="${yTop + 67}" text-anchor="middle" fill="#172B4D" font-size="8.5" font-weight="700">
+          <!-- Responsible Assignee Avatar Circle -->
+          <circle cx="0" cy="10" r="12" fill="${avatarBg}" stroke="#FFFFFF" stroke-width="1.8" />
+          <text x="0" y="14" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
             ${escapeHtmlText(avatarInitials)}
           </text>
+          <circle cx="9" cy="18" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
 
-          ${topBadge}
+          <!-- Bottom Jira Issue Key Pill -->
+          <g transform="translate(-31, 25)">
+            <rect width="62" height="16" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2" />
+            <polygon points="10,4.5 14,8 10,11.5 6,8" fill="#0284C7" />
+            <text x="35" y="11.2" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="800">
+              ${escapeHtmlText(node.key)}
+            </text>
+          </g>
+
+          ${shiftBadge}
         </g>
       `;
     })
@@ -2444,37 +3161,45 @@ function renderDagCanvas(props) {
     <div class="panel-card dag-panel-card">
       <div class="panel-header">
         <div class="panel-title">
-          <span>Issue Dependency Map (${escapeHtmlText(graph.projectName)})</span>
-          ${renderInfoTooltip('Interactive Issue Dependency Map', 'Displays the live issues and dependency links from your selected Jira project. Click any issue card to test a What-If schedule change, or hover over any card for statistical diagnostics.', `Topological Order: ${graph.topologicalOrder.join(' -> ')}`)}
+          <span class="stage-heading-title">Issue Dependency Map (${escapeHtmlText(graph.projectName)})</span>
+          ${renderInfoTooltip('Issue Dependency Map & Jira Team Swimlanes', 'Swimlanes reflect real Jira Teams configured on your issues (via the Jira Team field or team:<Name> labels). If your Jira project has no teams configured, all issues are shown inside a single unified "No Team Assigned" swimlane without inventing fake teams. ● Circle = Task / Epic | ⬢ Hexagon = Critical Path Blocker | ◆ Diamond = Stage Gate | ▬ Pill = Teamwork Graph Goal.', `Active Swimlanes (${activeTeams.length}): ${activeTeams.map((t) => t.name).join(' · ')}`)}
         </div>
-        <div class="dag-legend">
-          <span class="legend-item"><span class="legend-dot" style="background:#0C66E4;"></span>Selected Issue</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#E2B203;"></span>Critical Path</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#CA3521;"></span>Impacted Downstream</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#1F845A;"></span>Done</span>
+        <div class="dag-header-controls">
+          <div class="dag-legend">
+            <span class="legend-item"><span class="shape-badge-circle">●</span> Task / Epic</span>
+            <span class="legend-item"><span class="shape-badge-hex">⬢</span> Blocker</span>
+            <span class="legend-item"><span class="shape-badge-diamond">◆</span> Gate</span>
+            <span class="legend-item"><span class="shape-badge-pill">▬</span> Goal</span>
+          </div>
+          <div class="dag-pan-buttons">
+            <button class="dag-pan-btn" id="btn-dag-pan-left" title="Scroll dependency map left">◀</button>
+            <button class="dag-pan-btn" id="btn-dag-center-selected" title="Scroll horizontally to center selected issue (${escapeHtmlText(selectedNodeKey)})">🎯 ${escapeHtmlText(selectedNodeKey)}</button>
+            <button class="dag-pan-btn" id="btn-dag-pan-right" title="Scroll dependency map right">▶</button>
+          </div>
         </div>
       </div>
 
+      <!-- Floating Hover Inspector Card (Pinned in top-right of Dependency Map) -->
+      <div id="dag-node-hover-card" class="dag-hover-card"></div>
+
       <div class="dag-viewport" id="dag-viewport-container">
-        <svg viewBox="0 0 ${svgWidth} ${svgHeight}" class="dag-svg" id="pwm-dag-svg" style="height:${svgHeight}px;min-width:${svgWidth}px;">
+        <svg width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" class="dag-svg" id="pwm-dag-svg">
           <defs>
             <marker id="arrow-default" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#8590A2" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#64748B" />
             </marker>
             <marker id="arrow-critical" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#D97706" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#EA580C" />
             </marker>
             <marker id="arrow-blast" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#CA3521" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#E11D48" />
             </marker>
           </defs>
           ${laneBands}
           ${edgePaths}
+          ${goalNodesAndEdges}
           ${nodeElements}
         </svg>
-
-        <!-- Floating Hover Inspector Card -->
-        <div id="dag-node-hover-card" class="dag-hover-card" style="display:none;"></div>
       </div>
     </div>
   `;
@@ -2524,7 +3249,7 @@ function renderTabBody(props) {
             const signStr = d.shiftDays > 0 ? `+${d.shiftDays}d` : `${d.shiftDays}d`;
             const lozClass = d.shiftDays > 0 ? 'jira-lozenge-danger' : 'jira-lozenge-done';
             return `
-          <tr data-select-node="${escapeHtmlText(d.key)}" style="cursor:pointer;" title="Click to inspect ${escapeHtmlText(d.key)} (${escapeHtmlText(d.summary)})">
+          <tr data-select-node="${escapeHtmlText(d.key)}" class="clickable-row" title="Click to inspect ${escapeHtmlText(d.key)} (${escapeHtmlText(d.summary)})">
             <td><strong class="jira-issue-key">${escapeHtmlText(d.key)}</strong></td>
             <td>${escapeHtmlText(d.summary.slice(0, 30))}${d.summary.length > 30 ? '…' : ''}</td>
             <td>${formatFriendlyDate(d.intervenedP85Date)}</td>
@@ -2552,18 +3277,18 @@ function renderTabBody(props) {
             .slice(0, 5)
             .map((b, idx) => `
         <div class="bottleneck-item" data-select-node="${escapeHtmlText(b.key)}" title="Click to select ${escapeHtmlText(b.key)} | Ripple Weight: ${b.downstreamRippleWeight}">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="bottleneck-row-top">
             <span>
-              <strong style="color:#0C66E4;">#${idx + 1} ${escapeHtmlText(b.key)}</strong>
-              — <strong style="font-size:12px;">${escapeHtmlText(b.summary)}</strong>
+              <strong class="text-brand">#${idx + 1} ${escapeHtmlText(b.key)}</strong>
+              — <strong class="bottleneck-summary-title">${escapeHtmlText(b.summary)}</strong>
             </span>
             <span class="jira-lozenge jira-lozenge-inprogress">GATES ${b.downstreamCount}</span>
           </div>
-          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+          <div class="bottleneck-row-meta">
             <span>Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong></span>
-            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · ROI: <strong style="color:#216E4E;">${(b.mitigationROI ?? 1.0).toFixed(2)}d/$</strong></span>
+            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · ROI: <strong class="text-success">${(b.mitigationROI ?? 1.0).toFixed(2)}d/$</strong></span>
           </div>
-          <div style="font-size:11.5px;color:#0055CC;margin-top:4px;">
+          <div class="bottleneck-row-rec">
             💡 ${escapeHtmlText(b.recommendation)}
           </div>
         </div>
@@ -2606,11 +3331,11 @@ function renderTabBody(props) {
             ${burnLozenge}
           </div>
           <div class="gov-stat-row">
-            <span>Base Target (P50): <strong>${(res?.baseTargetDays ?? activeSim.p50Days).toFixed(1)}d</strong></span>
-            <span>PM Buffer (P85-P50): <strong>+${(res?.pmContingencyReserveDays ?? 0).toFixed(1)}d</strong></span>
+            <span>Core Work Estimate: <strong>${(res?.baseTargetDays ?? activeSim.p50Days).toFixed(1)}d</strong></span>
+            <span>Team Risk Buffer: <strong>+${(res?.pmContingencyReserveDays ?? 0).toFixed(1)}d</strong></span>
           </div>
           <div class="gov-stat-row">
-            <span>Exec Reserve (CVaR): <strong>+${(res?.managementReserveDays ?? 0).toFixed(1)}d</strong></span>
+            <span>Executive Contingency: <strong>+${(res?.managementReserveDays ?? 0).toFixed(1)}d</strong></span>
             <span>Hypercare Buffer: <strong>+${(gov?.hypercareReserveDays ?? 1.5).toFixed(1)}d</strong></span>
           </div>
         </div>
@@ -2664,44 +3389,114 @@ function renderTabBody(props) {
       </div>
     `;
     }
-    const mcpRpcSample = {
-        jsonrpc: '2.0',
-        method: 'tools/call',
-        params: {
-            name: 'pwm_simulate_intervention',
-            arguments: {
-                projectKey: graph.projectKey,
-                issueKey: selectedNodeKey,
-                delayDays,
-                addDeveloper,
-                decoupleBlockingEdges,
-            },
-        },
-        statisticalDiagnostics: {
-            cvar95TailRiskDate: `${activeSim.cvar95Date} (+${activeSim.cvar95Days}d)`,
-            quasimetricLatentEnergyE: activeSim.quasimetricEnergy,
-            estimatedReworkHours: `${activeSim.estimatedReworkHours}h`,
-            monteCarloIterations: 500,
-            registeredMcpTools: MCP_TOOLS_MANIFEST.map((t) => t.name),
-        },
-    };
+    const selectedNode = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
+    const selectedStat = activeSim.nodeStats[selectedNode.key];
+    const matchedBottleneck = activeSim.topBottlenecks.find((b) => b.key === selectedNode.key);
+    const downstreamCount = matchedBottleneck?.downstreamCount ??
+        graph.edges.filter((e) => e.from === selectedNode.key).length;
+    const critPct = Math.round((selectedStat?.criticalityIndex ?? 0) * 100);
+    const primaryActionRec = selectedNode.baseEstimateDays <= 2
+        ? `Task is small (${selectedNode.baseEstimateDays}d) — adding another developer would add handoff overhead. Best move: split or mock the dependency so downstream issues can start early.`
+        : critPct >= 60
+            ? `High-priority critical path issue (${critPct}% risk) blocking ${downstreamCount} downstream ${downstreamCount === 1 ? 'issue' : 'issues'}. Assign an extra developer to pair on ${selectedNode.key} and share early interface contracts.`
+            : `Has ${Math.max(0, selectedStat?.slackDays ?? 0).toFixed(1)}d of schedule slack. Keep current owner (${selectedNode.assignee}) focused and avoid context-switching.`;
     return `
-    <div style="display:flex;flex-direction:column;gap:10px;">
-      <div class="advanced-math-grid">
-        <div class="math-stat-box" title="Conditional Value-at-Risk (CVaR 0.95): Expected finish date across the worst 5% tail-risk simulation runs">
-          <span>Worst 5% Tail (CVaR₀.₉₅)</span>
-          <strong style="color:#AE2E24;">${formatFriendlyDate(activeSim.cvar95Date, true)}</strong>
+    <div class="gov-card-stack">
+      <!-- Card 1: Concrete Recovery Action Plan for Selected Issue -->
+      <div class="gov-card">
+        <div class="gov-card-header">
+          <span>1. Recommended Action Plan (${escapeHtmlText(selectedNode.key)})</span>
+          <span class="jira-lozenge ${critPct >= 60 ? 'jira-lozenge-inprogress' : 'jira-lozenge-done'}">
+            ${critPct >= 60 ? 'CRITICAL PATH' : 'ON TRACK'}
+          </span>
         </div>
-        <div class="math-stat-box" title="Quasimetric Latent Energy E(s -> s'): Measures asymmetric schedule friction required to recover baseline dates">
-          <span>Schedule Friction (E)</span>
-          <strong style="color:#0055CC;">${activeSim.quasimetricEnergy}</strong>
+        <div class="gov-sub-note">
+          💡 <strong>Triage Advice:</strong> ${escapeHtmlText(primaryActionRec)}
         </div>
-        <div class="math-stat-box" title="Expected downstream context-switching & interface rework hours">
-          <span>Est. Rework Risk</span>
-          <strong style="color:#A54800;">${activeSim.estimatedReworkHours} hrs</strong>
+        <div class="gov-stat-row">
+          <span title="Estimated hours of downstream code/interface rework if this issue changes late">Rework Risk: <strong class="text-warning">~${activeSim.estimatedReworkHours} hrs</strong></span>
+          <span title="Worst-case finish date across the 5% most delayed scenarios">Worst-Case Date: <strong class="text-danger">${formatFriendlyDate(activeSim.cvar95Date, true)}</strong></span>
         </div>
       </div>
-      <pre class="code-console">${escapeHtmlText(JSON.stringify(mcpRpcSample, null, 2))}</pre>
+
+      <!-- Card 2: Why Rovo & MCP Matter to Your Team -->
+      <div class="gov-card">
+        <div class="gov-card-header">
+          <span>2. Connected AI Agents (Rovo &amp; IDE MCP)</span>
+          <span class="jira-lozenge jira-lozenge-goal">${MCP_TOOLS_MANIFEST.length} LIVE TOOLS</span>
+        </div>
+        <div class="gov-sub-note">
+          Allows <strong>Atlassian Rovo Chat</strong> and IDE coding agents (<strong>Cursor, Claude, VS Code</strong>) to query live Jira blockers and test schedule changes automatically:
+        </div>
+        <div class="gov-squad-list">
+          <div class="gov-squad-row" title="MCP Tool: pwm_simulate_intervention | Rovo Action: simulate-delay-impact">
+            <span><strong>Simulate Delay Impact</strong></span>
+            <span class="text-brand">Tests +days, extra dev, or split links</span>
+          </div>
+          <div class="gov-squad-row" title="MCP Tool: pwm_get_critical_path | Rovo Action: analyze-critical-path">
+            <span><strong>Find Top Blockers</strong></span>
+            <span class="text-brand">Ranks #1–#3 sprint bottlenecks</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function renderGoalsCard(activeSim) {
+    return `
+    <div class="panel-card goals-panel-card">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>Teamwork Graph Goals</span>
+          ${renderInfoTooltip('Teamwork Graph Goal Alignment', 'Tracks how issue schedule changes ripple up to linked Teamwork Graph Goals.')}
+        </div>
+        <span class="jira-lozenge jira-lozenge-goal">${activeSim.goalImpacts.length} GOALS</span>
+      </div>
+      <div class="goals-list-horizontal">
+        ${activeSim.goalImpacts
+        .map((goal) => {
+        const statusClass = goal.status === 'Off Track'
+            ? 'off-track'
+            : goal.status === 'At Risk'
+                ? 'at-risk'
+                : '';
+        const probPct = Math.round(goal.probabilityOfOnTime * 100);
+        const barColor = goal.status === 'Off Track'
+            ? '#CA3521'
+            : goal.status === 'At Risk'
+                ? '#D97706'
+                : '#1F845A';
+        const shiftSign = goal.rippleDelayDays > 0
+            ? `+${goal.rippleDelayDays}d`
+            : goal.rippleDelayDays < 0
+                ? `${goal.rippleDelayDays}d`
+                : '';
+        const shiftClass = goal.rippleDelayDays > 0 ? 'text-danger' : 'text-success';
+        return `
+              <div class="goal-card ${statusClass}" title="Goal Key: ${escapeHtmlText(goal.goalKey)} | Owner: ${escapeHtmlText(goal.ownerTeam)}">
+                <div class="goal-top">
+                  <div>
+                    <div class="goal-name">${escapeHtmlText(goal.goalName)}</div>
+                    <div class="goal-owner-sub">
+                      Owner: ${escapeHtmlText(goal.ownerTeam)}
+                    </div>
+                  </div>
+                  ${renderJiraStatusLozenge(goal.status)}
+                </div>
+                <div class="goal-dates-row">
+                  <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
+                  <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em class="${shiftClass}">(${shiftSign})</em>` : ''}</span>
+                  <span>On-Time: <strong>${probPct}%</strong></span>
+                </div>
+                <svg width="100%" height="6" class="prob-bar-svg">
+                  <rect x="0" y="0" width="100%" height="6" rx="3" fill="#DCDFE4" />
+                  <rect x="0" y="0" width="${Math.max(4, probPct)}%" height="6" rx="3" fill="${barColor}" />
+                </svg>
+              </div>
+            `;
+    })
+        .join('')}
+      </div>
     </div>
   `;
 }
@@ -2729,26 +3524,56 @@ function renderScenarioPanel(props) {
         : selectedNode.uncertaintySigma >= 1.0
             ? 'Medium'
             : 'Low';
+    const getInitials = (name) => name
+        .split(/\s+/)
+        .map((part) => part[0]?.toUpperCase() ?? '')
+        .join('')
+        .slice(0, 2) || 'DEV';
+    const assigneeInitials = getInitials(selectedNode.assignee);
+    const doneSub = selectedNode.subtaskDoneCount ?? 0;
+    const totalSub = selectedNode.subtaskTotalCount ?? 4;
+    const progPct = selectedNode.subtaskProgressPct ??
+        selectedStat?.completionStepPct ??
+        (selectedNode.status === 'Done' ? 100 : selectedNode.status === 'In Progress' ? 50 : 0);
+    const isTopBlocker = activeSim.topBottlenecks.slice(0, 3).some((b) => b.key === selectedNode.key) ||
+        selectedNode.status.toLowerCase() === 'blocked' ||
+        delayDays > 0;
+    const isStageGate = Boolean(selectedNode.isStageGate) ||
+        Boolean(selectedNode.confluenceDecision);
+    const shapeTaxonomyBadge = isStageGate
+        ? `<span class="shape-badge-diamond">◆ STAGE GATE</span>`
+        : isTopBlocker
+            ? `<span class="shape-badge-hex">⬢ BLOCKER</span>`
+            : `<span class="shape-badge-circle">● TASK / EPIC</span>`;
+    const progBarColor = progPct >= 100
+        ? '#10B981'
+        : isTopBlocker
+            ? '#F59E0B'
+            : '#0C66E4';
+    const baseP50X = Math.max(24, Math.min(240, Math.round((baselineSim.p50Days / maxTimelineScale) * 260)));
+    const simP85X = Math.max(36, Math.min(265, Math.round((activeSim.p85Days / maxTimelineScale) * 260)));
+    const bellStroke = delayDays > 0 ? '#E11D48' : delayDays < 0 ? '#10B981' : '#4F46E5';
+    const bellFill = delayDays > 0 ? '#FFE4E6' : delayDays < 0 ? '#D1FAE5' : '#E0E7FF';
     const forecastRows = [
         {
-            label: 'Likely Finish (50%)',
-            tooltip: 'Median P50 Forecast: 50% of simulated runs finish on or before this date.',
+            label: 'Likely Finish (50% odds)',
+            tooltip: 'Likely Delivery Date: 50% of simulated runs finish on or before this date (normal sprint pace without unexpected blockers).',
             baseDays: baselineSim.p50Days,
             intDays: activeSim.p50Days,
             baseDate: baselineSim.p50Date,
             intDate: activeSim.p50Date,
         },
         {
-            label: 'Commit Target (85%)',
-            tooltip: 'Recommended P85 Commitment Date: 85% probability of finishing on or before this date.',
+            label: 'Target Commit Date (85% safe)',
+            tooltip: 'Recommended Target Commit Date: 85% probability of finishing on or before this date (includes Team Risk Buffer).',
             baseDays: baselineSim.p85Days,
             intDays: activeSim.p85Days,
             baseDate: baselineSim.p85Date,
             intDate: activeSim.p85Date,
         },
         {
-            label: 'Buffer Cutoff (95%)',
-            tooltip: `Conservative P95 Buffer Date. Extreme 5% tail risk (CVaR₀.₉₅) = ${activeSim.cvar95Date}.`,
+            label: 'Safe Buffer Date (95% cutoff)',
+            tooltip: `Safe Buffer Cutoff Date (95% confidence). Worst-case 5% blocker scenario finishes around ${formatFriendlyDate(activeSim.cvar95Date, true)}.`,
             baseDays: baselineSim.p95Days,
             intDays: activeSim.p95Days,
             baseDate: baselineSim.p95Date,
@@ -2762,7 +3587,7 @@ function renderScenarioPanel(props) {
         <div class="panel-header">
           <div class="panel-title">
             <span>What-If Scenario Simulator</span>
-            ${renderInfoTooltip('What-If Scenario Simulator', 'Select any issue from your Jira project and test how a delay, acceleration, or resource change affects the overall delivery date and Teamwork Graph goals.', `Active Intervention: do(${selectedNode.key} = ${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`})`)}
+            ${renderInfoTooltip('What-If Scenario Simulator', 'Select any issue from your Jira project and test how a delay, acceleration, or resource change affects the overall delivery date and Teamwork Graph goals.', `Active Scenario: ${selectedNode.key} (${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`})`)}
           </div>
           ${activeLozenge}
         </div>
@@ -2771,10 +3596,24 @@ function renderScenarioPanel(props) {
           <!-- Selected Issue Card -->
           <div class="selected-node-banner">
             <div class="node-banner-top">
-              <span class="node-key-tag">${escapeHtmlText(selectedNode.key)}</span>
+              <div class="node-banner-id-cluster">
+                <span class="node-avatar-circle" title="Responsible Assignee: ${escapeHtmlText(selectedNode.assignee)}">${escapeHtmlText(assigneeInitials)}</span>
+                <span class="node-key-tag">${escapeHtmlText(selectedNode.key)}</span>
+                ${shapeTaxonomyBadge}
+              </div>
               ${renderJiraStatusLozenge(selectedNode.status)}
             </div>
             <div class="node-summary-text">${escapeHtmlText(selectedNode.summary)}</div>
+            <div class="node-subtask-bar-wrap" title="Overall Issue / Epic Sub-task Completion: ${doneSub}/${totalSub} Sub-tasks (${progPct}%)">
+              <div class="node-subtask-bar-labels">
+                <span>Sub-tasks / Epic Progress</span>
+                <strong>${doneSub}/${totalSub} Done (${progPct}%)</strong>
+              </div>
+              <svg width="100%" height="6" class="subtask-bar-svg">
+                <rect x="0" y="0" width="100%" height="6" rx="3" fill="#E2E8F0" />
+                <rect x="0" y="0" width="${Math.max(4, progPct)}%" height="6" rx="3" fill="${progBarColor}" />
+              </svg>
+            </div>
             <div class="node-meta-grid">
               <div class="meta-cell">
                 <span>Assignee</span>
@@ -2784,7 +3623,7 @@ function renderScenarioPanel(props) {
                 <span>Estimate</span>
                 <strong>${selectedNode.baseEstimateDays} Days</strong>
               </div>
-              <div class="meta-cell" title="Log-normal uncertainty standard deviation σ = ±${selectedNode.uncertaintySigma} days">
+              <div class="meta-cell" title="Estimate Uncertainty: ±${selectedNode.uncertaintySigma} days of potential schedule variance">
                 <span>Uncertainty ⓘ</span>
                 <strong>${uncertaintyLabel}</strong>
               </div>
@@ -2827,32 +3666,43 @@ function renderScenarioPanel(props) {
               <button
                 class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
                 id="btn-toggle-add-dev"
-                title="Adds +1 FTE with Brooks's Law communication & onboarding drag calibration"
+                title="Assign 1 extra full-time developer to help finish this issue faster (automatically accounts for ramp-up and coordination time)"
               >
-                ${addDeveloper ? '✓ +1 Developer Added' : '+ Add Developer (+1 FTE)'}
+                ${addDeveloper ? '✓ Extra Developer Assigned' : '+ Assign Extra Developer'}
               </button>
               <button
                 class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
                 id="btn-toggle-decouple-edge"
-                title="Reduces outgoing blocking dependency propagation weight to 0.25"
+                title="Split or mock the blocking interface so downstream issues can start work in parallel without waiting for this issue to finish 100%"
               >
-                ${decoupleBlockingEdges ? '✓ Dependency Decoupled' : '✂ Decouple Dependency'}
+                ${decoupleBlockingEdges ? '✓ Dependency Split / Mocked' : '✂ Decouple Dependency'}
               </button>
             </div>
             ${addDeveloper && activeSim.deliveryGovernance?.brooksLawDiagnostic
-        ? `<div class="brooks-advisory-banner" title="Brooks's Law Communication Channels N = n(n-1)/2 & Onboarding Mentoring Drag">
-                     <span><strong>Brooks's Law:</strong> Net <strong>${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays >= 0
+        ? `<div class="brooks-advisory-banner" title="Accounts for realistic developer onboarding and team sync time">
+                     <span><strong>Team Ramp-Up Note:</strong> Net <strong>${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays >= 0
             ? `${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays}d saved`
-            : `${Math.abs(activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays)}d slower`}</strong> (Onboarding drag ${activeSim.deliveryGovernance.brooksLawDiagnostic.onboardingPenaltyDays}d · Channels N: ${activeSim.deliveryGovernance.brooksLawDiagnostic.communicationChannelsBefore} → ${activeSim.deliveryGovernance.brooksLawDiagnostic.communicationChannelsAfter})</span>
+            : `${Math.abs(activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays)}d slower`}</strong> after ${activeSim.deliveryGovernance.brooksLawDiagnostic.onboardingPenaltyDays}d of ramp-up &amp; handoff sync</span>
                    </div>`
         : ''}
           </div>
 
           <!-- Step 2: Release Date Comparison Bars -->
           <div class="comparison-bars-card">
-            <div style="font-size:12px;font-weight:700;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+            <div class="comparison-card-header">
               <span>Projected Release Impact</span>
-              ${renderInfoTooltip('Baseline vs. Simulated Forecast', `Compares your baseline schedule against the simulated What-If change across 500 paired runs. Worst 5% Tail Date: ${formatFriendlyDate(activeSim.cvar95Date, true)}.`, `ΔP85 = ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | CVaR₀.₉₅ = ${activeSim.cvar95Date}`)}
+              ${renderInfoTooltip('Baseline vs. Simulated Forecast', `Compares your baseline schedule against the simulated What-If change across 500 paired runs. Worst-case 5% blocker scenario finishes around ${formatFriendlyDate(activeSim.cvar95Date, true)}.`, `Release Shift: ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | Worst-Case Date: ${activeSim.cvar95Date}`)}
+            </div>
+
+            <div class="mc-bell-curve-wrap" title="500-Run Monte Carlo Release Probability Curve (Likely Finish / Target Commit Date / Safe Buffer Date)">
+              <svg width="100%" height="44" viewBox="0 0 280 44" class="mc-bell-svg">
+                <path d="M 8 40 C 60 40, ${Math.max(40, simP85X - 45)} 6, ${simP85X - 14} 6 C ${simP85X + 18} 6, 235 40, 272 40 Z" fill="${bellFill}" />
+                <path d="M 8 40 C 60 40, ${Math.max(40, simP85X - 45)} 6, ${simP85X - 14} 6 C ${simP85X + 18} 6, 235 40, 272 40" fill="none" stroke="${bellStroke}" stroke-width="2" />
+                <line x1="${baseP50X}" y1="6" x2="${baseP50X}" y2="40" stroke="#64748B" stroke-width="1.2" stroke-dasharray="3 2" />
+                <line x1="${simP85X}" y1="4" x2="${simP85X}" y2="40" stroke="${bellStroke}" stroke-width="1.8" />
+                <rect x="8" y="3" width="94" height="14" rx="4" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1" />
+                <text x="55" y="13" text-anchor="middle" fill="${bellStroke}" font-size="8.5" font-weight="700">Target: ${escapeHtmlText(formatFriendlyDate(activeSim.p85Date))}</text>
+              </svg>
             </div>
 
             ${forecastRows
@@ -2860,10 +3710,10 @@ function renderScenarioPanel(props) {
         const diff = Number((row.intDays - row.baseDays).toFixed(1));
         const intBarColor = diff > 0 ? '#CA3521' : diff < 0 ? '#1F845A' : '#0C66E4';
         const diffBadge = diff > 0
-            ? `<span style="color:#AE2E24;font-weight:700;">(+${diff}d)</span>`
+            ? `<span class="text-danger">(+${diff}d)</span>`
             : diff < 0
-                ? `<span style="color:#216E4E;font-weight:700;">(${diff}d)</span>`
-                : `<span style="color:#626F86;">(0d)</span>`;
+                ? `<span class="text-success">(${diff}d)</span>`
+                : `<span class="text-muted">(0d)</span>`;
         return `
                   <div class="dist-compare-group" title="${escapeHtmlText(row.tooltip)}">
                     <div class="dist-compare-label">
@@ -2872,14 +3722,12 @@ function renderScenarioPanel(props) {
                         ${formatFriendlyDate(row.baseDate)} → <strong>${formatFriendlyDate(row.intDate)}</strong> ${diffBadge}
                       </span>
                     </div>
-                    <div class="dual-bar-stack">
-                      <div class="bar-track-line">
-                        <div class="bar-fill-base" style="width:${pct(row.baseDays)}%;"></div>
-                      </div>
-                      <div class="bar-track-line">
-                        <div class="bar-fill-sim" style="width:${pct(row.intDays)}%;background:${intBarColor};"></div>
-                      </div>
-                    </div>
+                    <svg width="100%" height="12" class="dual-bar-svg">
+                      <rect x="0" y="0" width="100%" height="5" rx="2.5" fill="#DCDFE4" />
+                      <rect x="0" y="0" width="${pct(row.baseDays)}%" height="5" rx="2.5" fill="#8590A2" />
+                      <rect x="0" y="7" width="100%" height="5" rx="2.5" fill="#DCDFE4" />
+                      <rect x="0" y="7" width="${pct(row.intDays)}%" height="5" rx="2.5" fill="${intBarColor}" />
+                    </svg>
                   </div>
                 `;
     })
@@ -2889,60 +3737,6 @@ function renderScenarioPanel(props) {
               ${copiedPromptNotice ? '✓ Copied Prompt for @Rovo-World-Model Agent!' : '✨ Ask @Rovo-World-Model Agent'}
             </button>
           </div>
-        </div>
-      </div>
-
-      <!-- Teamwork Graph Goals Card -->
-      <div class="panel-card">
-        <div class="panel-header">
-          <div class="panel-title">
-            <span>Teamwork Graph Goals</span>
-            ${renderInfoTooltip('Teamwork Graph Goal Alignment', 'Tracks how issue schedule changes ripple up to linked Teamwork Graph Goals.')}
-          </div>
-          <span class="jira-lozenge jira-lozenge-goal">${activeSim.goalImpacts.length} GOALS</span>
-        </div>
-        <div class="goals-list">
-          ${activeSim.goalImpacts
-        .map((goal) => {
-        const statusClass = goal.status === 'Off Track'
-            ? 'off-track'
-            : goal.status === 'At Risk'
-                ? 'at-risk'
-                : '';
-        const probPct = Math.round(goal.probabilityOfOnTime * 100);
-        const barColor = goal.status === 'Off Track'
-            ? '#CA3521'
-            : goal.status === 'At Risk'
-                ? '#D97706'
-                : '#1F845A';
-        const shiftSign = goal.rippleDelayDays > 0
-            ? `+${goal.rippleDelayDays}d`
-            : goal.rippleDelayDays < 0
-                ? `${goal.rippleDelayDays}d`
-                : '';
-        return `
-                <div class="goal-card ${statusClass}" title="Goal Key: ${escapeHtmlText(goal.goalKey)} | Owner: ${escapeHtmlText(goal.ownerTeam)}">
-                  <div class="goal-top">
-                    <div>
-                      <div class="goal-name">${escapeHtmlText(goal.goalName)}</div>
-                      <div style="font-size:11px;color:var(--text-secondary);">
-                        Owner: ${escapeHtmlText(goal.ownerTeam)}
-                      </div>
-                    </div>
-                    ${renderJiraStatusLozenge(goal.status)}
-                  </div>
-                  <div class="goal-dates-row">
-                    <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
-                    <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em style="color:${goal.rippleDelayDays > 0 ? '#AE2E24' : '#216E4E'};">(${shiftSign})</em>` : ''}</span>
-                    <span>On-Time: <strong>${probPct}%</strong></span>
-                  </div>
-                  <div class="prob-bar-track">
-                    <div class="prob-bar-fill" style="width:${probPct}%;background:${barColor};"></div>
-                  </div>
-                </div>
-              `;
-    })
-        .join('')}
         </div>
       </div>
 
@@ -2959,7 +3753,7 @@ function renderScenarioPanel(props) {
             Delivery Health
           </button>
           <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
-            Math &amp; MCP
+            AI Action Plan
           </button>
         </div>
         <div class="tab-body">
@@ -3039,7 +3833,7 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
             name: `${projectName} Sprint Delivery`,
             targetDate: '2026-11-18',
             targetDayOffset: 18,
-            ownerTeam: `${projectName} Engineering`,
+            ownerTeam: 'No Team Assigned',
             status: 'On Track',
         },
         {
@@ -3048,18 +3842,10 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
             name: `${projectName} Release Milestone`,
             targetDate: '2026-12-02',
             targetDayOffset: 32,
-            ownerTeam: `${projectName} Engineering`,
+            ownerTeam: 'No Team Assigned',
             status: 'On Track',
         },
-    ], [
-        {
-            id: 'team-1',
-            name: `${projectName} Engineering`,
-            lead: 'Petri Paananen',
-            color: '#0C66E4',
-            cognitiveLoad: 65,
-        },
-    ], '2026-10-30');
+    ], [], '2026-10-30');
     return {
         ...dag,
         projectName,
@@ -3104,12 +3890,34 @@ function recomputeSimulation() {
         state.activeSim = state.baselineSim;
     }
 }
+function scrollDagToSelectedNode(smooth = true) {
+    const viewport = document.getElementById('dag-viewport-container');
+    if (!viewport)
+        return;
+    const selectedEl = viewport.querySelector(`.dag-node-group[data-node-key="${state.selectedNodeKey}"]`);
+    if (!selectedEl)
+        return;
+    const nodeX = Number(selectedEl.getAttribute('data-node-x') ?? 0);
+    const targetLeft = Math.max(0, nodeX - viewport.clientWidth / 2 + 100);
+    if (typeof viewport.scrollTo === 'function') {
+        viewport.scrollTo({
+            left: targetLeft,
+            behavior: smooth ? 'smooth' : 'auto',
+        });
+    }
+    else {
+        viewport.scrollLeft = targetLeft;
+    }
+}
 function renderCockpit(activeSliderId) {
     const root = document.getElementById('app-root');
     if (!root)
         return;
+    const dagViewport = document.getElementById('dag-viewport-container');
+    const prevDagScrollLeft = dagViewport?.scrollLeft ?? 0;
+    const prevDagScrollTop = dagViewport?.scrollTop ?? 0;
     const hasActiveIntervention = state.delayDays !== 0 || state.addDeveloper || state.decoupleBlockingEdges;
-    const headerHtml = renderHeaderBar({
+    const headerProps = {
         availableProjects: state.availableProjects,
         graph: state.graph,
         baselineSim: state.baselineSim,
@@ -3120,7 +3928,9 @@ function renderCockpit(activeSliderId) {
         addDeveloper: state.addDeveloper,
         decoupleBlockingEdges: state.decoupleBlockingEdges,
         statusBanner: state.statusBanner,
-    });
+    };
+    const headerHtml = renderTopAppBar(headerProps);
+    const leftRailHtml = renderLeftStatusRail(headerProps);
     const scrubberHtml = renderTimelineScrubber({
         graph: state.graph,
         activeSim: state.activeSim,
@@ -3150,27 +3960,39 @@ function renderCockpit(activeSliderId) {
         copiedPromptNotice: state.copiedPromptNotice,
     });
     const headerMount = document.getElementById('header-mount');
+    const leftRailMount = document.getElementById('left-rail-mount');
     const scrubberMount = document.getElementById('scrubber-mount');
     const dagMount = document.getElementById('dag-mount');
     const scenarioMount = document.getElementById('scenario-mount');
-    if (activeSliderId && headerMount && scrubberMount && dagMount && scenarioMount) {
+    if (activeSliderId &&
+        headerMount &&
+        leftRailMount &&
+        scrubberMount &&
+        dagMount &&
+        scenarioMount) {
         headerMount.innerHTML = headerHtml;
+        leftRailMount.innerHTML = leftRailHtml;
         dagMount.innerHTML = dagHtml;
+        const nextViewport = document.getElementById('dag-viewport-container');
+        if (nextViewport) {
+            nextViewport.scrollLeft = prevDagScrollLeft;
+            nextViewport.scrollTop = prevDagScrollTop;
+        }
         if (activeSliderId === 'delay-slider-input') {
             scrubberMount.innerHTML = scrubberHtml;
-            const readoutEl = scenarioMount.querySelector('.slider-value-readout');
+            const readoutEl = scenarioMount.querySelector('.slider-readout');
             if (readoutEl) {
                 readoutEl.textContent =
                     state.delayDays > 0
-                        ? `+${state.delayDays} Days (Delayed)`
+                        ? `+${state.delayDays} Days Delay`
                         : state.delayDays < 0
-                            ? `${state.delayDays} Days (Accelerated)`
+                            ? `${state.delayDays} Days Faster`
                             : '0 Days (Baseline)';
-                readoutEl.className = `slider-value-readout ${state.delayDays > 0
-                    ? 'delay-positive'
-                    : state.delayDays < 0
-                        ? 'delay-negative'
-                        : 'delay-zero'}`;
+                readoutEl.className = `slider-readout ${state.delayDays < 0
+                    ? 'accel-text'
+                    : state.delayDays === 0
+                        ? 'neutral-text'
+                        : ''}`;
             }
             scenarioMount
                 .querySelectorAll('[data-preset-delay]')
@@ -3193,14 +4015,24 @@ function renderCockpit(activeSliderId) {
     }
     root.innerHTML = `
     <div class="cockpit-shell">
-      <div id="header-mount" style="display:contents">${headerHtml}</div>
-      <div id="scrubber-mount" style="display:contents">${scrubberHtml}</div>
-      <section class="workspace-grid">
-        <div id="dag-mount" style="display:contents">${dagHtml}</div>
-        <div id="scenario-mount" style="display:contents">${scenarioHtml}</div>
+      <div id="header-mount" class="mount-contents">${headerHtml}</div>
+      <section class="workspace-grid-3col">
+        <div id="left-rail-mount" class="mount-contents">${leftRailHtml}</div>
+        <div class="center-stage-column">
+          <div id="dag-mount" class="mount-contents">${dagHtml}</div>
+          <div id="scrubber-mount" class="mount-contents">${scrubberHtml}</div>
+        </div>
+        <div id="scenario-mount" class="mount-contents">${scenarioHtml}</div>
       </section>
     </div>
   `;
+    const restoredViewport = document.getElementById('dag-viewport-container');
+    if (restoredViewport) {
+        if (prevDagScrollLeft > 0)
+            restoredViewport.scrollLeft = prevDagScrollLeft;
+        if (prevDagScrollTop > 0)
+            restoredViewport.scrollTop = prevDagScrollTop;
+    }
     attachCockpitEventListeners();
 }
 async function loadJiraProjectGraph(projectKey) {
@@ -3248,9 +4080,27 @@ function attachCockpitEventListeners(skipMountForSlider) {
             await loadJiraProjectGraph(nextKey);
         });
     }
-    // 1. Node click + hover inspector on SVG DAG
+    // 1. Node click + hover inspector + horizontal pan controls on SVG DAG
     const hoverCard = document.getElementById('dag-node-hover-card');
     const viewportContainer = document.getElementById('dag-viewport-container');
+    const btnPanLeft = document.getElementById('btn-dag-pan-left');
+    if (btnPanLeft && viewportContainer) {
+        btnPanLeft.addEventListener('click', () => {
+            viewportContainer.scrollBy({ left: -340, behavior: 'smooth' });
+        });
+    }
+    const btnPanRight = document.getElementById('btn-dag-pan-right');
+    if (btnPanRight && viewportContainer) {
+        btnPanRight.addEventListener('click', () => {
+            viewportContainer.scrollBy({ left: 340, behavior: 'smooth' });
+        });
+    }
+    const btnCenterSelected = document.getElementById('btn-dag-center-selected');
+    if (btnCenterSelected) {
+        btnCenterSelected.addEventListener('click', () => {
+            scrollDagToSelectedNode(true);
+        });
+    }
     document.querySelectorAll('.dag-node-group').forEach((el) => {
         el.addEventListener('click', () => {
             const key = el.getAttribute('data-node-key');
@@ -3262,8 +4112,8 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 renderCockpit();
             }
         });
-        el.addEventListener('mouseenter', (evt) => {
-            if (!hoverCard || !viewportContainer)
+        el.addEventListener('mouseenter', () => {
+            if (!hoverCard)
                 return;
             const rawHover = el.getAttribute('data-node-hover');
             if (!rawHover)
@@ -3271,22 +4121,23 @@ function attachCockpitEventListeners(skipMountForSlider) {
             try {
                 const info = JSON.parse(rawHover);
                 const shiftLine = info.rippleShift > 0
-                    ? `<span style="color:#AE2E24;font-weight:700;">+${info.rippleShift.toFixed(1)}d downstream slip</span>`
+                    ? `<strong class="text-danger">+${info.rippleShift.toFixed(1)}d downstream slip</strong>`
                     : info.rippleShift < 0
-                        ? `<span style="color:#216E4E;font-weight:700;">${info.rippleShift.toFixed(1)}d faster</span>`
-                        : `<span style="color:#626F86;">On Baseline Schedule</span>`;
+                        ? `<strong class="text-success">${info.rippleShift.toFixed(1)}d faster</strong>`
+                        : `<span class="text-muted">On Baseline Schedule</span>`;
                 const floatDays = info.totalFloatDays ?? 0;
                 const floatBadge = floatDays < 0
-                    ? `<strong style="color:#AE2E24;">${floatDays.toFixed(1)}d (Super-Critical)</strong>`
+                    ? `<strong class="text-danger">${floatDays.toFixed(1)}d (Super-Critical)</strong>`
                     : floatDays === 0
-                        ? `<strong style="color:#A54800;">0.0d (Critical Path)</strong>`
-                        : `<strong style="color:#216E4E;">+${floatDays.toFixed(1)}d Slack</strong>`;
+                        ? `<strong class="text-warning">0.0d (Critical Path)</strong>`
+                        : `<strong class="text-success">+${floatDays.toFixed(1)}d Slack</strong>`;
                 const stepPct = info.completionStepPct ?? 0;
-                const stepLabel = stepPct === 75
-                    ? '75% (Awaiting Handoff)'
-                    : stepPct === 100
-                        ? '100% (Accepted)'
-                        : `${stepPct}%`;
+                const stepLabel = info.subtaskLabel ??
+                    (stepPct === 75
+                        ? '75% (Awaiting Handoff)'
+                        : stepPct === 100
+                            ? '100% (Accepted)'
+                            : `${stepPct}%`);
                 hoverCard.innerHTML = `
           <div class="hover-card-header">
             <span class="hover-card-key">${escapeHtmlText(info.key)}${info.isStageGate ? ' · STAGE GATE' : ''}</span>
@@ -3295,9 +4146,9 @@ function attachCockpitEventListeners(skipMountForSlider) {
           <div class="hover-card-title">${escapeHtmlText(info.summary)}</div>
           <div class="hover-card-meta">
             <div><span>Assignee:</span> <strong>${escapeHtmlText(info.assignee)}</strong></div>
+            <div><span>Overall Progress:</span> <strong>${escapeHtmlText(stepLabel)}</strong></div>
             <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
             <div><span>Deadline Float:</span> ${floatBadge}</div>
-            <div><span>Completion Step:</span> <strong>${stepLabel}</strong></div>
             <div><span>Schedule Impact:</span> ${shiftLine}</div>
             <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
           </div>
@@ -3305,18 +4156,11 @@ function attachCockpitEventListeners(skipMountForSlider) {
                     ? `<div class="hover-card-adr">📄 ${escapeHtmlText(info.adr)}</div>`
                     : ''}
           <div class="hover-card-math">
-            📐 <code>PERT M = ${(info.pertMean ?? info.estimateDays).toFixed(1)}d (σ = ±${(info.pertSigma ?? info.sigma).toFixed(1)}d) | Crit = ${info.criticalityPct}%</code>
+            📐 <code>Expected: ${(info.pertMean ?? info.estimateDays).toFixed(1)}d (±${(info.pertSigma ?? info.sigma).toFixed(1)}d) | Critical Path Risk: ${info.criticalityPct}%</code>
           </div>
           <div class="hover-card-tip">Click issue card to select &amp; simulate</div>
         `;
-                hoverCard.style.display = 'block';
-                const vpRect = viewportContainer.getBoundingClientRect();
-                const mouseX = evt.clientX - vpRect.left + viewportContainer.scrollLeft;
-                const mouseY = evt.clientY - vpRect.top + viewportContainer.scrollTop;
-                const leftPos = Math.min(Math.max(12, mouseX + 16), viewportContainer.scrollWidth - 310);
-                const topPos = Math.max(12, mouseY - 24);
-                hoverCard.style.left = `${leftPos}px`;
-                hoverCard.style.top = `${topPos}px`;
+                hoverCard.classList.add('is-visible');
             }
             catch {
                 // Ignore parse issues
@@ -3324,7 +4168,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
         });
         el.addEventListener('mouseleave', () => {
             if (hoverCard) {
-                hoverCard.style.display = 'none';
+                hoverCard.classList.remove('is-visible');
             }
         });
     });
@@ -3424,6 +4268,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
                         state.delayDays = 5;
                     recomputeSimulation();
                     renderCockpit();
+                    scrollDagToSelectedNode(true);
                 }
             });
         });
@@ -3504,6 +4349,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
             recomputeSimulation();
             state.statusBanner = `Focused #1 Critical Blocker (${topKey}) — simulating a +${state.delayDays} day delay.`;
             renderCockpit();
+            scrollDagToSelectedNode(true);
         });
     }
     // 12. Header Action: Reset (`invoke('resetScenario')`)

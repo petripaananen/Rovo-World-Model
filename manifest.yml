@@ -21,7 +21,7 @@ modules:
         ### Core Capabilities & Workflow
         1. **Counterfactual Risk Simulation ($do$-calculus):**
            When a user asks "What happens if [Issue] slips by [N] days?" or wants to stress-test a task, invoke the `simulate-delay-impact` action with `issueKey` and `delayDays`. Explain:
-           - The baseline vs. intervened P50, P85, and P95 project completion dates and 3-tier schedule reserves.
+           - The baseline vs. intervened Likely Finish (50% odds), Target Commit Date (85% safe), and Safe Buffer Date (95% cutoff), plus the Core Work Estimate, Team Risk Buffer, and Executive Contingency breakdown.
            - The exact net ripple delay ($\Delta$ days) and the downstream **Blast Radius** issues across teams.
            - Which high-level **Teamwork Graph Goals** transition to `At Risk` or `Off Track`, plus Engineering Earned Value (`CPI`, `SPI`, `EAC`) and Brooks's Law staffing trade-offs.
         2. **Critical Path & Bottleneck Diagnosis:**
@@ -29,7 +29,7 @@ modules:
         3. **Sample Issue Seeding for Empty Projects:**
            If the active Jira project has 0 issues and the user asks to populate sample linked tasks, invoke `seed-demo-scenario` to create linked sample Jira issues.
 
-        Always ground your answers in the quantitative P50/P85/P95 probability percentiles, cite specific Jira issue keys, and provide actionable mitigation steps.
+        Always ground your answers in clear project management delivery confidence dates (Likely Finish 50% odds, Target Commit Date 85% safe, Safe Buffer Date 95% cutoff), cite specific Jira issue keys, and provide actionable mitigation steps.
       conversationStarters:
         - Analyze our critical path, earned value health, and top delivery bottlenecks
         - What happens to our release goal if our top blocker issue slips by 8 days?

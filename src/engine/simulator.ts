@@ -529,7 +529,7 @@ export function runMonteCarloSimulation(
       if (downstreamCount >= 4 && stat.criticalityIndex >= 0.35) {
         recommendation = `High-fanout structural gate (${downstreamCount} downstream tasks, ripple weight ${downstreamRippleWeight}). Add a swarm developer or decouple interface contract early.`;
       } else if (node.uncertaintySigma >= 2.0) {
-        recommendation = `High variance (σ=${node.uncertaintySigma}d). Spike technical unknowns in the next 48h to compress P95 tail risk.`;
+        recommendation = `High variance (σ=${node.uncertaintySigma}d). Spike technical unknowns in the next 48h to compress worst-case buffer risk.`;
       } else if (slackDays <= 0.5) {
         recommendation = `Zero-slack critical path driver. Protect assignee focus and prevent scope creep.`;
       }
@@ -717,7 +717,7 @@ export function runMonteCarloSimulation(
     },
     {
       epochId: 'future-p50',
-      label: 'Future Cone — P50 Median',
+      label: 'Likely Finish (50% odds)',
       dayOffset: Math.ceil(p50Days),
       date: p50Date,
       mode: 'future-p50',
@@ -727,11 +727,11 @@ export function runMonteCarloSimulation(
       todoCount: 0,
       projectedP85Date: p85Date,
       confidenceScore: 50,
-      narrative: `50% of Monte Carlo worlds complete all ${orderedNodes.length} nodes by ${p50Date} (+${p50Days}d).`,
+      narrative: `Likely Finish (50% odds): 50% of simulated project runs complete all ${orderedNodes.length} issues by ${p50Date} (+${p50Days}d).`,
     },
     {
       epochId: 'future-p85',
-      label: 'Future Cone — P85 Commit',
+      label: 'Target Commit Date (85% safe)',
       dayOffset: Math.ceil(p85Days),
       date: p85Date,
       mode: 'future-p85',
@@ -741,11 +741,11 @@ export function runMonteCarloSimulation(
       todoCount: 0,
       projectedP85Date: p85Date,
       confidenceScore: 85,
-      narrative: `High-confidence executive commitment date (${p85Date}, +${p85Days}d) accounting for cross-team handoff variance.`,
+      narrative: `Target Commit Date (85% safe): Recommended commitment date (${p85Date}, +${p85Days}d) including Team Risk Buffer.`,
     },
     {
       epochId: 'future-p95',
-      label: 'Future Cone — P95 Envelope',
+      label: 'Safe Buffer Date (95% cutoff)',
       dayOffset: Math.ceil(p95Days),
       date: p95Date,
       mode: 'future-p95',
@@ -755,7 +755,7 @@ export function runMonteCarloSimulation(
       todoCount: 0,
       projectedP85Date: p85Date,
       confidenceScore: 95,
-      narrative: `95th percentile worst-case envelope (${p95Date}, +${p95Days}d) absorbing compound σ tail shocks.`,
+      narrative: `Safe Buffer Date (95% cutoff): 95% confidence safety horizon (${p95Date}, +${p95Days}d) protecting against unexpected blockers.`,
     },
   ];
 

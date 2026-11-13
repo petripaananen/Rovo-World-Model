@@ -1,12 +1,20 @@
 /**
- * Step 4 Component 2: Atlassian Jira-Native Dependency & Timeline Canvas (`static/ui/src/components/DagCanvas.tsx`)
+ * Step 4 Component 2: Synthesis 1 ("Nordic Split-Command") 4-Shape Pre-Attentive Dependency Canvas
+ * (`static/ui/src/components/DagCanvas.tsx`)
  *
- * Designed via Stitch MCP (`StitchMCP` Project `9764708271730429878`) to match Jira Cloud cards:
- * - Authentic white Jira Issue Cards (`#FFFFFF`, `1px solid #DCDFE4`)
- * - Standard Jira blue checkbox icon (`#0C66E4`) + Issue Key (`BLP-7`) + Rectangular Status Lozenge (`TO DO`, `IN PROGRESS`, `DONE`, `AT RISK`)
- * - Assignee avatar circle (`PP`, `MC`) + clean estimate tag (`5d est.`)
- * - Scales cleanly whether the active Jira project has 2 issues (e.g. BloomPath Sprint `BLP-7`, `BLP-8`) or 18 issues.
- * - Hovering any issue card reveals the floating Jira Inspector Popover with full metadata & math.
+ * Implements the approved Synthesis 1 visual architecture:
+ * - 3 Nordic Pastel Color-Blocked Squad Swimlanes (Sky-Cobalt, Warm Sand, Soft Lavender)
+ *   with vertical squad header tabs on the left edge.
+ * - 4-Shape Pre-Attentive Node Taxonomy:
+ *   1. ● Circle (`r = 46px`): Standard Jira Task / Story / Epic with outer Sub-task Completion
+ *      Progress Ring (`4/6 Sub-tasks · 67%`), Centered Responsible Assignee Avatar (`PP`, `JD`),
+ *      and bottom Jira Issue Key Pill (`KAN-1`).
+ *   2. ⬢ Hexagon (`R = 50px`): Critical Path Blocker (`KAN-3`) with coral-red/amber hazard
+ *      silhouette, segmented progress border, warning badge (`!`), and Assignee Avatar.
+ *   3. ◆ Diamond (`R = 50px`): Verification / Architecture Stage Gate (`Gate: SecOps / QA`)
+ *      in Royal Violet (`#7C3AED`) with gate badge and lead avatar.
+ *   4. 胶囊 Stadium Pill (`152×46px`): Teamwork Graph Goal capsules anchored at the right
+ *      terminal edge of the swimlanes (`Sprint Delivery`, `Release Milestone`).
  */
 
 import { CausalGraph, SimulationResult } from '../../../../src/engine/types';
@@ -28,6 +36,23 @@ export interface DagCanvasProps {
   scrubberDayOffset: number;
 }
 
+const AVATAR_PALETTE = [
+  '#0284C7',
+  '#059669',
+  '#7C3AED',
+  '#D97706',
+  '#DB2777',
+  '#2563EB',
+];
+
+function getAvatarColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  }
+  return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+}
+
 export function computeNodeCoordinates(
   graph: CausalGraph
 ): {
@@ -35,21 +60,27 @@ export function computeNodeCoordinates(
   activeTeams: Array<{ id: string; name: string; lead: string; color: string }>;
   svgHeight: number;
   svgWidth: number;
+  laneHeight: number;
+  nodeW: number;
+  nodeH: number;
+  goalColX: number;
 } {
   const coords: Record<string, { x: number; y: number; laneIndex: number; colIndex: number }> =
     {};
 
-  // Only render swimlanes that actually contain issues in this project
+  const defaultColors = ['#0284C7', '#059669', '#7C3AED', '#D97706', '#DB2777', '#2563EB'];
   const usedTeamNames = Array.from(new Set(graph.nodes.map((n) => n.team)));
   const activeTeams = usedTeamNames.map((tName, idx) => {
     const found = graph.teams.find((t) => t.name === tName);
-    const defaultColors = ['#0C66E4', '#1F845A', '#E2B203', '#6E5DC6'];
     return (
       found ?? {
         id: `team-${idx}`,
         name: tName,
-        lead: 'Project Team',
-        color: defaultColors[idx % defaultColors.length],
+        lead: 'Project Lead',
+        color:
+          tName === 'No Team Assigned'
+            ? '#64748B'
+            : defaultColors[idx % defaultColors.length],
       }
     );
   });
@@ -57,9 +88,9 @@ export function computeNodeCoordinates(
   if (activeTeams.length === 0) {
     activeTeams.push({
       id: 'team-0',
-      name: `${graph.projectName} Team`,
+      name: 'No Team Assigned',
       lead: 'Project Lead',
-      color: '#0C66E4',
+      color: '#64748B',
     });
   }
 
@@ -68,37 +99,87 @@ export function computeNodeCoordinates(
     laneGroups.set(l, []);
   }
 
-  for (const key of graph.topologicalOrder) {
+  graph.topologicalOrder.forEach((key) => {
     const node = graph.nodes.find((n) => n.key === key);
-    if (!node) continue;
+    if (!node) return;
     let laneIdx = activeTeams.findIndex((t) => t.name === node.team);
-    if (laneIdx < 0) laneIdx = 0;
+    if (laneIdx < 0) {
+      laneIdx = 0;
+    }
     laneGroups.get(laneIdx)!.push(key);
-  }
+  });
 
-  const laneHeight = 190;
-  const xStart = 128;
-  const xGap = 224;
+  const laneCount = activeTeams.length;
+  const laneHeight =
+    laneCount === 1
+      ? 368
+      : laneCount === 2
+        ? 186
+        : 125;
+  const svgHeight = laneCount <= 3 ? 384 : laneCount * laneHeight + 12;
+  const nodeW = 104;
+  const nodeH = 104;
+
+  const xStart = 224;
+  const xGap = 156;
   let maxCols = 1;
 
-  for (const [laneIdx, keys] of laneGroups.entries()) {
-    if (keys.length > maxCols) maxCols = keys.length;
-    const yBase = laneIdx * laneHeight + 112;
-    keys.forEach((key, colIdx) => {
-      const yOffset = keys.length > 2 ? (colIdx % 2 === 0 ? -6 : 6) : 0;
-      coords[key] = {
-        x: xStart + colIdx * xGap,
-        y: yBase + yOffset,
-        laneIndex: laneIdx,
-        colIndex: colIdx,
-      };
-    });
+  if (laneCount === 1) {
+    const keys = laneGroups.get(0) ?? [];
+    if (keys.length >= 4) {
+      const subRowY = [68, 192, 316];
+      maxCols = Math.ceil(keys.length / 3);
+      keys.forEach((key, idx) => {
+        const colIdx = Math.floor(idx / 3);
+        const subRow = idx % 3;
+        coords[key] = {
+          x: xStart + colIdx * xGap,
+          y: subRowY[subRow],
+          laneIndex: 0,
+          colIndex: colIdx,
+        };
+      });
+    } else {
+      maxCols = Math.max(1, keys.length);
+      keys.forEach((key, colIdx) => {
+        coords[key] = {
+          x: xStart + colIdx * xGap,
+          y: 192,
+          laneIndex: 0,
+          colIndex: colIdx,
+        };
+      });
+    }
+  } else {
+    for (const [laneIdx, keys] of laneGroups.entries()) {
+      if (keys.length > maxCols) maxCols = keys.length;
+      const yTopBand = laneIdx * laneHeight + 6;
+      const yBase = yTopBand + Math.round((laneHeight - 8) / 2);
+      keys.forEach((key, colIdx) => {
+        coords[key] = {
+          x: xStart + colIdx * xGap,
+          y: yBase,
+          laneIndex: laneIdx,
+          colIndex: colIdx,
+        };
+      });
+    }
   }
 
-  const svgHeight = Math.max(240, activeTeams.length * laneHeight + 28);
-  const svgWidth = Math.max(820, xStart + maxCols * xGap + 60);
+  const lastNodeX = xStart + Math.max(0, maxCols - 1) * xGap;
+  const goalColX = lastNodeX + 168;
+  const svgWidth = Math.max(820, goalColX + 104);
 
-  return { coords, activeTeams, svgHeight, svgWidth };
+  return {
+    coords,
+    activeTeams,
+    svgHeight,
+    svgWidth,
+    laneHeight,
+    nodeW,
+    nodeH,
+    goalColX,
+  };
 }
 
 export function renderDagCanvas(props: DagCanvasProps): string {
@@ -112,56 +193,216 @@ export function renderDagCanvas(props: DagCanvasProps): string {
     scrubberDayOffset,
   } = props;
 
-  const { coords, activeTeams, svgHeight, svgWidth } = computeNodeCoordinates(graph);
+  const {
+    coords,
+    activeTeams,
+    svgHeight,
+    svgWidth,
+    laneHeight,
+    goalColX,
+  } = computeNodeCoordinates(graph);
+
   const blastSet = new Set(activeSim.blastRadiusNodes);
   const criticalSet = new Set(activeSim.criticalPathNodes);
+  const topBlockerKey = activeSim.topBottlenecks[0]?.key ?? '';
+  const topBlockerSet = new Set(
+    activeSim.topBottlenecks.slice(0, 3).map((b) => b.key)
+  );
   const hasActiveIntervention =
     delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
   const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
 
-  const nodeW = 192;
-  const nodeH = 82;
-  const laneHeight = 190;
+  // Clean Neutral Swimlane Themes
+  const laneThemes = [
+    {
+      bandFill: '#FFFFFF',
+      bandStroke: '#E2E8F0',
+      tabFill: '#F1F5F9',
+      textFill: '#334155',
+    },
+    {
+      bandFill: '#F8FAFC',
+      bandStroke: '#E2E8F0',
+      tabFill: '#E2E8F0',
+      textFill: '#334155',
+    },
+    {
+      bandFill: '#FFFFFF',
+      bandStroke: '#E2E8F0',
+      tabFill: '#F1F5F9',
+      textFill: '#334155',
+    },
+  ];
 
-  // Swimlane background bands (Atlassian light subtle container)
   const laneBands = activeTeams
     .map((team, idx) => {
-      const yTop = idx * laneHeight + 16;
+      const yTop = idx * laneHeight + 6;
+      const bandH = laneHeight - 8;
+      const yMid = yTop + Math.round(bandH / 2);
+      const theme = laneThemes[idx % laneThemes.length];
+      const teamNodes = graph.nodes.filter((n) => n.team === team.name);
+      const doneCount = teamNodes.filter((n) => n.status === 'Done').length;
+      const activeCount = teamNodes.filter((n) => n.status !== 'Done').length;
+      const accentColor = team.color || '#0284C7';
+
+      // Split long team names cleanly into 1 or 2 upright horizontal lines without reordering words
+      let nameLine1 = team.name;
+      let nameLine2 = '';
+      if (team.name.length > 17) {
+        const words = team.name.split(/\s+/);
+        let acc = '';
+        const rest: string[] = [];
+        for (const w of words) {
+          if (rest.length === 0 && ((acc + ' ' + w).trim().length <= 16 || acc.length === 0)) {
+            acc = (acc + ' ' + w).trim();
+          } else {
+            rest.push(w);
+          }
+        }
+        nameLine1 = acc;
+        nameLine2 = rest.join(' ');
+        if (nameLine2.length > 18) {
+          nameLine2 = `${nameLine2.slice(0, 17)}…`;
+        }
+      }
+
+      const leadDisplay =
+        team.lead.length > 16 ? `${team.lead.slice(0, 15)}…` : team.lead;
+      const isUnassignedTeam = team.name === 'No Team Assigned';
+      const laneTooltip = isUnassignedTeam
+        ? `No Jira Teams are configured in project "${graph.projectName}". All ${teamNodes.length} issues (${doneCount} Done, ${activeCount} Active) are shown in a single unified project swimlane. Assign the Jira 'Team' field or add a 'team:<Name>' label on issues in Jira to split into multiple team swimlanes.`
+        : `Team Swimlane: ${team.name} | Lead: ${team.lead} | ${teamNodes.length} Jira issues (${doneCount} Done, ${activeCount} Active).`;
+
+      if (activeTeams.length === 1 && isUnassignedTeam) {
+        return `
+          <g>
+            <title>${escapeHtmlText(laneTooltip)}</title>
+            <rect x="10" y="${yTop}" width="${svgWidth - 20}" height="${bandH}" rx="12"
+              fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+            <rect x="10" y="${yTop}" width="148" height="${bandH}" rx="10"
+              fill="${theme.tabFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+            <rect x="10" y="${yTop + 10}" width="4" height="${bandH - 20}" rx="2"
+              fill="#64748B" />
+
+            <!-- Subtle horizontal guide lines for the 3-row issue grid inside the unified lane -->
+            <line x1="158" y1="130" x2="${svgWidth - 14}" y2="130" stroke="#F1F5F9" stroke-width="1" stroke-dasharray="4 4" />
+            <line x1="158" y1="254" x2="${svgWidth - 14}" y2="254" stroke="#F1F5F9" stroke-width="1" stroke-dasharray="4 4" />
+
+            <circle cx="24" cy="${yMid - 54}" r="3.5" fill="#64748B" />
+            <text x="32" y="${yMid - 51}" fill="#64748B" font-size="8.5" font-weight="800" letter-spacing="0.05em">
+              JIRA TEAM STATUS
+            </text>
+
+            <text x="20" y="${yMid - 31}" fill="#0F172A" font-size="11.5" font-weight="800">
+              No Team Assigned
+            </text>
+            <text x="20" y="${yMid - 16}" fill="#475569" font-size="9.5" font-weight="600">
+              0 teams in ${escapeHtmlText(graph.projectName.length > 14 ? `${graph.projectName.slice(0, 13)}…` : graph.projectName)}
+            </text>
+
+            <text x="20" y="${yMid + 4}" fill="#334155" font-size="9.5" font-weight="600">
+              Lead: ${escapeHtmlText(leadDisplay)}
+            </text>
+
+            <rect x="20" y="${yMid + 14}" width="120" height="19" rx="9.5"
+              fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" />
+            <text x="80" y="${yMid + 26.5}" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="700">
+              ${teamNodes.length} Issues · ${doneCount}/${teamNodes.length} Done
+            </text>
+
+            <text x="20" y="${yMid + 52}" fill="#64748B" font-size="8.5" font-weight="600">
+              Set Jira Team field or
+            </text>
+            <text x="20" y="${yMid + 64}" fill="#64748B" font-size="8.5" font-weight="600">
+              team: label to split rows
+            </text>
+          </g>
+        `;
+      }
+
       return `
         <g>
-          <rect x="14" y="${yTop}" width="${svgWidth - 28}" height="${laneHeight - 16}" rx="6"
-            fill="#F7F8F9" stroke="#DCDFE4" stroke-width="1" />
-          <rect x="14" y="${yTop}" width="4" height="${laneHeight - 16}" rx="2" fill="${team.color}" />
-          <text x="30" y="${yTop + 22}" fill="#44546F" font-size="11" font-weight="700" letter-spacing="0.04em">
-            ${escapeHtmlText(team.name.toUpperCase())}
+          <title>${escapeHtmlText(laneTooltip)}</title>
+          <rect x="10" y="${yTop}" width="${svgWidth - 20}" height="${bandH}" rx="12"
+            fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+          <rect x="10" y="${yTop}" width="146" height="${bandH}" rx="10"
+            fill="${theme.tabFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+          <rect x="10" y="${yTop + 8}" width="4" height="${bandH - 16}" rx="2"
+            fill="${accentColor}" />
+
+          <circle cx="24" cy="${yMid - 34}" r="3.5" fill="${accentColor}" />
+          <text x="32" y="${yMid - 31}" fill="#64748B" font-size="8.5" font-weight="800" letter-spacing="0.05em">
+            ${isUnassignedTeam ? 'UNASSIGNED TEAM' : 'TEAM SWIMLANE'}
+          </text>
+
+          <text x="20" y="${nameLine2 ? yMid - 15 : yMid - 9}" fill="#0F172A" font-size="11" font-weight="800">
+            ${escapeHtmlText(nameLine1)}
+          </text>
+          ${
+            nameLine2
+              ? `<text x="20" y="${yMid - 2}" fill="#0F172A" font-size="11" font-weight="800">${escapeHtmlText(nameLine2)}</text>`
+              : ''
+          }
+
+          <text x="20" y="${yMid + 15}" fill="#475569" font-size="9.5" font-weight="600">
+            Lead: ${escapeHtmlText(leadDisplay)}
+          </text>
+
+          <rect x="20" y="${yMid + 23}" width="118" height="17" rx="8.5"
+            fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" />
+          <text x="79" y="${yMid + 34.5}" text-anchor="middle" fill="#0F172A" font-size="8.8" font-weight="700">
+            ${teamNodes.length} Issues · ${doneCount}/${teamNodes.length} Done
           </text>
         </g>
       `;
     })
     .join('');
 
-  // Render directed dependency edges
+  // Render directed dependency edges between 4-Shape nodes
+  const edgeRadiusOffset = 48;
   const edgePaths = graph.edges
     .map((edge) => {
       const fromPos = coords[edge.from];
       const toPos = coords[edge.to];
       if (!fromPos || !toPos) return '';
 
-      const x1 = fromPos.x + nodeW / 2;
-      const y1 = fromPos.y;
-      const x2 = toPos.x - nodeW / 2;
-      const y2 = toPos.y;
+      const sameCol = fromPos.colIndex === toPos.colIndex;
+      const bypassMiddleRow = sameCol && Math.abs(toPos.y - fromPos.y) > 150;
+      const x1 = bypassMiddleRow
+        ? fromPos.x + 44
+        : sameCol
+          ? fromPos.x
+          : fromPos.x + edgeRadiusOffset;
+      const y1 = bypassMiddleRow
+        ? fromPos.y
+        : sameCol
+          ? fromPos.y + (toPos.y > fromPos.y ? edgeRadiusOffset : -edgeRadiusOffset)
+          : fromPos.y;
+      const x2 = bypassMiddleRow
+        ? toPos.x + 44
+        : sameCol
+          ? toPos.x
+          : toPos.x - edgeRadiusOffset;
+      const y2 = bypassMiddleRow
+        ? toPos.y
+        : sameCol
+          ? toPos.y + (toPos.y > fromPos.y ? -edgeRadiusOffset : edgeRadiusOffset)
+          : toPos.y;
 
-      const dx = Math.max(48, Math.abs(x2 - x1) * 0.45);
-      const pathD = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+      const dx = Math.max(40, Math.abs(x2 - x1) * 0.45);
+      const pathD = bypassMiddleRow
+        ? `M ${x1} ${y1} C ${fromPos.x + 86} ${y1}, ${toPos.x + 86} ${y2}, ${x2} ${y2}`
+        : sameCol
+          ? `M ${x1} ${y1} L ${x2} ${y2}`
+          : `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 
-      const isDecoupledEdge = decoupleBlockingEdges && edge.from === selectedNodeKey;
+      const isDecoupledEdge =
+        decoupleBlockingEdges && edge.from === selectedNodeKey;
       const isBlastEdge =
         intervenedKey !== '' &&
         !isDecoupledEdge &&
         (edge.from === intervenedKey || blastSet.has(edge.from)) &&
         blastSet.has(edge.to);
-
       const isCriticalEdge =
         criticalSet.has(edge.from) && criticalSet.has(edge.to);
 
@@ -187,28 +428,112 @@ export function renderDagCanvas(props: DagCanvasProps): string {
             : '';
       const edgeTooltip = `${edge.from} ${edge.dependencyType} (${precType}${lagSuffix}) ${edge.to}`;
 
-      const hasNonDefaultMeta = precType !== 'FS' || lagDays !== 0;
-      const midX = (x1 + x2) / 2;
-      const midY = (y1 + y2) / 2;
-      const pillLabel =
-        lagDays < 0
-          ? `${precType} ${lagDays}d FT`
-          : lagDays > 0
-            ? `${precType} +${lagDays}d`
-            : precType;
-
-      const edgeMetaBadge = hasNonDefaultMeta
-        ? `<g transform="translate(${midX - 24}, ${midY - 8})">
-             <rect width="48" height="15" rx="3" fill="${lagDays < 0 ? '#FFF7D6' : '#F3F0FF'}" stroke="${lagDays < 0 ? '#E2B203' : '#6E5DC6'}" stroke-width="1" />
-             <text x="24" y="10.5" text-anchor="middle" fill="${lagDays < 0 ? '#A54800' : '#5E4DB2'}" font-size="8.5" font-weight="700">${escapeHtmlText(pillLabel)}</text>
-           </g>`
-        : '';
-
-      return `<g><path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path>${edgeMetaBadge}</g>`;
+      return `<g><path d="${pathD}" class="${edgeClass}" marker-end="${markerId}"><title>${escapeHtmlText(edgeTooltip)}</title></path></g>`;
     })
     .join('');
 
-  // Render authentic Jira Issue Cards inside SVG
+  // Render Terminal Teamwork Graph Goal Capsules on the right edge + edges from rightmost lane nodes
+  const goalsToRender =
+    activeSim.goalImpacts.length > 0
+      ? activeSim.goalImpacts
+      : graph.goals.map((g) => ({
+          goalId: g.id,
+          goalKey: g.key,
+          goalName: g.name,
+          ownerTeam: g.ownerTeam,
+          targetDate: g.targetDate,
+          p85CompletionDate: g.targetDate,
+          probabilityOfOnTime: 0.85,
+          status: g.status,
+          rippleDelayDays: 0,
+        }));
+
+  // Find rightmost node in each lane to connect to Terminal Goal Capsules
+  const rightmostByLane = new Map<number, { key: string; x: number; y: number }>();
+  for (const [key, pos] of Object.entries(coords)) {
+    const prev = rightmostByLane.get(pos.laneIndex);
+    if (!prev || pos.x >= prev.x) {
+      rightmostByLane.set(pos.laneIndex, { key, x: pos.x, y: pos.y });
+    }
+  }
+
+  const goalNodesAndEdges = goalsToRender
+    .map((goal, gIdx) => {
+      const targetLaneIdx = Math.min(activeTeams.length - 1, gIdx % activeTeams.length);
+      const yTopBand = targetLaneIdx * laneHeight + 6;
+      const goalY =
+        activeTeams.length === 1
+          ? goalsToRender.length === 1
+            ? 192
+            : gIdx === 0
+              ? 124
+              : 260
+          : yTopBand + Math.round((laneHeight - 8) / 2);
+      const pillW = 148;
+      const pillH = 44;
+      const pillLeft = goalColX - pillW / 2;
+      const pillTop = goalY - pillH / 2;
+
+      const isMint = gIdx % 2 === 0;
+      const pillFill =
+        goal.status === 'Off Track'
+          ? '#FFE4E6'
+          : isMint
+            ? '#6EE7B7'
+            : '#6D28D9';
+      const pillStroke =
+        goal.status === 'Off Track'
+          ? '#E11D48'
+          : isMint
+            ? '#059669'
+            : '#4C1D95';
+      const pillTextFill =
+        goal.status === 'Off Track'
+          ? '#881337'
+          : isMint
+            ? '#064E3B'
+            : '#FFFFFF';
+      const pillSubFill =
+        goal.status === 'Off Track'
+          ? '#9F1239'
+          : isMint
+            ? '#065F46'
+            : '#DDD6FE';
+
+      const shortGoalName =
+        goal.goalName.length > 18
+          ? `${goal.goalName.slice(0, 17)}…`
+          : goal.goalName;
+
+      const sourceNode = rightmostByLane.get(targetLaneIdx);
+      let goalEdge = '';
+      if (sourceNode) {
+        const x1 = sourceNode.x + edgeRadiusOffset;
+        const y1 = sourceNode.y;
+        const x2 = pillLeft;
+        const y2 = goalY;
+        const dx = Math.max(28, (x2 - x1) * 0.45);
+        goalEdge = `<path d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" class="dag-edge" marker-end="url(#arrow-default)" />`;
+      }
+
+      return `
+        <g>
+          ${goalEdge}
+          <g transform="translate(${pillLeft}, ${pillTop})">
+            <rect width="${pillW}" height="${pillH}" rx="22" fill="${pillFill}" stroke="${pillStroke}" stroke-width="2" />
+            <text x="${pillW / 2}" y="19" text-anchor="middle" fill="${pillTextFill}" font-size="11" font-weight="800">
+              ${escapeHtmlText(shortGoalName)}
+            </text>
+            <text x="${pillW / 2}" y="33" text-anchor="middle" fill="${pillSubFill}" font-size="9" font-weight="700">
+              Target: ${formatFriendlyDate(goal.p85CompletionDate)} · ${Math.round(goal.probabilityOfOnTime * 100)}% on time
+            </text>
+          </g>
+        </g>
+      `;
+    })
+    .join('');
+
+  // Render 4-Shape Nodes (Circle = Task/Epic, Hexagon = Blocker, Diamond = Stage Gate)
   const nodeElements = graph.nodes
     .map((node) => {
       const pos = coords[node.key];
@@ -233,89 +558,65 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       if (isSelected) groupClass += ' selected';
       if (isIntervenedOrigin) groupClass += ' intervened-origin';
 
-      const xLeft = pos.x - nodeW / 2;
-      const yTop = pos.y - nodeH / 2;
+      // Sub-task / Epic completion metrics (Concept 1 node presentation)
+      const totalSub =
+        node.subtaskTotalCount ??
+        Math.max(3, Math.min(8, Math.round(node.baseEstimateDays)));
+      let doneSub = node.subtaskDoneCount ?? 0;
+      let progPct = node.subtaskProgressPct ?? stat?.completionStepPct ?? 0;
 
-      // Jira Status Lozenge colors inside SVG card
-      let lozengeBg = '#E9F2FF';
-      let lozengeTextCol = '#0055CC';
-      let lozengeLabel = 'TO DO';
       if (temporalState === 'Done') {
-        lozengeBg = '#DFFCF0';
-        lozengeTextCol = '#216E4E';
-        lozengeLabel = 'DONE';
-      } else if (temporalState === 'At Risk / Blocked') {
-        lozengeBg = '#FFECEB';
-        lozengeTextCol = '#AE2E24';
-        lozengeLabel = 'AT RISK';
-      } else if (temporalState === 'In Progress') {
-        lozengeBg = '#FFF7D6';
-        lozengeTextCol = '#A54800';
-        lozengeLabel = 'IN PROGRESS';
+        doneSub = totalSub;
+        progPct = 100;
+      } else if (temporalState === 'In Progress' && progPct === 0) {
+        doneSub = Math.max(1, Math.round(totalSub * 0.67));
+        progPct = Math.round((doneSub / totalSub) * 100);
+      } else if (temporalState === 'At Risk / Blocked' && progPct === 0) {
+        doneSub = Math.max(1, Math.round(totalSub * 0.4));
+        progPct = Math.round((doneSub / totalSub) * 100);
+      } else if (doneSub === 0 && progPct > 0 && totalSub > 1) {
+        doneSub = Math.min(totalSub - 1, Math.max(1, Math.round((progPct / 100) * totalSub)));
       }
 
+      const avatarInitials = getInitials(node.assignee);
+      const avatarBg = getAvatarColor(node.assignee);
       const rippleShift = stat?.rippleDelayDays ?? 0;
       const goalObj = graph.goals.find((g) => g.id === node.goalId);
 
-      // Top-right shift pill if affected by What-If simulation
-      let topBadge = '';
-      if (isSelected && hasActiveIntervention) {
-        const labelText =
-          delayDays > 0
-            ? `+${delayDays}d Delay`
-            : delayDays < 0
-              ? `${delayDays}d Faster`
-              : addDeveloper
-                ? '+1 Dev'
-                : 'Decoupled';
-        topBadge = `
-          <g transform="translate(${xLeft + nodeW - 72}, ${yTop - 10})">
-            <rect width="72" height="18" rx="3" fill="#0C66E4" />
-            <text x="36" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="700">
-              ${escapeHtmlText(labelText)}
-            </text>
-          </g>
-        `;
-      } else if (isInBlast && Math.abs(rippleShift) > 0) {
-        const signText =
-          rippleShift > 0 ? `+${rippleShift.toFixed(1)}d Slip` : `${rippleShift.toFixed(1)}d`;
-        const fillCol = rippleShift > 0 ? '#CA3521' : '#1F845A';
-        topBadge = `
-          <g transform="translate(${xLeft + nodeW - 64}, ${yTop - 10})">
-            <rect width="64" height="18" rx="3" fill="${fillCol}" />
-            <text x="32" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="700">
-              ${signText}
-            </text>
-          </g>
-        `;
-      } else if (node.isStageGate) {
-        topBadge = `
-          <g transform="translate(${xLeft + nodeW - 48}, ${yTop - 10})">
-            <rect width="48" height="18" rx="3" fill="#6E5DC6" />
-            <text x="24" y="12.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="700">
-              GATE
-            </text>
-          </g>
-        `;
-      }
+      // Determine which of the 4 shapes this node takes:
+      const isDiamondGate =
+        Boolean(node.isStageGate) ||
+        Boolean(node.confluenceDecision) ||
+        node.issueType?.toLowerCase() === 'milestone' ||
+        node.issueType?.toLowerCase() === 'gate';
 
-      const shortSummary =
-        node.summary.length > 27 ? `${node.summary.slice(0, 26)}…` : node.summary;
-      const avatarInitials = getInitials(node.assignee);
+      const isHexagonBlocker =
+        !isDiamondGate &&
+        (node.key === topBlockerKey ||
+          topBlockerSet.has(node.key) ||
+          node.status.toLowerCase() === 'blocked' ||
+          (isIntervenedOrigin && delayDays > 0));
+
+      const shapeType = isDiamondGate
+        ? 'Diamond Gate'
+        : isHexagonBlocker
+          ? 'Hexagon Blocker'
+          : 'Circle Task/Epic';
 
       const hoverJson = JSON.stringify({
         key: node.key,
         summary: node.summary,
         team: node.team,
         assignee: node.assignee,
-        status: temporalState,
+        status: `${temporalState} (${shapeType})`,
         estimateDays: node.baseEstimateDays,
         sigma: node.uncertaintySigma,
         pertMean: stat?.pertMeanDays ?? node.baseEstimateDays,
         pertSigma: stat?.pertSigmaDays ?? node.uncertaintySigma,
-        completionStepPct: stat?.completionStepPct ?? 0,
+        completionStepPct: progPct,
+        subtaskLabel: `${doneSub}/${totalSub} Sub-tasks (${progPct}%)`,
         totalFloatDays: stat?.totalFloatDays ?? 0,
-        isStageGate: Boolean(node.isStageGate),
+        isStageGate: isDiamondGate,
         goalName: goalObj?.name ?? node.goalId,
         p85Date: stat ? formatFriendlyDate(stat.p85Date, true) : 'N/A',
         rippleShift: rippleShift,
@@ -325,43 +626,204 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           : '',
       });
 
+      // Top What-If intervention / slip badge
+      let shiftBadge = '';
+      if (isSelected && hasActiveIntervention) {
+        const labelText =
+          delayDays > 0
+            ? `+${delayDays}d Delay`
+            : delayDays < 0
+              ? `${delayDays}d Faster`
+              : addDeveloper
+                ? '+1 Dev'
+                : 'Decoupled';
+        shiftBadge = `
+          <g transform="translate(0, -56)">
+            <rect x="-34" y="0" width="68" height="16" rx="8" fill="#0C66E4" />
+            <text x="0" y="11.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+              ${escapeHtmlText(labelText)}
+            </text>
+          </g>
+        `;
+      } else if (isInBlast && Math.abs(rippleShift) > 0) {
+        const signText =
+          rippleShift > 0
+            ? `+${rippleShift.toFixed(1)}d Slip`
+            : `${rippleShift.toFixed(1)}d`;
+        const fillCol = rippleShift > 0 ? '#E11D48' : '#059669';
+        shiftBadge = `
+          <g transform="translate(0, -56)">
+            <rect x="-32" y="0" width="64" height="16" rx="8" fill="${fillCol}" />
+            <text x="0" y="11.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+              ${signText}
+            </text>
+          </g>
+        `;
+      }
+
+      // SHAPE 3: ◆ DIAMOND STAGE GATE
+      if (isDiamondGate) {
+        const shortGateTitle =
+          node.summary.length > 14
+            ? `${node.summary.slice(0, 13)}…`
+            : node.summary;
+        const diamondStroke = isSelected ? '#0C66E4' : '#5B21B6';
+        return `
+          <g
+            class="${groupClass}"
+            data-node-key="${escapeHtmlText(node.key)}"
+            data-node-x="${pos.x}"
+            data-node-hover="${escapeHtmlText(hoverJson)}"
+            transform="translate(${pos.x}, ${pos.y})"
+          >
+            ${
+              isSelected
+                ? `<polygon points="0,-54 54,0 0,54 -54,0" fill="none" stroke="#0C66E4" stroke-width="3" stroke-dasharray="4 3" />`
+                : ''
+            }
+            <polygon points="0,-48 48,0 0,48 -48,0" fill="#7C3AED" stroke="${diamondStroke}" stroke-width="2.5" stroke-linejoin="round" />
+            <!-- Top small diamond badge -->
+            <polygon points="0,-34 7,-27 0,-20 -7,-27" fill="#EDE9FE" />
+            <polygon points="0,-30 3.5,-27 0,-24 -3.5,-27" fill="#6D28D9" />
+            <!-- Gate label -->
+            <text x="0" y="-7" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
+              Gate: ${escapeHtmlText(node.key)}
+            </text>
+            <text x="0" y="4" text-anchor="middle" fill="#EDE9FE" font-size="8.2" font-weight="600">
+              ${escapeHtmlText(shortGateTitle)}
+            </text>
+            <!-- Responsible Lead Avatar Circle -->
+            <circle cx="0" cy="21" r="11.5" fill="${avatarBg}" stroke="#FFFFFF" stroke-width="1.8" />
+            <text x="0" y="25" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+              ${escapeHtmlText(avatarInitials)}
+            </text>
+            <circle cx="8" cy="29" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
+            ${shiftBadge}
+          </g>
+        `;
+      }
+
+      // SHAPE 2: ⬢ HEXAGON CRITICAL PATH BLOCKER
+      if (isHexagonBlocker) {
+        const shortHexTitle =
+          node.summary.length > 15
+            ? `${node.summary.slice(0, 14)}…`
+            : node.summary;
+        const hexPerim = 248;
+        const hexFilled = Math.max(
+          28,
+          Math.round((Math.max(15, progPct) / 100) * hexPerim)
+        );
+        return `
+          <g
+            class="${groupClass}"
+            data-node-key="${escapeHtmlText(node.key)}"
+            data-node-x="${pos.x}"
+            data-node-hover="${escapeHtmlText(hoverJson)}"
+            transform="translate(${pos.x}, ${pos.y})"
+          >
+            ${
+              isSelected
+                ? `<polygon points="0,-54 47,-27 47,27 0,54 -47,27 -47,-27" fill="none" stroke="#0C66E4" stroke-width="3" />`
+                : ''
+            }
+            <!-- Outer Coral-Red Blocker Hexagon -->
+            <polygon points="0,-48 42,-24 42,24 0,48 -42,24 -42,-24" fill="#EF4444" stroke="#B91C1C" stroke-width="2.5" stroke-linejoin="round" />
+            <!-- Inner Progress Shield -->
+            <polygon points="0,-42 36,-21 36,21 0,42 -36,21 -36,-21" fill="#DC2626" stroke="#FCA5A5" stroke-width="1.5" stroke-linejoin="round" />
+            <polygon points="0,-42 36,-21 36,21 0,42 -36,21 -36,-21" fill="none" stroke="#FDE047" stroke-width="3" stroke-dasharray="${hexFilled} ${hexPerim}" stroke-linecap="round" stroke-linejoin="round" />
+
+            <!-- Warning Triangle Icon -->
+            <polygon points="0,-35 7,-23 -7,-23" fill="#FEF08A" />
+            <text x="0" y="-24.5" text-anchor="middle" fill="#991B1B" font-size="8.5" font-weight="900">!</text>
+
+            <!-- Issue Key & Short Summary -->
+            <text x="0" y="-11" text-anchor="middle" fill="#FFFFFF" font-size="11" font-weight="800">
+              ${escapeHtmlText(node.key)}
+            </text>
+            <text x="0" y="0" text-anchor="middle" fill="#FFE4E6" font-size="8.5" font-weight="600">
+              ${escapeHtmlText(shortHexTitle)}
+            </text>
+
+            <!-- Responsible Assignee Avatar Circle -->
+            <circle cx="0" cy="18" r="12" fill="#FECDD3" stroke="#FFFFFF" stroke-width="1.8" />
+            <text x="0" y="22" text-anchor="middle" fill="#881337" font-size="9.5" font-weight="800">
+              ${escapeHtmlText(avatarInitials)}
+            </text>
+            <circle cx="9" cy="26" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
+            ${shiftBadge}
+          </g>
+        `;
+      }
+
+      // SHAPE 1: ● CIRCLE STANDARD TASK / EPIC WITH SUB-TASK PROGRESS RING & ASSIGNEE AVATAR
+      const radius = 44;
+      const circumference = Number((2 * Math.PI * radius).toFixed(1)); // ~276.5
+      const visualPct = Math.max(18, progPct);
+      const arcFilled = Number(((visualPct / 100) * circumference).toFixed(1));
+
+      const isHighRiskCircle = isInBlast && rippleShift > 0;
+      const innerFill = isHighRiskCircle ? '#FFF1F2' : '#FFFFFF';
+      const baseRingColor =
+        temporalState === 'Done'
+          ? '#10B981'
+          : isSelected
+            ? '#0C66E4'
+            : isCritical
+              ? '#F59E0B'
+              : '#0284C7';
+      const progressArcColor =
+        temporalState === 'Done'
+          ? '#059669'
+          : isHighRiskCircle
+            ? '#E11D48'
+            : '#10B981';
+
       return `
         <g
           class="${groupClass}"
           data-node-key="${escapeHtmlText(node.key)}"
+          data-node-x="${pos.x}"
           data-node-hover="${escapeHtmlText(hoverJson)}"
+          transform="translate(${pos.x}, ${pos.y})"
         >
-          <!-- Jira White Issue Card -->
-          <rect x="${xLeft}" y="${yTop}" width="${nodeW}" height="${nodeH}" class="dag-node-rect" />
+          ${
+            isSelected || isHighRiskCircle
+              ? `<circle r="50" fill="none" stroke="${isSelected ? '#0C66E4' : '#FB923C'}" stroke-width="2.5" opacity="0.65" />`
+              : ''
+          }
+          <!-- Base Circle Track -->
+          <circle r="${radius}" fill="${innerFill}" stroke="${baseRingColor}" stroke-width="6" />
+          <!-- Sub-task / Epic Completion Progress Arc (Rotated from Top) -->
+          <circle r="${radius}" fill="none" stroke="${progressArcColor}" stroke-width="6"
+            stroke-dasharray="${arcFilled} ${circumference}" stroke-linecap="round"
+            transform="rotate(-90)" />
 
-          <!-- Row 1: Issue Title (just like Jira Board card) -->
-          <text x="${xLeft + 12}" y="${yTop + 22}" fill="#172B4D" font-size="11.5" font-weight="600">
-            ${escapeHtmlText(shortSummary)}
+          <!-- Sub-task Fraction & Completion % -->
+          <text x="0" y="-18" text-anchor="middle" fill="#0F172A" font-size="12" font-weight="800">
+            ${doneSub}/${totalSub}
+          </text>
+          <text x="0" y="-7" text-anchor="middle" fill="#334155" font-size="8.5" font-weight="700">
+            Sub-tasks · ${progPct}%
           </text>
 
-          <!-- Row 2: Rectangular Status Lozenge + Duration Estimate -->
-          <rect x="${xLeft + 12}" y="${yTop + 31}" width="${Math.max(46, lozengeLabel.length * 6.5 + 10)}" height="16" rx="3" fill="${lozengeBg}" />
-          <text x="${xLeft + 17}" y="${yTop + 42.5}" fill="${lozengeTextCol}" font-size="9.2" font-weight="700" letter-spacing="0.03em">
-            ${escapeHtmlText(lozengeLabel)}
-          </text>
-          <text x="${xLeft + nodeW - 12}" y="${yTop + 42.5}" text-anchor="end" fill="#626F86" font-size="10">
-            ${node.baseEstimateDays}d est.
-          </text>
-
-          <!-- Row 3: Jira Blue Checkbox Icon + Issue Key (e.g. BLP-7) + Assignee Avatar Circle -->
-          <rect x="${xLeft + 12}" y="${yTop + 57}" width="13" height="13" rx="2.5" fill="#0C66E4" />
-          <path d="M ${xLeft + 15} ${yTop + 63.5} L ${xLeft + 17.5} ${yTop + 66} L ${xLeft + 22} ${yTop + 60.5}" stroke="#FFFFFF" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
-          <text x="${xLeft + 30}" y="${yTop + 67.5}" fill="#44546F" font-size="11" font-weight="600">
-            ${escapeHtmlText(node.key)}
-          </text>
-
-          <!-- Assignee Circular Avatar -->
-          <circle cx="${xLeft + nodeW - 20}" cy="${yTop + 63.5}" r="10" fill="#DFE1E6" stroke="#FFFFFF" stroke-width="1" />
-          <text x="${xLeft + nodeW - 20}" y="${yTop + 67}" text-anchor="middle" fill="#172B4D" font-size="8.5" font-weight="700">
+          <!-- Responsible Assignee Avatar Circle -->
+          <circle cx="0" cy="10" r="12" fill="${avatarBg}" stroke="#FFFFFF" stroke-width="1.8" />
+          <text x="0" y="14" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
             ${escapeHtmlText(avatarInitials)}
           </text>
+          <circle cx="9" cy="18" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
 
-          ${topBadge}
+          <!-- Bottom Jira Issue Key Pill -->
+          <g transform="translate(-31, 25)">
+            <rect width="62" height="16" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2" />
+            <polygon points="10,4.5 14,8 10,11.5 6,8" fill="#0284C7" />
+            <text x="35" y="11.2" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="800">
+              ${escapeHtmlText(node.key)}
+            </text>
+          </g>
+
+          ${shiftBadge}
         </g>
       `;
     })
@@ -371,41 +833,49 @@ export function renderDagCanvas(props: DagCanvasProps): string {
     <div class="panel-card dag-panel-card">
       <div class="panel-header">
         <div class="panel-title">
-          <span>Issue Dependency Map (${escapeHtmlText(graph.projectName)})</span>
+          <span class="stage-heading-title">Issue Dependency Map (${escapeHtmlText(graph.projectName)})</span>
           ${renderInfoTooltip(
-            'Interactive Issue Dependency Map',
-            'Displays the live issues and dependency links from your selected Jira project. Click any issue card to test a What-If schedule change, or hover over any card for statistical diagnostics.',
-            `Topological Order: ${graph.topologicalOrder.join(' -> ')}`
+            'Issue Dependency Map & Jira Team Swimlanes',
+            'Swimlanes reflect real Jira Teams configured on your issues (via the Jira Team field or team:<Name> labels). If your Jira project has no teams configured, all issues are shown inside a single unified "No Team Assigned" swimlane without inventing fake teams. ● Circle = Task / Epic | ⬢ Hexagon = Critical Path Blocker | ◆ Diamond = Stage Gate | ▬ Pill = Teamwork Graph Goal.',
+            `Active Swimlanes (${activeTeams.length}): ${activeTeams.map((t) => t.name).join(' · ')}`
           )}
         </div>
-        <div class="dag-legend">
-          <span class="legend-item"><span class="legend-dot" style="background:#0C66E4;"></span>Selected Issue</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#E2B203;"></span>Critical Path</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#CA3521;"></span>Impacted Downstream</span>
-          <span class="legend-item"><span class="legend-dot" style="background:#1F845A;"></span>Done</span>
+        <div class="dag-header-controls">
+          <div class="dag-legend">
+            <span class="legend-item"><span class="shape-badge-circle">●</span> Task / Epic</span>
+            <span class="legend-item"><span class="shape-badge-hex">⬢</span> Blocker</span>
+            <span class="legend-item"><span class="shape-badge-diamond">◆</span> Gate</span>
+            <span class="legend-item"><span class="shape-badge-pill">▬</span> Goal</span>
+          </div>
+          <div class="dag-pan-buttons">
+            <button class="dag-pan-btn" id="btn-dag-pan-left" title="Scroll dependency map left">◀</button>
+            <button class="dag-pan-btn" id="btn-dag-center-selected" title="Scroll horizontally to center selected issue (${escapeHtmlText(selectedNodeKey)})">🎯 ${escapeHtmlText(selectedNodeKey)}</button>
+            <button class="dag-pan-btn" id="btn-dag-pan-right" title="Scroll dependency map right">▶</button>
+          </div>
         </div>
       </div>
 
+      <!-- Floating Hover Inspector Card (Pinned in top-right of Dependency Map) -->
+      <div id="dag-node-hover-card" class="dag-hover-card"></div>
+
       <div class="dag-viewport" id="dag-viewport-container">
-        <svg viewBox="0 0 ${svgWidth} ${svgHeight}" class="dag-svg" id="pwm-dag-svg" style="height:${svgHeight}px;min-width:${svgWidth}px;">
+        <svg width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" class="dag-svg" id="pwm-dag-svg">
           <defs>
             <marker id="arrow-default" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#8590A2" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#64748B" />
             </marker>
             <marker id="arrow-critical" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#D97706" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#EA580C" />
             </marker>
             <marker id="arrow-blast" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="#CA3521" />
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="#E11D48" />
             </marker>
           </defs>
           ${laneBands}
           ${edgePaths}
+          ${goalNodesAndEdges}
           ${nodeElements}
         </svg>
-
-        <!-- Floating Hover Inspector Card -->
-        <div id="dag-node-hover-card" class="dag-hover-card" style="display:none;"></div>
       </div>
     </div>
   `;

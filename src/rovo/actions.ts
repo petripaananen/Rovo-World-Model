@@ -98,7 +98,7 @@ export async function simulateDelayImpact(
     .join('\n');
 
   const mitigationRecommendations = [
-    `1. **Swarm Resource (+1 Engineer on ${result.targetNodeKey}):** Adding a pairing engineer compresses base estimate by ~35% and reduces variance σ by 40%, recovering up to ${Math.max(2, Math.round(Math.abs(result.p85ShiftDays) * 0.45))} days on the P85 commit date.`,
+    `1. **Swarm Resource (+1 Engineer on ${result.targetNodeKey}):** Adding a pairing engineer compresses base estimate by ~35% and reduces variance σ by 40%, recovering up to ${Math.max(2, Math.round(Math.abs(result.p85ShiftDays) * 0.45))} days on the Target Commit Date (85% safe).`,
     `2. **Decouple Cross-Team Blocking Edge:** Introduce an API/interface mock contract out of **${result.targetNodeKey}** to drop downstream propagation weight from 1.0 to 0.25 and shield ${result.blastRadiusNodes.slice(0, 3).join(', ') || 'downstream teams'}.`,
     `3. **Protect Critical Path Slack:** Prioritize ${result.criticalPathNodes.slice(0, 4).join(' → ')} during daily standups to prevent secondary compound tail risk.`,
   ];
@@ -109,9 +109,9 @@ export async function simulateDelayImpact(
     `**Simulation Engine:** 500-iteration Paired Twin-Network Monte Carlo (${result.executionTimeMs} ms)`,
     '',
     `#### Release Forecast Shift`,
-    `- **P50 (Median):** ${result.baseline.p50Date} → **${result.intervened.p50Date}** (${formatSigned(result.p50ShiftDays)})`,
-    `- **P85 (Commit):** ${result.baseline.p85Date} → **${result.intervened.p85Date}** (${formatSigned(result.p85ShiftDays)})`,
-    `- **P95 (Tail Risk):** ${result.baseline.p95Date} → **${result.intervened.p95Date}** (${formatSigned(result.p95ShiftDays)})`,
+    `- **Likely Finish (50% odds):** ${result.baseline.p50Date} → **${result.intervened.p50Date}** (${formatSigned(result.p50ShiftDays)})`,
+    `- **Target Commit Date (85% safe):** ${result.baseline.p85Date} → **${result.intervened.p85Date}** (${formatSigned(result.p85ShiftDays)})`,
+    `- **Safe Buffer Date (95% cutoff):** ${result.baseline.p95Date} → **${result.intervened.p95Date}** (${formatSigned(result.p95ShiftDays)})`,
     `- **Blast Radius:** **${result.blastRadiusNodes.length}** downstream tasks impacted (\`${result.blastRadiusNodes.join(', ')}\`)`,
     '',
     `#### Teamwork Graph (TWG) Goal Impact`,
@@ -186,9 +186,9 @@ export async function analyzeCriticalPath(
 
   const summaryMarkdown = [
     `### Rovo-World-Model — Critical Path & Delivery Governance (${graph.projectName})`,
-    `- **P50 Target Base:** ${sim.p50Date} (+${sim.p50Days}d)`,
-    `- **P85 Commit Target:** **${sim.p85Date}** (+${sim.p85Days}d, PM Buffer: +${sim.reserves?.pmContingencyReserveDays ?? 0}d)`,
-    `- **P95 Tail Envelope:** ${sim.p95Date} (+${sim.p95Days}d, Exec Reserve: +${sim.reserves?.managementReserveDays ?? 0}d)`,
+    `- **Likely Finish (50% odds / Core Work Estimate):** ${sim.p50Date} (+${sim.p50Days}d)`,
+    `- **Target Commit Date (85% safe):** **${sim.p85Date}** (+${sim.p85Days}d, Team Risk Buffer: +${sim.reserves?.pmContingencyReserveDays ?? 0}d)`,
+    `- **Safe Buffer Date (95% cutoff):** ${sim.p95Date} (+${sim.p95Days}d, Executive Contingency: +${sim.reserves?.managementReserveDays ?? 0}d)`,
     `- **Engineering Earned Value (EVM):** CPI **${sim.earnedValue?.cpi ?? 1.0}** · SPI **${sim.earnedValue?.spi ?? 1.0}** · Forecast EAC **${sim.earnedValue?.eacTrendDays ?? sim.p50Days}d**`,
     `- **Topological Critical Path (${sim.criticalPathNodes.length} nodes):** \`${sim.criticalPathNodes.join(' → ')}\``,
     '',
