@@ -51,6 +51,11 @@ export const MCP_TOOLS_MANIFEST = [
           type: 'boolean',
           description: 'Simulate decoupling hard blocking outgoing edges',
         },
+        trimScope: {
+          type: 'boolean',
+          description:
+            'Simulate trimming or deferring non-essential sub-tasks to the next cycle (-35% duration, -45% uncertainty)',
+        },
         projectKey: {
           type: 'string',
           description: 'Optional Jira project key (defaults to CHRON)',
@@ -244,6 +249,7 @@ export async function mcpWebtriggerHandler(
           delayDays: Number.isFinite(parsedDelay) ? parsedDelay : 7,
           addDeveloper: Boolean(args.addDeveloper),
           decoupleBlockingEdges: Boolean(args.decoupleBlockingEdges),
+          trimScope: Boolean(args.trimScope),
           projectKey: args.projectKey ? String(args.projectKey) : undefined,
         });
       } else if (

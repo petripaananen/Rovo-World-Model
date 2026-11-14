@@ -159,6 +159,8 @@ export interface WhatIfInterventionOptions {
   addDeveloper?: boolean;
   /** Simulate decoupling hard blocking edges from targetNodeId (reduces outgoing weight to 0.25) */
   decoupleBlockingEdges?: boolean;
+  /** Simulate trimming / deferring non-essential sub-tasks to next cycle (-35% duration, -45% sigma) */
+  trimScope?: boolean;
 }
 
 /**
@@ -381,6 +383,7 @@ export interface SimulationResult {
   interventionDeltaDays?: number;
   addDeveloper?: boolean;
   decoupleBlockingEdges?: boolean;
+  trimScope?: boolean;
   nodeStats: Record<string, NodeSimulationStats>;
   goalImpacts: GoalImpact[];
   topBottlenecks: BottleneckDiagnostic[];

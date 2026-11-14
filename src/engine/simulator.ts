@@ -200,6 +200,7 @@ export function runMonteCarloSimulation(
   const decoupleBlockingEdges = Boolean(
     intervenedKey && options.intervention?.decoupleBlockingEdges
   );
+  const trimScope = Boolean(intervenedKey && options.intervention?.trimScope);
 
   // Apply edge decoupling if requested
   const effectiveEdges = decoupleBlockingEdges
@@ -295,7 +296,7 @@ export function runMonteCarloSimulation(
       const z = sampleStandardNormal(rng);
       let sampledDuration = 0;
 
-      if (!isDone || (isTarget && (interventionDelta !== 0 || addDeveloper))) {
+      if (!isDone || (isTarget && (interventionDelta !== 0 || addDeveloper || trimScope))) {
         let base = isDone ? 0 : pert.meanDays;
         let sigma = isDone ? 0.25 : pert.sigmaDays;
 
@@ -312,6 +313,11 @@ export function runMonteCarloSimulation(
           const brooks = computeBrooksLawMetrics(node);
           base = brooks.effectiveSwarmDurationDays;
           sigma = Math.max(0.1, sigma * 0.6);
+        }
+
+        if (isTarget && trimScope) {
+          base = Math.max(0.5, Number((base * 0.65).toFixed(2)));
+          sigma = Math.max(0.1, sigma * 0.55);
         }
 
         // Right-skewed software engineering tail distribution
@@ -796,7 +802,8 @@ export function runMonteCarloSimulation(
         fastTrackingReworkBonus) *
         (interventionDelta > 0 ? lateChangeEscalationFactor * 0.78 : 1.0) *
         (addDeveloper ? 0.65 : 1.0) *
-        (decoupleBlockingEdges ? 0.5 : 1.0)
+        (decoupleBlockingEdges ? 0.5 : 1.0) *
+        (trimScope ? 0.7 : 1.0)
     ).toFixed(1)
   );
 
@@ -1071,6 +1078,7 @@ export function runMonteCarloSimulation(
     interventionDeltaDays: interventionDelta,
     addDeveloper,
     decoupleBlockingEdges,
+    trimScope,
     nodeStats,
     goalImpacts,
     topBottlenecks,
@@ -1091,7 +1099,14 @@ export function runIntervention(
   graph: CausalGraph,
   targetNodeId: string,
   deltaDays: number,
-  iterationsOrOptions: number | { iterations?: number; addDeveloper?: boolean; decoupleBlockingEdges?: boolean } = DEFAULT_ITERATIONS
+  iterationsOrOptions:
+    | number
+    | {
+        iterations?: number;
+        addDeveloper?: boolean;
+        decoupleBlockingEdges?: boolean;
+        trimScope?: boolean;
+      } = DEFAULT_ITERATIONS
 ): InterventionResult {
   const startClock = performance.now();
   const iterations =
@@ -1104,6 +1119,8 @@ export function runIntervention(
     typeof iterationsOrOptions === 'object'
       ? Boolean(iterationsOrOptions.decoupleBlockingEdges)
       : false;
+  const trimScope =
+    typeof iterationsOrOptions === 'object' ? Boolean(iterationsOrOptions.trimScope) : false;
 
   // Support both acceleration (-5d) and delay (+120d)
   const sanitizedDelta = Math.max(-5, Math.min(120, Number(deltaDays) || 0));
@@ -1130,6 +1147,7 @@ export function runIntervention(
       deltaDays: sanitizedDelta,
       addDeveloper,
       decoupleBlockingEdges,
+      trimScope,
     },
   });
 

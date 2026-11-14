@@ -48,7 +48,7 @@ export interface HeaderBarProps {
 function renderArchGaugeSvg(
   ratio: number,
   strokeColor: string,
-  trackColor = '#1E293B'
+  trackColor = '#334155'
 ): string {
   const clamped = Math.max(0.06, Math.min(1, ratio));
   const arcLen = 131.95;

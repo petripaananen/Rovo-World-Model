@@ -35,6 +35,7 @@ interface CockpitState {
   delayDays: number;
   addDeveloper: boolean;
   decoupleBlockingEdges: boolean;
+  trimScope: boolean;
   selectedEpochIndex: number;
   scrubberDayOffset: number;
   activeRightTab: 'cascade' | 'bottlenecks' | 'governance' | 'rovo-mcp';
@@ -157,6 +158,7 @@ const state: CockpitState = {
   delayDays: 0,
   addDeveloper: false,
   decoupleBlockingEdges: false,
+  trimScope: false,
   selectedEpochIndex: 2, // Today
   scrubberDayOffset: 0,
   activeRightTab: 'cascade',
@@ -168,7 +170,10 @@ const state: CockpitState = {
 function recomputeSimulation(): void {
   state.baselineSim = runMonteCarloSimulation(state.graph, { iterations: 500 });
   const hasIntervention =
-    state.delayDays !== 0 || state.addDeveloper || state.decoupleBlockingEdges;
+    state.delayDays !== 0 ||
+    state.addDeveloper ||
+    state.decoupleBlockingEdges ||
+    state.trimScope;
 
   if (hasIntervention && state.selectedNodeKey) {
     const intResult = runIntervention(
@@ -179,6 +184,7 @@ function recomputeSimulation(): void {
         iterations: 500,
         addDeveloper: state.addDeveloper,
         decoupleBlockingEdges: state.decoupleBlockingEdges,
+        trimScope: state.trimScope,
       }
     );
     state.intervention = intResult;
@@ -187,6 +193,17 @@ function recomputeSimulation(): void {
     state.intervention = null;
     state.activeSim = state.baselineSim;
   }
+}
+
+function triggerRemoteWhatIf(): void {
+  void invokeForgeResolver('runWhatIfSimulation', {
+    projectKey: state.graph.projectKey,
+    targetNodeId: state.selectedNodeKey,
+    deltaDays: state.delayDays,
+    addDeveloper: state.addDeveloper,
+    decoupleBlockingEdges: state.decoupleBlockingEdges,
+    trimScope: state.trimScope,
+  });
 }
 
 function scrollDagToSelectedNode(smooth = true): void {
@@ -219,7 +236,10 @@ export function renderCockpit(
   const prevDagScrollTop = dagViewport?.scrollTop ?? 0;
 
   const hasActiveIntervention =
-    state.delayDays !== 0 || state.addDeveloper || state.decoupleBlockingEdges;
+    state.delayDays !== 0 ||
+    state.addDeveloper ||
+    state.decoupleBlockingEdges ||
+    state.trimScope;
 
   const headerProps = {
     availableProjects: state.availableProjects,
@@ -252,6 +272,7 @@ export function renderCockpit(
     delayDays: state.delayDays,
     addDeveloper: state.addDeveloper,
     decoupleBlockingEdges: state.decoupleBlockingEdges,
+    trimScope: state.trimScope,
     scrubberDayOffset: state.scrubberDayOffset,
   });
 
@@ -264,6 +285,7 @@ export function renderCockpit(
     delayDays: state.delayDays,
     addDeveloper: state.addDeveloper,
     decoupleBlockingEdges: state.decoupleBlockingEdges,
+    trimScope: state.trimScope,
     activeRightTab: state.activeRightTab,
     copiedPromptNotice: state.copiedPromptNotice,
   });
@@ -368,6 +390,7 @@ async function loadJiraProjectGraph(projectKey?: string): Promise<void> {
     state.delayDays = 0;
     state.addDeveloper = false;
     state.decoupleBlockingEdges = false;
+    state.trimScope = false;
     recomputeSimulation();
     state.statusBanner = `Loaded live Jira project "${state.graph.projectName}" (${state.graph.projectKey}) with ${state.graph.nodes.length} ${
       state.graph.nodes.length === 1 ? 'issue' : 'issues'
@@ -381,6 +404,9 @@ async function loadJiraProjectGraph(projectKey?: string): Promise<void> {
     );
     state.selectedNodeKey = state.graph.nodes[0]?.key ?? `${projectKey}-1`;
     state.delayDays = 0;
+    state.addDeveloper = false;
+    state.decoupleBlockingEdges = false;
+    state.trimScope = false;
     recomputeSimulation();
     renderCockpit();
   }
@@ -389,16 +415,6 @@ async function loadJiraProjectGraph(projectKey?: string): Promise<void> {
 function attachCockpitEventListeners(
   skipMountForSlider?: 'delay-slider-input' | 'time-machine-range'
 ): void {
-  const triggerRemoteWhatIf = () => {
-    void invokeForgeResolver('runWhatIfSimulation', {
-      projectKey: state.graph.projectKey,
-      targetNodeId: state.selectedNodeKey,
-      deltaDays: state.delayDays,
-      addDeveloper: state.addDeveloper,
-      decoupleBlockingEdges: state.decoupleBlockingEdges,
-    });
-  };
-
   // 0. Project Switcher Dropdown (`#jira-project-select`)
   const projectSelect = document.getElementById(
     'jira-project-select'
@@ -437,6 +453,23 @@ function attachCockpitEventListeners(
     });
   }
 
+  const issueJumpSelect = document.getElementById(
+    'dag-issue-jump-select'
+  ) as HTMLSelectElement | null;
+  if (issueJumpSelect) {
+    issueJumpSelect.addEventListener('change', () => {
+      const nextKey = issueJumpSelect.value;
+      if (nextKey) {
+        state.selectedNodeKey = nextKey;
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+        scrollDagToSelectedNode(true);
+      }
+    });
+  }
+
   document.querySelectorAll<SVGGElement>('.dag-node-group').forEach((el) => {
     el.addEventListener('click', () => {
       const key = el.getAttribute('data-node-key');
@@ -472,8 +505,19 @@ function attachCockpitEventListeners(
           p85Date: string;
           rippleShift: number;
           criticalityPct: number;
+          blockedByKeys?: string[];
+          blocksKeys?: string[];
           adr: string;
         };
+
+        const blockedByStr =
+          info.blockedByKeys && info.blockedByKeys.length > 0
+            ? info.blockedByKeys.join(', ')
+            : 'None';
+        const blocksStr =
+          info.blocksKeys && info.blocksKeys.length > 0
+            ? info.blocksKeys.join(', ')
+            : 'None';
 
         const shiftLine =
           info.rippleShift > 0
@@ -511,6 +555,8 @@ function attachCockpitEventListeners(
             <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
             <div><span>Deadline Float:</span> ${floatBadge}</div>
             <div><span>Schedule Impact:</span> ${shiftLine}</div>
+            <div><span>Blocked by:</span> <strong>${escapeHtmlText(blockedByStr)}</strong></div>
+            <div><span>Blocks:</span> <strong>${escapeHtmlText(blocksStr)}</strong></div>
             <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
           </div>
           ${
@@ -589,6 +635,18 @@ function attachCockpitEventListeners(
       });
     }
 
+    // 5b. Scope Toggle: Trim / Defer Scope (MVP)
+    const btnTrimScope = document.getElementById('btn-toggle-trim-scope');
+    if (btnTrimScope) {
+      btnTrimScope.addEventListener('click', () => {
+        state.trimScope = !state.trimScope;
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+      });
+    }
+
     // 6. Copy Rovo Mitigation Prompt Button
     const btnCopyRovo = document.getElementById('btn-copy-rovo-prompt');
     if (btnCopyRovo) {
@@ -602,6 +660,7 @@ function attachCockpitEventListeners(
           delayDays: state.delayDays,
           addDeveloper: state.addDeveloper,
           decoupleBlockingEdges: state.decoupleBlockingEdges,
+          trimScope: state.trimScope,
           activeRightTab: state.activeRightTab,
           copiedPromptNotice: state.copiedPromptNotice,
         });
@@ -635,8 +694,9 @@ function attachCockpitEventListeners(
         const key = row.getAttribute('data-select-node');
         if (key) {
           state.selectedNodeKey = key;
-          if (state.delayDays === 0) state.delayDays = 5;
+          state.copiedPromptNotice = false;
           recomputeSimulation();
+          triggerRemoteWhatIf();
           renderCockpit();
           scrollDagToSelectedNode(true);
         }
@@ -740,6 +800,7 @@ function attachCockpitEventListeners(
       state.delayDays = 0;
       state.addDeveloper = false;
       state.decoupleBlockingEdges = false;
+      state.trimScope = false;
       state.scrubberDayOffset = 0;
       state.selectedEpochIndex = 2;
       recomputeSimulation();
@@ -750,6 +811,37 @@ function attachCockpitEventListeners(
     });
   }
 }
+
+// Global [ and ] keyboard stepping across issues in the Dependency Map (attached once)
+document.addEventListener('keydown', (event: KeyboardEvent) => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const activeEl = document.activeElement as HTMLElement | null;
+  const tag = activeEl?.tagName?.toUpperCase();
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || activeEl?.isContentEditable) {
+    return;
+  }
+  if (event.key !== '[' && event.key !== ']') return;
+
+  const order =
+    state.graph.topologicalOrder.length > 0
+      ? state.graph.topologicalOrder
+      : state.graph.nodes.map((n) => n.key);
+  if (order.length === 0) return;
+
+  const curIdx = order.indexOf(state.selectedNodeKey);
+  const step = event.key === '[' ? -1 : 1;
+  const nextIdx =
+    curIdx < 0 ? 0 : (curIdx + step + order.length) % order.length;
+  const nextKey = order[nextIdx];
+  if (!nextKey || nextKey === state.selectedNodeKey) return;
+
+  state.selectedNodeKey = nextKey;
+  state.copiedPromptNotice = false;
+  recomputeSimulation();
+  triggerRemoteWhatIf();
+  renderCockpit();
+  scrollDagToSelectedNode(true);
+});
 
 // Initialize on DOM load + sync with Forge Backend Resolver (`getGraphData`)
 document.addEventListener('DOMContentLoaded', async () => {

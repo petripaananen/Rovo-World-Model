@@ -75,6 +75,41 @@ export function evaluateNodeTemporalState(
   return 'Scheduled';
 }
 
+export function computeFinishOddsOnDay(
+  activeSim: SimulationResult,
+  dayOffset: number
+): number {
+  if (dayOffset <= 0) return 0;
+
+  const p50 = Math.max(0.5, activeSim.p50Days);
+  const p85 = Math.max(p50 + 0.1, activeSim.p85Days);
+  const p95 = Math.max(p85 + 0.1, activeSim.p95Days);
+  const cvar = Math.max(p95 + 0.5, activeSim.cvar95Days);
+
+  const firstBucketDay = activeSim.distributionBuckets[0]?.dayOffset ?? 0;
+  const startAnchor =
+    firstBucketDay > 1 ? Math.min(p50 * 0.85, firstBucketDay - 1) : 0;
+
+  let odds: number;
+  if (dayOffset <= startAnchor) {
+    odds = Math.max(1, (dayOffset / Math.max(1, startAnchor)) * 2);
+  } else if (dayOffset <= p50) {
+    const startOdds = startAnchor > 0 ? 2 : 0;
+    const span = Math.max(0.1, p50 - startAnchor);
+    odds = startOdds + ((dayOffset - startAnchor) / span) * (50 - startOdds);
+  } else if (dayOffset <= p85) {
+    odds = 50 + ((dayOffset - p50) / (p85 - p50)) * 35;
+  } else if (dayOffset <= p95) {
+    odds = 85 + ((dayOffset - p85) / (p95 - p85)) * 10;
+  } else if (dayOffset <= cvar) {
+    odds = 95 + ((dayOffset - p95) / (cvar - p95)) * 3;
+  } else {
+    odds = 99;
+  }
+
+  return Math.max(1, Math.min(99, Math.round(odds)));
+}
+
 export interface TimelineScrubberProps {
   graph: CausalGraph;
   activeSim: SimulationResult;
@@ -130,6 +165,23 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
         ? `+${scrubberDayOffset} Days`
         : `${scrubberDayOffset} Days`;
 
+  const viewedFinishOdds =
+    scrubberDayOffset > 0 ? computeFinishOddsOnDay(activeSim, scrubberDayOffset) : null;
+  const viewedOddsClass =
+    viewedFinishOdds === null
+      ? ''
+      : viewedFinishOdds >= 80
+        ? 'jira-lozenge-done'
+        : viewedFinishOdds >= 50
+          ? 'jira-lozenge-inprogress'
+          : 'jira-lozenge-danger';
+  const viewedOddsHtml =
+    viewedFinishOdds !== null
+      ? `<span class="jira-lozenge ${viewedOddsClass}" title="${escapeHtmlText(
+          `Target-Date Confidence: ${viewedFinishOdds}% of the 500 simulated project runs finish all issues on or before ${formatFriendlyDate(scrubbedDate, true)}.`
+        )}">${viewedFinishOdds}% FINISH ODDS</span>`
+      : '';
+
   const maxBucketProb = Math.max(
     0.05,
     ...activeSim.distributionBuckets.map((b) => b.probability)
@@ -146,10 +198,10 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
 
   const buckets = activeSim.distributionBuckets;
   const chartW = 380;
-  const chartH = 112;
-  const topPad = 18;
-  const bottomPad = 20;
-  const barAreaH = chartH - topPad - bottomPad; // 74px bar height area
+  const chartH = 128;
+  const topPad = 20;
+  const bottomPad = 22;
+  const barAreaH = chartH - topPad - bottomPad; // 86px bar height area
   const colW = Math.floor((chartW - 16) / Math.max(1, buckets.length));
 
   const svgConeBars = buckets
@@ -181,7 +233,7 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
 
       const showTopPct = pctVal >= 8 || isNearP85 || isNearP50;
       const topPctText = showTopPct
-        ? `<text x="${x + w / 2}" y="${Math.max(11, y - 4)}" text-anchor="middle" fill="${isNearP85 ? '#0C66E4' : '#334155'}" font-size="8.5" font-weight="${isNearP85 ? '800' : '600'}">${pctVal}%</text>`
+        ? `<text x="${x + w / 2}" y="${Math.max(12, y - 5)}" text-anchor="middle" fill="${isNearP85 ? '#0C66E4' : '#334155'}" font-size="10" font-weight="${isNearP85 ? '800' : '600'}">${pctVal}%</text>`
         : '';
 
       const showDateLabel =
@@ -190,7 +242,7 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
         idx === Math.floor(arr.length * 0.66) ||
         idx === arr.length - 1;
       const labelText = showDateLabel
-        ? `<text x="${x + w / 2}" y="${chartH - 5}" text-anchor="middle" fill="#475569" font-size="9" font-weight="600">${escapeHtmlText(formatFriendlyDate(b.date))}</text>`
+        ? `<text x="${x + w / 2}" y="${chartH - 5}" text-anchor="middle" fill="#475569" font-size="10" font-weight="600">${escapeHtmlText(formatFriendlyDate(b.date))}</text>`
         : '';
 
       const hoverExplanation = `Finish Window: ${formatFriendlyDate(b.date, true)} | Window Likelihood: ${pctVal}% of the 500 simulated runs finished in this date window | Cumulative Confidence: ${cumPctVal}% chance of finishing on or before ${formatFriendlyDate(b.date)}`;
@@ -229,6 +281,7 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
             <span class="tm-date-pill">
               Viewing: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
               <span class="jira-lozenge jira-lozenge-todo">${relativeOffsetLabel}</span>
+              ${viewedOddsHtml}
             </span>
             <div class="tm-status-summary">
               <span class="jira-lozenge jira-lozenge-done">${dynamicDone} DONE</span>

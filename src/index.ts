@@ -79,6 +79,7 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
     deltaDays: number;
     addDeveloper?: boolean;
     decoupleBlockingEdges?: boolean;
+    trimScope?: boolean;
     forceDemo?: boolean;
   };
   const projectKey = extractProjectKey(req, payload.projectKey);
@@ -93,8 +94,9 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
   const deltaDays = Number(payload.deltaDays ?? 0);
   const addDeveloper = Boolean(payload.addDeveloper);
   const decoupleBlockingEdges = Boolean(payload.decoupleBlockingEdges);
+  const trimScope = Boolean(payload.trimScope);
 
-  if (deltaDays === 0 && !addDeveloper && !decoupleBlockingEdges) {
+  if (deltaDays === 0 && !addDeveloper && !decoupleBlockingEdges && !trimScope) {
     const baseline = runMonteCarloSimulation(graph, { iterations: 500 });
     return {
       graph,
@@ -107,6 +109,7 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
     iterations: 500,
     addDeveloper,
     decoupleBlockingEdges,
+    trimScope,
   });
 
   return {
@@ -191,6 +194,7 @@ resolver.define('invokeRovoOrMcpAction', async (req) => {
     delayDays?: number;
     addDeveloper?: boolean;
     decoupleBlockingEdges?: boolean;
+    trimScope?: boolean;
     projectKey?: string;
     populateJiraIssues?: boolean;
   };
@@ -201,6 +205,7 @@ resolver.define('invokeRovoOrMcpAction', async (req) => {
       delayDays: payload.delayDays,
       addDeveloper: payload.addDeveloper,
       decoupleBlockingEdges: payload.decoupleBlockingEdges,
+      trimScope: payload.trimScope,
       projectKey: payload.projectKey,
     });
   }

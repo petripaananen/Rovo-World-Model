@@ -17,7 +17,7 @@
  *      terminal edge of the swimlanes (`Sprint Delivery`, `Release Milestone`).
  */
 
-import { CausalGraph, SimulationResult } from '../../../../src/engine/types';
+import { CausalGraph, CausalNode, SimulationResult } from '../../../../src/engine/types';
 import { evaluateNodeTemporalState } from './TimelineScrubber';
 import {
   escapeHtmlText,
@@ -33,7 +33,32 @@ export interface DagCanvasProps {
   delayDays: number;
   addDeveloper: boolean;
   decoupleBlockingEdges: boolean;
+  trimScope: boolean;
   scrubberDayOffset: number;
+}
+
+type NodeShapeKind = 'gate' | 'blocker' | 'task';
+
+function resolveNodeShapeKind(
+  node: CausalNode,
+  topBlockerKey: string,
+  topBlockerSet: Set<string>,
+  isIntervenedOrigin: boolean,
+  delayDays: number
+): NodeShapeKind {
+  const isDiamondGate =
+    Boolean(node.isStageGate) ||
+    Boolean(node.confluenceDecision) ||
+    node.issueType?.toLowerCase() === 'milestone' ||
+    node.issueType?.toLowerCase() === 'gate';
+  if (isDiamondGate) return 'gate';
+
+  const isHexagonBlocker =
+    node.key === topBlockerKey ||
+    topBlockerSet.has(node.key) ||
+    node.status.toLowerCase() === 'blocked' ||
+    (isIntervenedOrigin && delayDays > 0);
+  return isHexagonBlocker ? 'blocker' : 'task';
 }
 
 const AVATAR_PALETTE = [
@@ -112,22 +137,22 @@ export function computeNodeCoordinates(
   const laneCount = activeTeams.length;
   const laneHeight =
     laneCount === 1
-      ? 368
+      ? 456
       : laneCount === 2
-        ? 186
-        : 125;
-  const svgHeight = laneCount <= 3 ? 384 : laneCount * laneHeight + 12;
+        ? 228
+        : 152;
+  const svgHeight = laneCount <= 3 ? 472 : laneCount * laneHeight + 16;
   const nodeW = 104;
   const nodeH = 104;
 
-  const xStart = 224;
-  const xGap = 156;
+  const xStart = 252;
+  const xGap = 188;
   let maxCols = 1;
 
   if (laneCount === 1) {
     const keys = laneGroups.get(0) ?? [];
     if (keys.length >= 4) {
-      const subRowY = [68, 192, 316];
+      const subRowY = [82, 234, 386];
       maxCols = Math.ceil(keys.length / 3);
       keys.forEach((key, idx) => {
         const colIdx = Math.floor(idx / 3);
@@ -144,7 +169,7 @@ export function computeNodeCoordinates(
       keys.forEach((key, colIdx) => {
         coords[key] = {
           x: xStart + colIdx * xGap,
-          y: 192,
+          y: 234,
           laneIndex: 0,
           colIndex: colIdx,
         };
@@ -167,8 +192,8 @@ export function computeNodeCoordinates(
   }
 
   const lastNodeX = xStart + Math.max(0, maxCols - 1) * xGap;
-  const goalColX = lastNodeX + 168;
-  const svgWidth = Math.max(820, goalColX + 104);
+  const goalColX = lastNodeX + 196;
+  const svgWidth = Math.max(880, goalColX + 116);
 
   return {
     coords,
@@ -190,6 +215,7 @@ export function renderDagCanvas(props: DagCanvasProps): string {
     delayDays,
     addDeveloper,
     decoupleBlockingEdges,
+    trimScope,
     scrubberDayOffset,
   } = props;
 
@@ -209,26 +235,38 @@ export function renderDagCanvas(props: DagCanvasProps): string {
     activeSim.topBottlenecks.slice(0, 3).map((b) => b.key)
   );
   const hasActiveIntervention =
-    delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
+    delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
   const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
 
-  // Clean Neutral Swimlane Themes
+  const blockedByMap = new Map<string, string[]>();
+  const blocksMap = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    const incoming = blockedByMap.get(edge.to) ?? [];
+    incoming.push(edge.from);
+    blockedByMap.set(edge.to, incoming);
+
+    const outgoing = blocksMap.get(edge.from) ?? [];
+    outgoing.push(edge.to);
+    blocksMap.set(edge.from, outgoing);
+  }
+
+  // Clean Neutral Swimlane Themes with Crisp Borders
   const laneThemes = [
     {
       bandFill: '#FFFFFF',
-      bandStroke: '#E2E8F0',
+      bandStroke: '#94A3B8',
       tabFill: '#F1F5F9',
       textFill: '#334155',
     },
     {
       bandFill: '#F8FAFC',
-      bandStroke: '#E2E8F0',
+      bandStroke: '#94A3B8',
       tabFill: '#E2E8F0',
       textFill: '#334155',
     },
     {
       bandFill: '#FFFFFF',
-      bandStroke: '#E2E8F0',
+      bandStroke: '#94A3B8',
       tabFill: '#F1F5F9',
       textFill: '#334155',
     },
@@ -278,42 +316,42 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           <g>
             <title>${escapeHtmlText(laneTooltip)}</title>
             <rect x="10" y="${yTop}" width="${svgWidth - 20}" height="${bandH}" rx="12"
-              fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1" />
-            <rect x="10" y="${yTop}" width="148" height="${bandH}" rx="10"
-              fill="${theme.tabFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+              fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1.5" />
+            <rect x="10" y="${yTop}" width="168" height="${bandH}" rx="10"
+              fill="${theme.tabFill}" stroke="#CBD5E1" stroke-width="1.5" />
             <rect x="10" y="${yTop + 10}" width="4" height="${bandH - 20}" rx="2"
               fill="#64748B" />
 
-            <!-- Subtle horizontal guide lines for the 3-row issue grid inside the unified lane -->
-            <line x1="158" y1="130" x2="${svgWidth - 14}" y2="130" stroke="#F1F5F9" stroke-width="1" stroke-dasharray="4 4" />
-            <line x1="158" y1="254" x2="${svgWidth - 14}" y2="254" stroke="#F1F5F9" stroke-width="1" stroke-dasharray="4 4" />
+            <!-- Crisp horizontal guide lines for the 3-row issue grid inside the unified lane -->
+            <line x1="178" y1="158" x2="${svgWidth - 14}" y2="158" stroke="#CBD5E1" stroke-width="1.25" stroke-dasharray="6 6" />
+            <line x1="178" y1="310" x2="${svgWidth - 14}" y2="310" stroke="#CBD5E1" stroke-width="1.25" stroke-dasharray="6 6" />
 
-            <circle cx="24" cy="${yMid - 54}" r="3.5" fill="#64748B" />
-            <text x="32" y="${yMid - 51}" fill="#64748B" font-size="8.5" font-weight="800" letter-spacing="0.05em">
+            <circle cx="24" cy="${yMid - 58}" r="3.5" fill="#64748B" />
+            <text x="33" y="${yMid - 55}" fill="#64748B" font-size="9.5" font-weight="800" letter-spacing="0.05em">
               JIRA TEAM STATUS
             </text>
 
-            <text x="20" y="${yMid - 31}" fill="#0F172A" font-size="11.5" font-weight="800">
+            <text x="20" y="${yMid - 32}" fill="#0F172A" font-size="13" font-weight="800">
               No Team Assigned
             </text>
-            <text x="20" y="${yMid - 16}" fill="#475569" font-size="9.5" font-weight="600">
+            <text x="20" y="${yMid - 14}" fill="#475569" font-size="10.5" font-weight="600">
               0 teams in ${escapeHtmlText(graph.projectName.length > 14 ? `${graph.projectName.slice(0, 13)}…` : graph.projectName)}
             </text>
 
-            <text x="20" y="${yMid + 4}" fill="#334155" font-size="9.5" font-weight="600">
+            <text x="20" y="${yMid + 7}" fill="#334155" font-size="10.5" font-weight="600">
               Lead: ${escapeHtmlText(leadDisplay)}
             </text>
 
-            <rect x="20" y="${yMid + 14}" width="120" height="19" rx="9.5"
-              fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" />
-            <text x="80" y="${yMid + 26.5}" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="700">
+            <rect x="20" y="${yMid + 18}" width="134" height="22" rx="11"
+              fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.25" />
+            <text x="87" y="${yMid + 32.5}" text-anchor="middle" fill="#0F172A" font-size="10" font-weight="700">
               ${teamNodes.length} Issues · ${doneCount}/${teamNodes.length} Done
             </text>
 
-            <text x="20" y="${yMid + 52}" fill="#64748B" font-size="8.5" font-weight="600">
+            <text x="20" y="${yMid + 58}" fill="#64748B" font-size="9.5" font-weight="600">
               Set Jira Team field or
             </text>
-            <text x="20" y="${yMid + 64}" fill="#64748B" font-size="8.5" font-weight="600">
+            <text x="20" y="${yMid + 72}" fill="#64748B" font-size="9.5" font-weight="600">
               team: label to split rows
             </text>
           </g>
@@ -324,33 +362,33 @@ export function renderDagCanvas(props: DagCanvasProps): string {
         <g>
           <title>${escapeHtmlText(laneTooltip)}</title>
           <rect x="10" y="${yTop}" width="${svgWidth - 20}" height="${bandH}" rx="12"
-            fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1" />
-          <rect x="10" y="${yTop}" width="146" height="${bandH}" rx="10"
-            fill="${theme.tabFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+            fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1.5" />
+          <rect x="10" y="${yTop}" width="168" height="${bandH}" rx="10"
+            fill="${theme.tabFill}" stroke="#CBD5E1" stroke-width="1.5" />
           <rect x="10" y="${yTop + 8}" width="4" height="${bandH - 16}" rx="2"
             fill="${accentColor}" />
 
-          <circle cx="24" cy="${yMid - 34}" r="3.5" fill="${accentColor}" />
-          <text x="32" y="${yMid - 31}" fill="#64748B" font-size="8.5" font-weight="800" letter-spacing="0.05em">
+          <circle cx="24" cy="${yMid - 36}" r="3.5" fill="${accentColor}" />
+          <text x="33" y="${yMid - 33}" fill="#64748B" font-size="9.5" font-weight="800" letter-spacing="0.05em">
             ${isUnassignedTeam ? 'UNASSIGNED TEAM' : 'TEAM SWIMLANE'}
           </text>
 
-          <text x="20" y="${nameLine2 ? yMid - 15 : yMid - 9}" fill="#0F172A" font-size="11" font-weight="800">
+          <text x="20" y="${nameLine2 ? yMid - 15 : yMid - 8}" fill="#0F172A" font-size="12.5" font-weight="800">
             ${escapeHtmlText(nameLine1)}
           </text>
           ${
             nameLine2
-              ? `<text x="20" y="${yMid - 2}" fill="#0F172A" font-size="11" font-weight="800">${escapeHtmlText(nameLine2)}</text>`
+              ? `<text x="20" y="${yMid}" fill="#0F172A" font-size="12.5" font-weight="800">${escapeHtmlText(nameLine2)}</text>`
               : ''
           }
 
-          <text x="20" y="${yMid + 15}" fill="#475569" font-size="9.5" font-weight="600">
+          <text x="20" y="${yMid + 18}" fill="#475569" font-size="10.5" font-weight="600">
             Lead: ${escapeHtmlText(leadDisplay)}
           </text>
 
-          <rect x="20" y="${yMid + 23}" width="118" height="17" rx="8.5"
-            fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" />
-          <text x="79" y="${yMid + 34.5}" text-anchor="middle" fill="#0F172A" font-size="8.8" font-weight="700">
+          <rect x="20" y="${yMid + 26}" width="134" height="20" rx="10"
+            fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.25" />
+          <text x="87" y="${yMid + 39.5}" text-anchor="middle" fill="#0F172A" font-size="10" font-weight="700">
             ${teamNodes.length} Issues · ${doneCount}/${teamNodes.length} Done
           </text>
         </g>
@@ -367,7 +405,7 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       if (!fromPos || !toPos) return '';
 
       const sameCol = fromPos.colIndex === toPos.colIndex;
-      const bypassMiddleRow = sameCol && Math.abs(toPos.y - fromPos.y) > 150;
+      const bypassMiddleRow = sameCol && Math.abs(toPos.y - fromPos.y) > 200;
       const x1 = bypassMiddleRow
         ? fromPos.x + 44
         : sameCol
@@ -464,13 +502,13 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       const goalY =
         activeTeams.length === 1
           ? goalsToRender.length === 1
-            ? 192
+            ? 234
             : gIdx === 0
-              ? 124
-              : 260
+              ? 154
+              : 314
           : yTopBand + Math.round((laneHeight - 8) / 2);
-      const pillW = 148;
-      const pillH = 44;
+      const pillW = 160;
+      const pillH = 48;
       const pillLeft = goalColX - pillW / 2;
       const pillTop = goalY - pillH / 2;
 
@@ -520,11 +558,11 @@ export function renderDagCanvas(props: DagCanvasProps): string {
         <g>
           ${goalEdge}
           <g transform="translate(${pillLeft}, ${pillTop})">
-            <rect width="${pillW}" height="${pillH}" rx="22" fill="${pillFill}" stroke="${pillStroke}" stroke-width="2" />
-            <text x="${pillW / 2}" y="19" text-anchor="middle" fill="${pillTextFill}" font-size="11" font-weight="800">
+            <rect width="${pillW}" height="${pillH}" rx="24" fill="${pillFill}" stroke="${pillStroke}" stroke-width="2" />
+            <text x="${pillW / 2}" y="20" text-anchor="middle" fill="${pillTextFill}" font-size="11.5" font-weight="800">
               ${escapeHtmlText(shortGoalName)}
             </text>
-            <text x="${pillW / 2}" y="33" text-anchor="middle" fill="${pillSubFill}" font-size="9" font-weight="700">
+            <text x="${pillW / 2}" y="35" text-anchor="middle" fill="${pillSubFill}" font-size="9.5" font-weight="700">
               Target: ${formatFriendlyDate(goal.p85CompletionDate)} · ${Math.round(goal.probabilityOfOnTime * 100)}% on time
             </text>
           </g>
@@ -584,24 +622,24 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       const goalObj = graph.goals.find((g) => g.id === node.goalId);
 
       // Determine which of the 4 shapes this node takes:
-      const isDiamondGate =
-        Boolean(node.isStageGate) ||
-        Boolean(node.confluenceDecision) ||
-        node.issueType?.toLowerCase() === 'milestone' ||
-        node.issueType?.toLowerCase() === 'gate';
-
-      const isHexagonBlocker =
-        !isDiamondGate &&
-        (node.key === topBlockerKey ||
-          topBlockerSet.has(node.key) ||
-          node.status.toLowerCase() === 'blocked' ||
-          (isIntervenedOrigin && delayDays > 0));
+      const shapeKind = resolveNodeShapeKind(
+        node,
+        topBlockerKey,
+        topBlockerSet,
+        isIntervenedOrigin,
+        delayDays
+      );
+      const isDiamondGate = shapeKind === 'gate';
+      const isHexagonBlocker = shapeKind === 'blocker';
 
       const shapeType = isDiamondGate
         ? 'Diamond Gate'
         : isHexagonBlocker
           ? 'Hexagon Blocker'
           : 'Circle Task/Epic';
+
+      const blockedByKeys = blockedByMap.get(node.key) ?? [];
+      const blocksKeys = blocksMap.get(node.key) ?? [];
 
       const hoverJson = JSON.stringify({
         key: node.key,
@@ -621,6 +659,8 @@ export function renderDagCanvas(props: DagCanvasProps): string {
         p85Date: stat ? formatFriendlyDate(stat.p85Date, true) : 'N/A',
         rippleShift: rippleShift,
         criticalityPct: Math.round((stat?.criticalityIndex ?? 0) * 100),
+        blockedByKeys,
+        blocksKeys,
         adr: node.confluenceDecision
           ? `${node.confluenceDecision.title} (${node.confluenceDecision.spaceKey})`
           : '',
@@ -636,7 +676,9 @@ export function renderDagCanvas(props: DagCanvasProps): string {
               ? `${delayDays}d Faster`
               : addDeveloper
                 ? '+1 Dev'
-                : 'Decoupled';
+                : decoupleBlockingEdges
+                  ? 'Decoupled'
+                  : 'Scope MVP';
         shiftBadge = `
           <g transform="translate(0, -56)">
             <rect x="-34" y="0" width="68" height="16" rx="8" fill="#0C66E4" />
@@ -686,15 +728,15 @@ export function renderDagCanvas(props: DagCanvasProps): string {
             <polygon points="0,-34 7,-27 0,-20 -7,-27" fill="#EDE9FE" />
             <polygon points="0,-30 3.5,-27 0,-24 -3.5,-27" fill="#6D28D9" />
             <!-- Gate label -->
-            <text x="0" y="-7" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
+            <text x="0" y="-8" text-anchor="middle" fill="#FFFFFF" font-size="10.5" font-weight="800">
               Gate: ${escapeHtmlText(node.key)}
             </text>
-            <text x="0" y="4" text-anchor="middle" fill="#EDE9FE" font-size="8.2" font-weight="600">
+            <text x="0" y="5" text-anchor="middle" fill="#EDE9FE" font-size="9" font-weight="600">
               ${escapeHtmlText(shortGateTitle)}
             </text>
             <!-- Responsible Lead Avatar Circle -->
             <circle cx="0" cy="21" r="11.5" fill="${avatarBg}" stroke="#FFFFFF" stroke-width="1.8" />
-            <text x="0" y="25" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+            <text x="0" y="25" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
               ${escapeHtmlText(avatarInitials)}
             </text>
             <circle cx="8" cy="29" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
@@ -735,22 +777,22 @@ export function renderDagCanvas(props: DagCanvasProps): string {
 
             <!-- Warning Triangle Icon -->
             <polygon points="0,-35 7,-23 -7,-23" fill="#FEF08A" />
-            <text x="0" y="-24.5" text-anchor="middle" fill="#991B1B" font-size="8.5" font-weight="900">!</text>
+            <text x="0" y="-24.5" text-anchor="middle" fill="#991B1B" font-size="9" font-weight="900">!</text>
 
             <!-- Issue Key & Short Summary -->
-            <text x="0" y="-11" text-anchor="middle" fill="#FFFFFF" font-size="11" font-weight="800">
+            <text x="0" y="-10" text-anchor="middle" fill="#FFFFFF" font-size="11.5" font-weight="800">
               ${escapeHtmlText(node.key)}
             </text>
-            <text x="0" y="0" text-anchor="middle" fill="#FFE4E6" font-size="8.5" font-weight="600">
+            <text x="0" y="2" text-anchor="middle" fill="#FFE4E6" font-size="9.2" font-weight="600">
               ${escapeHtmlText(shortHexTitle)}
             </text>
 
             <!-- Responsible Assignee Avatar Circle -->
-            <circle cx="0" cy="18" r="12" fill="#FECDD3" stroke="#FFFFFF" stroke-width="1.8" />
-            <text x="0" y="22" text-anchor="middle" fill="#881337" font-size="9.5" font-weight="800">
+            <circle cx="0" cy="19" r="12" fill="#FECDD3" stroke="#FFFFFF" stroke-width="1.8" />
+            <text x="0" y="23" text-anchor="middle" fill="#881337" font-size="10" font-weight="800">
               ${escapeHtmlText(avatarInitials)}
             </text>
-            <circle cx="9" cy="26" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
+            <circle cx="9" cy="27" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
             ${shiftBadge}
           </g>
         `;
@@ -800,25 +842,25 @@ export function renderDagCanvas(props: DagCanvasProps): string {
             transform="rotate(-90)" />
 
           <!-- Sub-task Fraction & Completion % -->
-          <text x="0" y="-18" text-anchor="middle" fill="#0F172A" font-size="12" font-weight="800">
+          <text x="0" y="-19" text-anchor="middle" fill="#0F172A" font-size="12.5" font-weight="800">
             ${doneSub}/${totalSub}
           </text>
-          <text x="0" y="-7" text-anchor="middle" fill="#334155" font-size="8.5" font-weight="700">
+          <text x="0" y="-7" text-anchor="middle" fill="#334155" font-size="9.5" font-weight="700">
             Sub-tasks · ${progPct}%
           </text>
 
           <!-- Responsible Assignee Avatar Circle -->
           <circle cx="0" cy="10" r="12" fill="${avatarBg}" stroke="#FFFFFF" stroke-width="1.8" />
-          <text x="0" y="14" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
+          <text x="0" y="14" text-anchor="middle" fill="#FFFFFF" font-size="10" font-weight="800">
             ${escapeHtmlText(avatarInitials)}
           </text>
           <circle cx="9" cy="18" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
 
           <!-- Bottom Jira Issue Key Pill -->
-          <g transform="translate(-31, 25)">
-            <rect width="62" height="16" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2" />
-            <polygon points="10,4.5 14,8 10,11.5 6,8" fill="#0284C7" />
-            <text x="35" y="11.2" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="800">
+          <g transform="translate(-34, 24)">
+            <rect width="68" height="17" rx="8.5" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1.3" />
+            <polygon points="10,5 14,8.5 10,12 6,8.5" fill="#0284C7" />
+            <text x="38" y="12" text-anchor="middle" fill="#0F172A" font-size="10" font-weight="800">
               ${escapeHtmlText(node.key)}
             </text>
           </g>
@@ -826,6 +868,38 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           ${shiftBadge}
         </g>
       `;
+    })
+    .join('');
+
+  const nodeByKey = new Map(graph.nodes.map((n) => [n.key, n]));
+  const orderedJumpNodes: CausalNode[] = [];
+  const seenKeys = new Set<string>();
+  for (const k of graph.topologicalOrder) {
+    const found = nodeByKey.get(k);
+    if (found && !seenKeys.has(found.key)) {
+      orderedJumpNodes.push(found);
+      seenKeys.add(found.key);
+    }
+  }
+  for (const n of graph.nodes) {
+    if (!seenKeys.has(n.key)) {
+      orderedJumpNodes.push(n);
+      seenKeys.add(n.key);
+    }
+  }
+
+  const jumpOptionsHtml = orderedJumpNodes
+    .map((n) => {
+      const sKind = resolveNodeShapeKind(
+        n,
+        topBlockerKey,
+        topBlockerSet,
+        intervenedKey === n.key,
+        delayDays
+      );
+      const shapeGlyph = sKind === 'gate' ? '◆' : sKind === 'blocker' ? '⬢' : '●';
+      const shortSum = n.summary.length > 22 ? `${n.summary.slice(0, 21)}…` : n.summary;
+      return `<option value="${escapeHtmlText(n.key)}" ${n.key === selectedNodeKey ? 'selected' : ''}>${shapeGlyph} ${escapeHtmlText(n.key)} · ${escapeHtmlText(shortSum)}</option>`;
     })
     .join('');
 
@@ -849,7 +923,8 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           </div>
           <div class="dag-pan-buttons">
             <button class="dag-pan-btn" id="btn-dag-pan-left" title="Scroll dependency map left">◀</button>
-            <button class="dag-pan-btn" id="btn-dag-center-selected" title="Scroll horizontally to center selected issue (${escapeHtmlText(selectedNodeKey)})">🎯 ${escapeHtmlText(selectedNodeKey)}</button>
+            <select id="dag-issue-jump-select" class="dag-issue-jump-select" title="Jump directly to any issue in the Dependency Map (or press [ and ] keys)" aria-label="Jump to Jira issue">${jumpOptionsHtml}</select>
+            <button class="dag-pan-btn" id="btn-dag-center-selected" title="Center map on selected issue (${escapeHtmlText(selectedNodeKey)})">🎯</button>
             <button class="dag-pan-btn" id="btn-dag-pan-right" title="Scroll dependency map right">▶</button>
           </div>
         </div>

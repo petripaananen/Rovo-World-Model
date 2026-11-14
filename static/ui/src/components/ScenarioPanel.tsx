@@ -31,13 +31,21 @@ export interface ScenarioPanelProps {
   delayDays: number;
   addDeveloper: boolean;
   decoupleBlockingEdges: boolean;
+  trimScope: boolean;
   activeRightTab: 'cascade' | 'bottlenecks' | 'governance' | 'rovo-mcp';
   copiedPromptNotice: boolean;
 }
 
 export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
-  const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, activeSim } =
-    props;
+  const {
+    graph,
+    selectedNodeKey,
+    delayDays,
+    addDeveloper,
+    decoupleBlockingEdges,
+    trimScope,
+    activeSim,
+  } = props;
   const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
   const goal = graph.goals.find((g) => g.id === node.goalId) ?? graph.goals[0];
   const shiftStr =
@@ -47,6 +55,7 @@ export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   const modifiers: string[] = [];
   if (addDeveloper) modifiers.push('adding +1 developer');
   if (decoupleBlockingEdges) modifiers.push('decoupling outgoing blocking dependencies');
+  if (trimScope) modifiers.push('trimming non-essential scope to ship an MVP');
   const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
 
   return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate what happens to our "${goal?.name ?? 'Sprint Delivery'}" goal if issue ${node.key} ("${node.summary}") is ${shiftStr}${modSuffix}. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
@@ -62,10 +71,11 @@ function renderTabBody(props: ScenarioPanelProps): string {
     delayDays,
     addDeveloper,
     decoupleBlockingEdges,
+    trimScope,
   } = props;
 
   const hasActiveIntervention =
-    delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
+    delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
 
   if (activeRightTab === 'cascade') {
     const deltas =
@@ -126,7 +136,7 @@ function renderTabBody(props: ScenarioPanelProps): string {
           </div>
           <div class="bottleneck-row-meta">
             <span>Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong></span>
-            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · ROI: <strong class="text-success">${(b.mitigationROI ?? 1.0).toFixed(2)}d/$</strong></span>
+            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · <span title="Schedule Leverage: ~${(b.mitigationROI ?? 1.0).toFixed(1)} days of release risk saved per 1 day of mitigation effort">Impact: <strong class="text-success">~${(b.mitigationROI ?? 1.0).toFixed(1)}d saved/d</strong></span></span>
           </div>
           <div class="bottleneck-row-rec">
             💡 ${escapeHtmlText(b.recommendation)}
@@ -379,6 +389,7 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
     delayDays,
     addDeveloper,
     decoupleBlockingEdges,
+    trimScope,
     activeRightTab,
     copiedPromptNotice,
   } = props;
@@ -388,6 +399,12 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
   const selectedStat = activeSim.nodeStats[selectedNode.key];
   const linkedGoal =
     graph.goals.find((g) => g.id === selectedNode.goalId) ?? graph.goals[0];
+  const blockedByKeys = graph.edges
+    .filter((e) => e.to === selectedNode.key)
+    .map((e) => e.from);
+  const blocksKeys = graph.edges
+    .filter((e) => e.from === selectedNode.key)
+    .map((e) => e.to);
 
   const maxTimelineScale = Math.max(
     45,
@@ -409,7 +426,7 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
       ? `<span class="jira-lozenge jira-lozenge-danger">+${delayDays}D DELAY</span>`
       : delayDays < 0
         ? `<span class="jira-lozenge jira-lozenge-done">${delayDays}D FASTER</span>`
-        : addDeveloper || decoupleBlockingEdges
+        : addDeveloper || decoupleBlockingEdges || trimScope
           ? `<span class="jira-lozenge jira-lozenge-done">MITIGATED</span>`
           : `<span class="jira-lozenge jira-lozenge-todo">BASELINE</span>`;
 
@@ -544,6 +561,16 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                 <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}%</strong>
               </div>
             </div>
+            <div class="node-lineage-row">
+              <div class="lineage-cell" title="${escapeHtmlText(blockedByKeys.length > 0 ? `Upstream blockers: ${blockedByKeys.join(', ')}` : 'Entry task with no upstream blockers')}">
+                <span>Blocked by:</span>
+                <strong>${escapeHtmlText(blockedByKeys.length > 0 ? blockedByKeys.join(', ') : 'None (Entry Task)')}</strong>
+              </div>
+              <div class="lineage-cell" title="${escapeHtmlText(blocksKeys.length > 0 ? `Downstream dependents: ${blocksKeys.join(', ')}` : 'Terminal task with no downstream dependents')}">
+                <span>Blocks:</span>
+                <strong>${escapeHtmlText(blocksKeys.length > 0 ? blocksKeys.join(', ') : 'None (Terminal Task)')}</strong>
+              </div>
+            </div>
           </div>
 
           <!-- Step 1: Schedule Change Slider & Mitigations -->
@@ -582,14 +609,21 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                 id="btn-toggle-add-dev"
                 title="Assign 1 extra full-time developer to help finish this issue faster (automatically accounts for ramp-up and coordination time)"
               >
-                ${addDeveloper ? '✓ Extra Developer Assigned' : '+ Assign Extra Developer'}
+                ${addDeveloper ? '✓ Extra Dev Added' : '+ Assign Extra Developer'}
               </button>
               <button
                 class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
                 id="btn-toggle-decouple-edge"
                 title="Split or mock the blocking interface so downstream issues can start work in parallel without waiting for this issue to finish 100%"
               >
-                ${decoupleBlockingEdges ? '✓ Dependency Split / Mocked' : '✂ Decouple Dependency'}
+                ${decoupleBlockingEdges ? '✓ Split / Mocked' : '✂ Decouple Dependency'}
+              </button>
+              <button
+                class="scope-toggle-btn ${trimScope ? 'active' : ''}"
+                id="btn-toggle-trim-scope"
+                title="Defer non-essential sub-tasks or stretch goals to the next sprint (-35% remaining work & -45% uncertainty) to protect the release date"
+              >
+                ${trimScope ? '✓ Scope Trimmed (MVP)' : '📦 Trim Scope (MVP)'}
               </button>
             </div>
             ${
@@ -617,13 +651,13 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
             </div>
 
             <div class="mc-bell-curve-wrap" title="500-Run Monte Carlo Release Probability Curve (Likely Finish / Target Commit Date / Safe Buffer Date)">
-              <svg width="100%" height="44" viewBox="0 0 280 44" class="mc-bell-svg">
-                <path d="M 8 40 C 60 40, ${Math.max(40, simP85X - 45)} 6, ${simP85X - 14} 6 C ${simP85X + 18} 6, 235 40, 272 40 Z" fill="${bellFill}" />
-                <path d="M 8 40 C 60 40, ${Math.max(40, simP85X - 45)} 6, ${simP85X - 14} 6 C ${simP85X + 18} 6, 235 40, 272 40" fill="none" stroke="${bellStroke}" stroke-width="2" />
-                <line x1="${baseP50X}" y1="6" x2="${baseP50X}" y2="40" stroke="#64748B" stroke-width="1.2" stroke-dasharray="3 2" />
-                <line x1="${simP85X}" y1="4" x2="${simP85X}" y2="40" stroke="${bellStroke}" stroke-width="1.8" />
-                <rect x="8" y="3" width="94" height="14" rx="4" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1" />
-                <text x="55" y="13" text-anchor="middle" fill="${bellStroke}" font-size="8.5" font-weight="700">Target: ${escapeHtmlText(formatFriendlyDate(activeSim.p85Date))}</text>
+              <svg width="100%" height="52" viewBox="0 0 280 52" class="mc-bell-svg">
+                <path d="M 8 48 C 60 48, ${Math.max(40, simP85X - 45)} 8, ${simP85X - 14} 8 C ${simP85X + 18} 8, 235 48, 272 48 Z" fill="${bellFill}" />
+                <path d="M 8 48 C 60 48, ${Math.max(40, simP85X - 45)} 8, ${simP85X - 14} 8 C ${simP85X + 18} 8, 235 48, 272 48" fill="none" stroke="${bellStroke}" stroke-width="2" />
+                <line x1="${baseP50X}" y1="8" x2="${baseP50X}" y2="48" stroke="#64748B" stroke-width="1.3" stroke-dasharray="3 2" />
+                <line x1="${simP85X}" y1="5" x2="${simP85X}" y2="48" stroke="${bellStroke}" stroke-width="2" />
+                <rect x="8" y="3" width="104" height="16" rx="4" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.2" />
+                <text x="60" y="14" text-anchor="middle" fill="${bellStroke}" font-size="9.5" font-weight="700">Target: ${escapeHtmlText(formatFriendlyDate(activeSim.p85Date))}</text>
               </svg>
             </div>
 
@@ -647,11 +681,11 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
                         ${formatFriendlyDate(row.baseDate)} → <strong>${formatFriendlyDate(row.intDate)}</strong> ${diffBadge}
                       </span>
                     </div>
-                    <svg width="100%" height="12" class="dual-bar-svg">
-                      <rect x="0" y="0" width="100%" height="5" rx="2.5" fill="#DCDFE4" />
-                      <rect x="0" y="0" width="${pct(row.baseDays)}%" height="5" rx="2.5" fill="#8590A2" />
-                      <rect x="0" y="7" width="100%" height="5" rx="2.5" fill="#DCDFE4" />
-                      <rect x="0" y="7" width="${pct(row.intDays)}%" height="5" rx="2.5" fill="${intBarColor}" />
+                    <svg width="100%" height="14" class="dual-bar-svg">
+                      <rect x="0" y="0" width="100%" height="6" rx="3" fill="#DCDFE4" />
+                      <rect x="0" y="0" width="${pct(row.baseDays)}%" height="6" rx="3" fill="#8590A2" />
+                      <rect x="0" y="8" width="100%" height="6" rx="3" fill="#DCDFE4" />
+                      <rect x="0" y="8" width="${pct(row.intDays)}%" height="6" rx="3" fill="${intBarColor}" />
                     </svg>
                   </div>
                 `;

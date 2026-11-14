@@ -23,6 +23,7 @@ export interface RovoSimulateDelayPayload {
   delayDays?: number | string;
   addDeveloper?: boolean;
   decoupleBlockingEdges?: boolean;
+  trimScope?: boolean;
   projectKey?: string;
   context?: RovoActionContext;
 }
@@ -77,6 +78,7 @@ export async function simulateDelayImpact(
     iterations: 500,
     addDeveloper: payload.addDeveloper,
     decoupleBlockingEdges: payload.decoupleBlockingEdges,
+    trimScope: payload.trimScope,
   });
 
   const formatSigned = (n: number) => (n >= 0 ? `+${n}d` : `${n}d`);

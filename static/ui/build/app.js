@@ -950,6 +950,7 @@ function runMonteCarloSimulation(graph, options = {}) {
     const interventionDelta = intervenedKey && options.intervention ? Number(options.intervention.deltaDays || 0) : 0;
     const addDeveloper = Boolean(intervenedKey && options.intervention?.addDeveloper);
     const decoupleBlockingEdges = Boolean(intervenedKey && options.intervention?.decoupleBlockingEdges);
+    const trimScope = Boolean(intervenedKey && options.intervention?.trimScope);
     // Apply edge decoupling if requested
     const effectiveEdges = decoupleBlockingEdges
         ? graph.edges.map((e) => e.from === intervenedKey
@@ -1020,7 +1021,7 @@ function runMonteCarloSimulation(graph, options = {}) {
             // Sample stochastic task duration using right-skewed normal noise
             const z = sampleStandardNormal(rng);
             let sampledDuration = 0;
-            if (!isDone || (isTarget && (interventionDelta !== 0 || addDeveloper))) {
+            if (!isDone || (isTarget && (interventionDelta !== 0 || addDeveloper || trimScope))) {
                 let base = isDone ? 0 : pert.meanDays;
                 let sigma = isDone ? 0.25 : pert.sigmaDays;
                 // Multi-tasking fragmentation / overload adjustment if explicitly configured
@@ -1036,6 +1037,10 @@ function runMonteCarloSimulation(graph, options = {}) {
                     const brooks = computeBrooksLawMetrics(node);
                     base = brooks.effectiveSwarmDurationDays;
                     sigma = Math.max(0.1, sigma * 0.6);
+                }
+                if (isTarget && trimScope) {
+                    base = Math.max(0.5, Number((base * 0.65).toFixed(2)));
+                    sigma = Math.max(0.1, sigma * 0.55);
                 }
                 // Right-skewed software engineering tail distribution
                 const skewNoise = z >= 0 ? z * sigma * 1.28 : z * sigma * 0.62;
@@ -1450,7 +1455,8 @@ function runMonteCarloSimulation(graph, options = {}) {
         fastTrackingReworkBonus) *
         (interventionDelta > 0 ? lateChangeEscalationFactor * 0.78 : 1.0) *
         (addDeveloper ? 0.65 : 1.0) *
-        (decoupleBlockingEdges ? 0.5 : 1.0)).toFixed(1));
+        (decoupleBlockingEdges ? 0.5 : 1.0) *
+        (trimScope ? 0.7 : 1.0)).toFixed(1));
     // 1. Three-Tier Schedule Reserve Breakdown (Base P50, PM Contingency P85-P50, Exec Reserve CVaR95-P85)
     const pmContingencyReserveDays = Number(Math.max(0.5, p85Days - p50Days).toFixed(1));
     const managementReserveDays = Number(Math.max(0.5, cvar95Days - p85Days).toFixed(1));
@@ -1668,6 +1674,7 @@ function runMonteCarloSimulation(graph, options = {}) {
         interventionDeltaDays: interventionDelta,
         addDeveloper,
         decoupleBlockingEdges,
+        trimScope,
         nodeStats,
         goalImpacts,
         topBottlenecks,
@@ -1692,6 +1699,7 @@ function runIntervention(graph, targetNodeId, deltaDays, iterationsOrOptions = D
     const decoupleBlockingEdges = typeof iterationsOrOptions === 'object'
         ? Boolean(iterationsOrOptions.decoupleBlockingEdges)
         : false;
+    const trimScope = typeof iterationsOrOptions === 'object' ? Boolean(iterationsOrOptions.trimScope) : false;
     // Support both acceleration (-5d) and delay (+120d)
     const sanitizedDelta = Math.max(-5, Math.min(120, Number(deltaDays) || 0));
     const resolvedKey = resolveNodeKey(graph.nodes, targetNodeId) ??
@@ -1713,6 +1721,7 @@ function runIntervention(graph, targetNodeId, deltaDays, iterationsOrOptions = D
             deltaDays: sanitizedDelta,
             addDeveloper,
             decoupleBlockingEdges,
+            trimScope,
         },
     });
     const blastInfo = getDownstreamBlastRadius(graph, resolvedKey);
@@ -1893,7 +1902,7 @@ function renderInfoTooltip(title, explanation, mathFormula) {
  * Renders a 100% CSP-safe SVG arch gauge (matching Synthesis 1 Left Rail gauges).
  * Uses a semi-circular arc from (14, 56) to (98, 56) with radius 42 (arc length ≈ 131.95).
  */
-function renderArchGaugeSvg(ratio, strokeColor, trackColor = '#1E293B') {
+function renderArchGaugeSvg(ratio, strokeColor, trackColor = '#334155') {
     const clamped = Math.max(0.06, Math.min(1, ratio));
     const arcLen = 131.95;
     const filled = Number((clamped * arcLen).toFixed(1));
@@ -2196,6 +2205,38 @@ function evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveInter
     }
     return 'Scheduled';
 }
+function computeFinishOddsOnDay(activeSim, dayOffset) {
+    if (dayOffset <= 0)
+        return 0;
+    const p50 = Math.max(0.5, activeSim.p50Days);
+    const p85 = Math.max(p50 + 0.1, activeSim.p85Days);
+    const p95 = Math.max(p85 + 0.1, activeSim.p95Days);
+    const cvar = Math.max(p95 + 0.5, activeSim.cvar95Days);
+    const firstBucketDay = activeSim.distributionBuckets[0]?.dayOffset ?? 0;
+    const startAnchor = firstBucketDay > 1 ? Math.min(p50 * 0.85, firstBucketDay - 1) : 0;
+    let odds;
+    if (dayOffset <= startAnchor) {
+        odds = Math.max(1, (dayOffset / Math.max(1, startAnchor)) * 2);
+    }
+    else if (dayOffset <= p50) {
+        const startOdds = startAnchor > 0 ? 2 : 0;
+        const span = Math.max(0.1, p50 - startAnchor);
+        odds = startOdds + ((dayOffset - startAnchor) / span) * (50 - startOdds);
+    }
+    else if (dayOffset <= p85) {
+        odds = 50 + ((dayOffset - p50) / (p85 - p50)) * 35;
+    }
+    else if (dayOffset <= p95) {
+        odds = 85 + ((dayOffset - p85) / (p95 - p85)) * 10;
+    }
+    else if (dayOffset <= cvar) {
+        odds = 95 + ((dayOffset - p95) / (cvar - p95)) * 3;
+    }
+    else {
+        odds = 99;
+    }
+    return Math.max(1, Math.min(99, Math.round(odds)));
+}
 const HUMAN_EPOCH_LABELS = {
     0: { title: 'Sprint -2', badge: '4W AGO' },
     1: { title: 'Sprint -1', badge: '2W AGO' },
@@ -2229,6 +2270,17 @@ function renderTimelineScrubber(props) {
         : scrubberDayOffset > 0
             ? `+${scrubberDayOffset} Days`
             : `${scrubberDayOffset} Days`;
+    const viewedFinishOdds = scrubberDayOffset > 0 ? computeFinishOddsOnDay(activeSim, scrubberDayOffset) : null;
+    const viewedOddsClass = viewedFinishOdds === null
+        ? ''
+        : viewedFinishOdds >= 80
+            ? 'jira-lozenge-done'
+            : viewedFinishOdds >= 50
+                ? 'jira-lozenge-inprogress'
+                : 'jira-lozenge-danger';
+    const viewedOddsHtml = viewedFinishOdds !== null
+        ? `<span class="jira-lozenge ${viewedOddsClass}" title="${escapeHtmlText(`Target-Date Confidence: ${viewedFinishOdds}% of the 500 simulated project runs finish all issues on or before ${formatFriendlyDate(scrubbedDate, true)}.`)}">${viewedFinishOdds}% FINISH ODDS</span>`
+        : '';
     const maxBucketProb = Math.max(0.05, ...activeSim.distributionBuckets.map((b) => b.probability));
     const reserves = activeSim.reserves;
     const baseTargetDays = reserves?.baseTargetDays ?? activeSim.p50Days;
@@ -2240,10 +2292,10 @@ function renderTimelineScrubber(props) {
     const execPct = Math.max(8, 100 - basePct - pmPct);
     const buckets = activeSim.distributionBuckets;
     const chartW = 380;
-    const chartH = 112;
-    const topPad = 18;
-    const bottomPad = 20;
-    const barAreaH = chartH - topPad - bottomPad; // 74px bar height area
+    const chartH = 128;
+    const topPad = 20;
+    const bottomPad = 22;
+    const barAreaH = chartH - topPad - bottomPad; // 86px bar height area
     const colW = Math.floor((chartW - 16) / Math.max(1, buckets.length));
     const svgConeBars = buckets
         .map((b, idx, arr) => {
@@ -2271,14 +2323,14 @@ function renderTimelineScrubber(props) {
         const cumPctVal = Math.round(b.cumulativeProbability * 100);
         const showTopPct = pctVal >= 8 || isNearP85 || isNearP50;
         const topPctText = showTopPct
-            ? `<text x="${x + w / 2}" y="${Math.max(11, y - 4)}" text-anchor="middle" fill="${isNearP85 ? '#0C66E4' : '#334155'}" font-size="8.5" font-weight="${isNearP85 ? '800' : '600'}">${pctVal}%</text>`
+            ? `<text x="${x + w / 2}" y="${Math.max(12, y - 5)}" text-anchor="middle" fill="${isNearP85 ? '#0C66E4' : '#334155'}" font-size="10" font-weight="${isNearP85 ? '800' : '600'}">${pctVal}%</text>`
             : '';
         const showDateLabel = idx === 0 ||
             idx === Math.floor(arr.length * 0.33) ||
             idx === Math.floor(arr.length * 0.66) ||
             idx === arr.length - 1;
         const labelText = showDateLabel
-            ? `<text x="${x + w / 2}" y="${chartH - 5}" text-anchor="middle" fill="#475569" font-size="9" font-weight="600">${escapeHtmlText(formatFriendlyDate(b.date))}</text>`
+            ? `<text x="${x + w / 2}" y="${chartH - 5}" text-anchor="middle" fill="#475569" font-size="10" font-weight="600">${escapeHtmlText(formatFriendlyDate(b.date))}</text>`
             : '';
         const hoverExplanation = `Finish Window: ${formatFriendlyDate(b.date, true)} | Window Likelihood: ${pctVal}% of the 500 simulated runs finished in this date window | Cumulative Confidence: ${cumPctVal}% chance of finishing on or before ${formatFriendlyDate(b.date)}`;
         return `
@@ -2309,6 +2361,7 @@ function renderTimelineScrubber(props) {
             <span class="tm-date-pill">
               Viewing: <strong>${formatFriendlyDate(scrubbedDate, true)}</strong>
               <span class="jira-lozenge jira-lozenge-todo">${relativeOffsetLabel}</span>
+              ${viewedOddsHtml}
             </span>
             <div class="tm-status-summary">
               <span class="jira-lozenge jira-lozenge-done">${dynamicDone} DONE</span>
@@ -2470,6 +2523,19 @@ function renderTimelineScrubber(props) {
  *   4. 胶囊 Stadium Pill (`152×46px`): Teamwork Graph Goal capsules anchored at the right
  *      terminal edge of the swimlanes (`Sprint Delivery`, `Release Milestone`).
  */
+function resolveNodeShapeKind(node, topBlockerKey, topBlockerSet, isIntervenedOrigin, delayDays) {
+    const isDiamondGate = Boolean(node.isStageGate) ||
+        Boolean(node.confluenceDecision) ||
+        node.issueType?.toLowerCase() === 'milestone' ||
+        node.issueType?.toLowerCase() === 'gate';
+    if (isDiamondGate)
+        return 'gate';
+    const isHexagonBlocker = node.key === topBlockerKey ||
+        topBlockerSet.has(node.key) ||
+        node.status.toLowerCase() === 'blocked' ||
+        (isIntervenedOrigin && delayDays > 0);
+    return isHexagonBlocker ? 'blocker' : 'task';
+}
 const AVATAR_PALETTE = [
     '#0284C7',
     '#059669',
@@ -2524,20 +2590,20 @@ function computeNodeCoordinates(graph) {
     });
     const laneCount = activeTeams.length;
     const laneHeight = laneCount === 1
-        ? 368
+        ? 456
         : laneCount === 2
-            ? 186
-            : 125;
-    const svgHeight = laneCount <= 3 ? 384 : laneCount * laneHeight + 12;
+            ? 228
+            : 152;
+    const svgHeight = laneCount <= 3 ? 472 : laneCount * laneHeight + 16;
     const nodeW = 104;
     const nodeH = 104;
-    const xStart = 224;
-    const xGap = 156;
+    const xStart = 252;
+    const xGap = 188;
     let maxCols = 1;
     if (laneCount === 1) {
         const keys = laneGroups.get(0) ?? [];
         if (keys.length >= 4) {
-            const subRowY = [68, 192, 316];
+            const subRowY = [82, 234, 386];
             maxCols = Math.ceil(keys.length / 3);
             keys.forEach((key, idx) => {
                 const colIdx = Math.floor(idx / 3);
@@ -2555,7 +2621,7 @@ function computeNodeCoordinates(graph) {
             keys.forEach((key, colIdx) => {
                 coords[key] = {
                     x: xStart + colIdx * xGap,
-                    y: 192,
+                    y: 234,
                     laneIndex: 0,
                     colIndex: colIdx,
                 };
@@ -2579,8 +2645,8 @@ function computeNodeCoordinates(graph) {
         }
     }
     const lastNodeX = xStart + Math.max(0, maxCols - 1) * xGap;
-    const goalColX = lastNodeX + 168;
-    const svgWidth = Math.max(820, goalColX + 104);
+    const goalColX = lastNodeX + 196;
+    const svgWidth = Math.max(880, goalColX + 116);
     return {
         coords,
         activeTeams,
@@ -2593,31 +2659,41 @@ function computeNodeCoordinates(graph) {
     };
 }
 function renderDagCanvas(props) {
-    const { graph, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, scrubberDayOffset, } = props;
+    const { graph, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, scrubberDayOffset, } = props;
     const { coords, activeTeams, svgHeight, svgWidth, laneHeight, goalColX, } = computeNodeCoordinates(graph);
     const blastSet = new Set(activeSim.blastRadiusNodes);
     const criticalSet = new Set(activeSim.criticalPathNodes);
     const topBlockerKey = activeSim.topBottlenecks[0]?.key ?? '';
     const topBlockerSet = new Set(activeSim.topBottlenecks.slice(0, 3).map((b) => b.key));
-    const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
+    const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
     const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
-    // Clean Neutral Swimlane Themes
+    const blockedByMap = new Map();
+    const blocksMap = new Map();
+    for (const edge of graph.edges) {
+        const incoming = blockedByMap.get(edge.to) ?? [];
+        incoming.push(edge.from);
+        blockedByMap.set(edge.to, incoming);
+        const outgoing = blocksMap.get(edge.from) ?? [];
+        outgoing.push(edge.to);
+        blocksMap.set(edge.from, outgoing);
+    }
+    // Clean Neutral Swimlane Themes with Crisp Borders
     const laneThemes = [
         {
             bandFill: '#FFFFFF',
-            bandStroke: '#E2E8F0',
+            bandStroke: '#94A3B8',
             tabFill: '#F1F5F9',
             textFill: '#334155',
         },
         {
             bandFill: '#F8FAFC',
-            bandStroke: '#E2E8F0',
+            bandStroke: '#94A3B8',
             tabFill: '#E2E8F0',
             textFill: '#334155',
         },
         {
             bandFill: '#FFFFFF',
-            bandStroke: '#E2E8F0',
+            bandStroke: '#94A3B8',
             tabFill: '#F1F5F9',
             textFill: '#334155',
         },
@@ -2663,42 +2739,42 @@ function renderDagCanvas(props) {
           <g>
             <title>${escapeHtmlText(laneTooltip)}</title>
             <rect x="10" y="${yTop}" width="${svgWidth - 20}" height="${bandH}" rx="12"
-              fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1" />
-            <rect x="10" y="${yTop}" width="148" height="${bandH}" rx="10"
-              fill="${theme.tabFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+              fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1.5" />
+            <rect x="10" y="${yTop}" width="168" height="${bandH}" rx="10"
+              fill="${theme.tabFill}" stroke="#CBD5E1" stroke-width="1.5" />
             <rect x="10" y="${yTop + 10}" width="4" height="${bandH - 20}" rx="2"
               fill="#64748B" />
 
-            <!-- Subtle horizontal guide lines for the 3-row issue grid inside the unified lane -->
-            <line x1="158" y1="130" x2="${svgWidth - 14}" y2="130" stroke="#F1F5F9" stroke-width="1" stroke-dasharray="4 4" />
-            <line x1="158" y1="254" x2="${svgWidth - 14}" y2="254" stroke="#F1F5F9" stroke-width="1" stroke-dasharray="4 4" />
+            <!-- Crisp horizontal guide lines for the 3-row issue grid inside the unified lane -->
+            <line x1="178" y1="158" x2="${svgWidth - 14}" y2="158" stroke="#CBD5E1" stroke-width="1.25" stroke-dasharray="6 6" />
+            <line x1="178" y1="310" x2="${svgWidth - 14}" y2="310" stroke="#CBD5E1" stroke-width="1.25" stroke-dasharray="6 6" />
 
-            <circle cx="24" cy="${yMid - 54}" r="3.5" fill="#64748B" />
-            <text x="32" y="${yMid - 51}" fill="#64748B" font-size="8.5" font-weight="800" letter-spacing="0.05em">
+            <circle cx="24" cy="${yMid - 58}" r="3.5" fill="#64748B" />
+            <text x="33" y="${yMid - 55}" fill="#64748B" font-size="9.5" font-weight="800" letter-spacing="0.05em">
               JIRA TEAM STATUS
             </text>
 
-            <text x="20" y="${yMid - 31}" fill="#0F172A" font-size="11.5" font-weight="800">
+            <text x="20" y="${yMid - 32}" fill="#0F172A" font-size="13" font-weight="800">
               No Team Assigned
             </text>
-            <text x="20" y="${yMid - 16}" fill="#475569" font-size="9.5" font-weight="600">
+            <text x="20" y="${yMid - 14}" fill="#475569" font-size="10.5" font-weight="600">
               0 teams in ${escapeHtmlText(graph.projectName.length > 14 ? `${graph.projectName.slice(0, 13)}…` : graph.projectName)}
             </text>
 
-            <text x="20" y="${yMid + 4}" fill="#334155" font-size="9.5" font-weight="600">
+            <text x="20" y="${yMid + 7}" fill="#334155" font-size="10.5" font-weight="600">
               Lead: ${escapeHtmlText(leadDisplay)}
             </text>
 
-            <rect x="20" y="${yMid + 14}" width="120" height="19" rx="9.5"
-              fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" />
-            <text x="80" y="${yMid + 26.5}" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="700">
+            <rect x="20" y="${yMid + 18}" width="134" height="22" rx="11"
+              fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.25" />
+            <text x="87" y="${yMid + 32.5}" text-anchor="middle" fill="#0F172A" font-size="10" font-weight="700">
               ${teamNodes.length} Issues · ${doneCount}/${teamNodes.length} Done
             </text>
 
-            <text x="20" y="${yMid + 52}" fill="#64748B" font-size="8.5" font-weight="600">
+            <text x="20" y="${yMid + 58}" fill="#64748B" font-size="9.5" font-weight="600">
               Set Jira Team field or
             </text>
-            <text x="20" y="${yMid + 64}" fill="#64748B" font-size="8.5" font-weight="600">
+            <text x="20" y="${yMid + 72}" fill="#64748B" font-size="9.5" font-weight="600">
               team: label to split rows
             </text>
           </g>
@@ -2708,31 +2784,31 @@ function renderDagCanvas(props) {
         <g>
           <title>${escapeHtmlText(laneTooltip)}</title>
           <rect x="10" y="${yTop}" width="${svgWidth - 20}" height="${bandH}" rx="12"
-            fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1" />
-          <rect x="10" y="${yTop}" width="146" height="${bandH}" rx="10"
-            fill="${theme.tabFill}" stroke="${theme.bandStroke}" stroke-width="1" />
+            fill="${theme.bandFill}" stroke="${theme.bandStroke}" stroke-width="1.5" />
+          <rect x="10" y="${yTop}" width="168" height="${bandH}" rx="10"
+            fill="${theme.tabFill}" stroke="#CBD5E1" stroke-width="1.5" />
           <rect x="10" y="${yTop + 8}" width="4" height="${bandH - 16}" rx="2"
             fill="${accentColor}" />
 
-          <circle cx="24" cy="${yMid - 34}" r="3.5" fill="${accentColor}" />
-          <text x="32" y="${yMid - 31}" fill="#64748B" font-size="8.5" font-weight="800" letter-spacing="0.05em">
+          <circle cx="24" cy="${yMid - 36}" r="3.5" fill="${accentColor}" />
+          <text x="33" y="${yMid - 33}" fill="#64748B" font-size="9.5" font-weight="800" letter-spacing="0.05em">
             ${isUnassignedTeam ? 'UNASSIGNED TEAM' : 'TEAM SWIMLANE'}
           </text>
 
-          <text x="20" y="${nameLine2 ? yMid - 15 : yMid - 9}" fill="#0F172A" font-size="11" font-weight="800">
+          <text x="20" y="${nameLine2 ? yMid - 15 : yMid - 8}" fill="#0F172A" font-size="12.5" font-weight="800">
             ${escapeHtmlText(nameLine1)}
           </text>
           ${nameLine2
-            ? `<text x="20" y="${yMid - 2}" fill="#0F172A" font-size="11" font-weight="800">${escapeHtmlText(nameLine2)}</text>`
+            ? `<text x="20" y="${yMid}" fill="#0F172A" font-size="12.5" font-weight="800">${escapeHtmlText(nameLine2)}</text>`
             : ''}
 
-          <text x="20" y="${yMid + 15}" fill="#475569" font-size="9.5" font-weight="600">
+          <text x="20" y="${yMid + 18}" fill="#475569" font-size="10.5" font-weight="600">
             Lead: ${escapeHtmlText(leadDisplay)}
           </text>
 
-          <rect x="20" y="${yMid + 23}" width="118" height="17" rx="8.5"
-            fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" />
-          <text x="79" y="${yMid + 34.5}" text-anchor="middle" fill="#0F172A" font-size="8.8" font-weight="700">
+          <rect x="20" y="${yMid + 26}" width="134" height="20" rx="10"
+            fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.25" />
+          <text x="87" y="${yMid + 39.5}" text-anchor="middle" fill="#0F172A" font-size="10" font-weight="700">
             ${teamNodes.length} Issues · ${doneCount}/${teamNodes.length} Done
           </text>
         </g>
@@ -2748,7 +2824,7 @@ function renderDagCanvas(props) {
         if (!fromPos || !toPos)
             return '';
         const sameCol = fromPos.colIndex === toPos.colIndex;
-        const bypassMiddleRow = sameCol && Math.abs(toPos.y - fromPos.y) > 150;
+        const bypassMiddleRow = sameCol && Math.abs(toPos.y - fromPos.y) > 200;
         const x1 = bypassMiddleRow
             ? fromPos.x + 44
             : sameCol
@@ -2833,13 +2909,13 @@ function renderDagCanvas(props) {
         const yTopBand = targetLaneIdx * laneHeight + 6;
         const goalY = activeTeams.length === 1
             ? goalsToRender.length === 1
-                ? 192
+                ? 234
                 : gIdx === 0
-                    ? 124
-                    : 260
+                    ? 154
+                    : 314
             : yTopBand + Math.round((laneHeight - 8) / 2);
-        const pillW = 148;
-        const pillH = 44;
+        const pillW = 160;
+        const pillH = 48;
         const pillLeft = goalColX - pillW / 2;
         const pillTop = goalY - pillH / 2;
         const isMint = gIdx % 2 === 0;
@@ -2880,11 +2956,11 @@ function renderDagCanvas(props) {
         <g>
           ${goalEdge}
           <g transform="translate(${pillLeft}, ${pillTop})">
-            <rect width="${pillW}" height="${pillH}" rx="22" fill="${pillFill}" stroke="${pillStroke}" stroke-width="2" />
-            <text x="${pillW / 2}" y="19" text-anchor="middle" fill="${pillTextFill}" font-size="11" font-weight="800">
+            <rect width="${pillW}" height="${pillH}" rx="24" fill="${pillFill}" stroke="${pillStroke}" stroke-width="2" />
+            <text x="${pillW / 2}" y="20" text-anchor="middle" fill="${pillTextFill}" font-size="11.5" font-weight="800">
               ${escapeHtmlText(shortGoalName)}
             </text>
-            <text x="${pillW / 2}" y="33" text-anchor="middle" fill="${pillSubFill}" font-size="9" font-weight="700">
+            <text x="${pillW / 2}" y="35" text-anchor="middle" fill="${pillSubFill}" font-size="9.5" font-weight="700">
               Target: ${formatFriendlyDate(goal.p85CompletionDate)} · ${Math.round(goal.probabilityOfOnTime * 100)}% on time
             </text>
           </g>
@@ -2938,20 +3014,16 @@ function renderDagCanvas(props) {
         const rippleShift = stat?.rippleDelayDays ?? 0;
         const goalObj = graph.goals.find((g) => g.id === node.goalId);
         // Determine which of the 4 shapes this node takes:
-        const isDiamondGate = Boolean(node.isStageGate) ||
-            Boolean(node.confluenceDecision) ||
-            node.issueType?.toLowerCase() === 'milestone' ||
-            node.issueType?.toLowerCase() === 'gate';
-        const isHexagonBlocker = !isDiamondGate &&
-            (node.key === topBlockerKey ||
-                topBlockerSet.has(node.key) ||
-                node.status.toLowerCase() === 'blocked' ||
-                (isIntervenedOrigin && delayDays > 0));
+        const shapeKind = resolveNodeShapeKind(node, topBlockerKey, topBlockerSet, isIntervenedOrigin, delayDays);
+        const isDiamondGate = shapeKind === 'gate';
+        const isHexagonBlocker = shapeKind === 'blocker';
         const shapeType = isDiamondGate
             ? 'Diamond Gate'
             : isHexagonBlocker
                 ? 'Hexagon Blocker'
                 : 'Circle Task/Epic';
+        const blockedByKeys = blockedByMap.get(node.key) ?? [];
+        const blocksKeys = blocksMap.get(node.key) ?? [];
         const hoverJson = JSON.stringify({
             key: node.key,
             summary: node.summary,
@@ -2970,6 +3042,8 @@ function renderDagCanvas(props) {
             p85Date: stat ? formatFriendlyDate(stat.p85Date, true) : 'N/A',
             rippleShift: rippleShift,
             criticalityPct: Math.round((stat?.criticalityIndex ?? 0) * 100),
+            blockedByKeys,
+            blocksKeys,
             adr: node.confluenceDecision
                 ? `${node.confluenceDecision.title} (${node.confluenceDecision.spaceKey})`
                 : '',
@@ -2983,7 +3057,9 @@ function renderDagCanvas(props) {
                     ? `${delayDays}d Faster`
                     : addDeveloper
                         ? '+1 Dev'
-                        : 'Decoupled';
+                        : decoupleBlockingEdges
+                            ? 'Decoupled'
+                            : 'Scope MVP';
             shiftBadge = `
           <g transform="translate(0, -56)">
             <rect x="-34" y="0" width="68" height="16" rx="8" fill="#0C66E4" />
@@ -3029,15 +3105,15 @@ function renderDagCanvas(props) {
             <polygon points="0,-34 7,-27 0,-20 -7,-27" fill="#EDE9FE" />
             <polygon points="0,-30 3.5,-27 0,-24 -3.5,-27" fill="#6D28D9" />
             <!-- Gate label -->
-            <text x="0" y="-7" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
+            <text x="0" y="-8" text-anchor="middle" fill="#FFFFFF" font-size="10.5" font-weight="800">
               Gate: ${escapeHtmlText(node.key)}
             </text>
-            <text x="0" y="4" text-anchor="middle" fill="#EDE9FE" font-size="8.2" font-weight="600">
+            <text x="0" y="5" text-anchor="middle" fill="#EDE9FE" font-size="9" font-weight="600">
               ${escapeHtmlText(shortGateTitle)}
             </text>
             <!-- Responsible Lead Avatar Circle -->
             <circle cx="0" cy="21" r="11.5" fill="${avatarBg}" stroke="#FFFFFF" stroke-width="1.8" />
-            <text x="0" y="25" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+            <text x="0" y="25" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
               ${escapeHtmlText(avatarInitials)}
             </text>
             <circle cx="8" cy="29" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
@@ -3071,22 +3147,22 @@ function renderDagCanvas(props) {
 
             <!-- Warning Triangle Icon -->
             <polygon points="0,-35 7,-23 -7,-23" fill="#FEF08A" />
-            <text x="0" y="-24.5" text-anchor="middle" fill="#991B1B" font-size="8.5" font-weight="900">!</text>
+            <text x="0" y="-24.5" text-anchor="middle" fill="#991B1B" font-size="9" font-weight="900">!</text>
 
             <!-- Issue Key & Short Summary -->
-            <text x="0" y="-11" text-anchor="middle" fill="#FFFFFF" font-size="11" font-weight="800">
+            <text x="0" y="-10" text-anchor="middle" fill="#FFFFFF" font-size="11.5" font-weight="800">
               ${escapeHtmlText(node.key)}
             </text>
-            <text x="0" y="0" text-anchor="middle" fill="#FFE4E6" font-size="8.5" font-weight="600">
+            <text x="0" y="2" text-anchor="middle" fill="#FFE4E6" font-size="9.2" font-weight="600">
               ${escapeHtmlText(shortHexTitle)}
             </text>
 
             <!-- Responsible Assignee Avatar Circle -->
-            <circle cx="0" cy="18" r="12" fill="#FECDD3" stroke="#FFFFFF" stroke-width="1.8" />
-            <text x="0" y="22" text-anchor="middle" fill="#881337" font-size="9.5" font-weight="800">
+            <circle cx="0" cy="19" r="12" fill="#FECDD3" stroke="#FFFFFF" stroke-width="1.8" />
+            <text x="0" y="23" text-anchor="middle" fill="#881337" font-size="10" font-weight="800">
               ${escapeHtmlText(avatarInitials)}
             </text>
-            <circle cx="9" cy="26" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
+            <circle cx="9" cy="27" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
             ${shiftBadge}
           </g>
         `;
@@ -3129,25 +3205,25 @@ function renderDagCanvas(props) {
             transform="rotate(-90)" />
 
           <!-- Sub-task Fraction & Completion % -->
-          <text x="0" y="-18" text-anchor="middle" fill="#0F172A" font-size="12" font-weight="800">
+          <text x="0" y="-19" text-anchor="middle" fill="#0F172A" font-size="12.5" font-weight="800">
             ${doneSub}/${totalSub}
           </text>
-          <text x="0" y="-7" text-anchor="middle" fill="#334155" font-size="8.5" font-weight="700">
+          <text x="0" y="-7" text-anchor="middle" fill="#334155" font-size="9.5" font-weight="700">
             Sub-tasks · ${progPct}%
           </text>
 
           <!-- Responsible Assignee Avatar Circle -->
           <circle cx="0" cy="10" r="12" fill="${avatarBg}" stroke="#FFFFFF" stroke-width="1.8" />
-          <text x="0" y="14" text-anchor="middle" fill="#FFFFFF" font-size="9.5" font-weight="800">
+          <text x="0" y="14" text-anchor="middle" fill="#FFFFFF" font-size="10" font-weight="800">
             ${escapeHtmlText(avatarInitials)}
           </text>
           <circle cx="9" cy="18" r="3.5" fill="#10B981" stroke="#FFFFFF" stroke-width="1" />
 
           <!-- Bottom Jira Issue Key Pill -->
-          <g transform="translate(-31, 25)">
-            <rect width="62" height="16" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2" />
-            <polygon points="10,4.5 14,8 10,11.5 6,8" fill="#0284C7" />
-            <text x="35" y="11.2" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="800">
+          <g transform="translate(-34, 24)">
+            <rect width="68" height="17" rx="8.5" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1.3" />
+            <polygon points="10,5 14,8.5 10,12 6,8.5" fill="#0284C7" />
+            <text x="38" y="12" text-anchor="middle" fill="#0F172A" font-size="10" font-weight="800">
               ${escapeHtmlText(node.key)}
             </text>
           </g>
@@ -3155,6 +3231,30 @@ function renderDagCanvas(props) {
           ${shiftBadge}
         </g>
       `;
+    })
+        .join('');
+    const nodeByKey = new Map(graph.nodes.map((n) => [n.key, n]));
+    const orderedJumpNodes = [];
+    const seenKeys = new Set();
+    for (const k of graph.topologicalOrder) {
+        const found = nodeByKey.get(k);
+        if (found && !seenKeys.has(found.key)) {
+            orderedJumpNodes.push(found);
+            seenKeys.add(found.key);
+        }
+    }
+    for (const n of graph.nodes) {
+        if (!seenKeys.has(n.key)) {
+            orderedJumpNodes.push(n);
+            seenKeys.add(n.key);
+        }
+    }
+    const jumpOptionsHtml = orderedJumpNodes
+        .map((n) => {
+        const sKind = resolveNodeShapeKind(n, topBlockerKey, topBlockerSet, intervenedKey === n.key, delayDays);
+        const shapeGlyph = sKind === 'gate' ? '◆' : sKind === 'blocker' ? '⬢' : '●';
+        const shortSum = n.summary.length > 22 ? `${n.summary.slice(0, 21)}…` : n.summary;
+        return `<option value="${escapeHtmlText(n.key)}" ${n.key === selectedNodeKey ? 'selected' : ''}>${shapeGlyph} ${escapeHtmlText(n.key)} · ${escapeHtmlText(shortSum)}</option>`;
     })
         .join('');
     return `
@@ -3173,7 +3273,8 @@ function renderDagCanvas(props) {
           </div>
           <div class="dag-pan-buttons">
             <button class="dag-pan-btn" id="btn-dag-pan-left" title="Scroll dependency map left">◀</button>
-            <button class="dag-pan-btn" id="btn-dag-center-selected" title="Scroll horizontally to center selected issue (${escapeHtmlText(selectedNodeKey)})">🎯 ${escapeHtmlText(selectedNodeKey)}</button>
+            <select id="dag-issue-jump-select" class="dag-issue-jump-select" title="Jump directly to any issue in the Dependency Map (or press [ and ] keys)" aria-label="Jump to Jira issue">${jumpOptionsHtml}</select>
+            <button class="dag-pan-btn" id="btn-dag-center-selected" title="Center map on selected issue (${escapeHtmlText(selectedNodeKey)})">🎯</button>
             <button class="dag-pan-btn" id="btn-dag-pan-right" title="Scroll dependency map right">▶</button>
           </div>
         </div>
@@ -3218,7 +3319,7 @@ function renderDagCanvas(props) {
  * - Step 3: Teamwork Graph Goals & Inspector Tabs (`Impacted Issues`, `Top Blockers`, `Math & MCP Spec`).
  */
 function buildRovoMitigationPrompt(props) {
-    const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, activeSim } = props;
+    const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, activeSim, } = props;
     const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
     const goal = graph.goals.find((g) => g.id === node.goalId) ?? graph.goals[0];
     const shiftStr = delayDays >= 0
@@ -3229,12 +3330,14 @@ function buildRovoMitigationPrompt(props) {
         modifiers.push('adding +1 developer');
     if (decoupleBlockingEdges)
         modifiers.push('decoupling outgoing blocking dependencies');
+    if (trimScope)
+        modifiers.push('trimming non-essential scope to ship an MVP');
     const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
     return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate what happens to our "${goal?.name ?? 'Sprint Delivery'}" goal if issue ${node.key} ("${node.summary}") is ${shiftStr}${modSuffix}. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
 }
 function renderTabBody(props) {
-    const { activeRightTab, activeSim, intervention, graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, } = props;
-    const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
+    const { activeRightTab, activeSim, intervention, graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, } = props;
+    const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
     if (activeRightTab === 'cascade') {
         const deltas = intervention?.nodeDeltas.filter((d) => d.key !== selectedNodeKey && Math.abs(d.shiftDays) > 0) ?? [];
         if (!hasActiveIntervention || deltas.length === 0) {
@@ -3286,7 +3389,7 @@ function renderTabBody(props) {
           </div>
           <div class="bottleneck-row-meta">
             <span>Assignee: <strong>${escapeHtmlText(b.assignee)}</strong> · Risk Score: <strong>${b.riskScore}/100</strong></span>
-            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · ROI: <strong class="text-success">${(b.mitigationROI ?? 1.0).toFixed(2)}d/$</strong></span>
+            <span>Float: <strong>${(b.totalFloatDays ?? 0).toFixed(1)}d</strong> · <span title="Schedule Leverage: ~${(b.mitigationROI ?? 1.0).toFixed(1)} days of release risk saved per 1 day of mitigation effort">Impact: <strong class="text-success">~${(b.mitigationROI ?? 1.0).toFixed(1)}d saved/d</strong></span></span>
           </div>
           <div class="bottleneck-row-rec">
             💡 ${escapeHtmlText(b.recommendation)}
@@ -3501,10 +3604,16 @@ function renderGoalsCard(activeSim) {
   `;
 }
 function renderScenarioPanel(props) {
-    const { graph, baselineSim, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, activeRightTab, copiedPromptNotice, } = props;
+    const { graph, baselineSim, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, activeRightTab, copiedPromptNotice, } = props;
     const selectedNode = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
     const selectedStat = activeSim.nodeStats[selectedNode.key];
     const linkedGoal = graph.goals.find((g) => g.id === selectedNode.goalId) ?? graph.goals[0];
+    const blockedByKeys = graph.edges
+        .filter((e) => e.to === selectedNode.key)
+        .map((e) => e.from);
+    const blocksKeys = graph.edges
+        .filter((e) => e.from === selectedNode.key)
+        .map((e) => e.to);
     const maxTimelineScale = Math.max(45, baselineSim.p95Days + 8, activeSim.p95Days + 8);
     const pct = (days) => Math.min(100, Math.max(8, Math.round((days / maxTimelineScale) * 100)));
     const delaySignLabel = delayDays > 0
@@ -3516,7 +3625,7 @@ function renderScenarioPanel(props) {
         ? `<span class="jira-lozenge jira-lozenge-danger">+${delayDays}D DELAY</span>`
         : delayDays < 0
             ? `<span class="jira-lozenge jira-lozenge-done">${delayDays}D FASTER</span>`
-            : addDeveloper || decoupleBlockingEdges
+            : addDeveloper || decoupleBlockingEdges || trimScope
                 ? `<span class="jira-lozenge jira-lozenge-done">MITIGATED</span>`
                 : `<span class="jira-lozenge jira-lozenge-todo">BASELINE</span>`;
     const uncertaintyLabel = selectedNode.uncertaintySigma >= 1.8
@@ -3632,6 +3741,16 @@ function renderScenarioPanel(props) {
                 <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}%</strong>
               </div>
             </div>
+            <div class="node-lineage-row">
+              <div class="lineage-cell" title="${escapeHtmlText(blockedByKeys.length > 0 ? `Upstream blockers: ${blockedByKeys.join(', ')}` : 'Entry task with no upstream blockers')}">
+                <span>Blocked by:</span>
+                <strong>${escapeHtmlText(blockedByKeys.length > 0 ? blockedByKeys.join(', ') : 'None (Entry Task)')}</strong>
+              </div>
+              <div class="lineage-cell" title="${escapeHtmlText(blocksKeys.length > 0 ? `Downstream dependents: ${blocksKeys.join(', ')}` : 'Terminal task with no downstream dependents')}">
+                <span>Blocks:</span>
+                <strong>${escapeHtmlText(blocksKeys.length > 0 ? blocksKeys.join(', ') : 'None (Terminal Task)')}</strong>
+              </div>
+            </div>
           </div>
 
           <!-- Step 1: Schedule Change Slider & Mitigations -->
@@ -3668,14 +3787,21 @@ function renderScenarioPanel(props) {
                 id="btn-toggle-add-dev"
                 title="Assign 1 extra full-time developer to help finish this issue faster (automatically accounts for ramp-up and coordination time)"
               >
-                ${addDeveloper ? '✓ Extra Developer Assigned' : '+ Assign Extra Developer'}
+                ${addDeveloper ? '✓ Extra Dev Added' : '+ Assign Extra Developer'}
               </button>
               <button
                 class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
                 id="btn-toggle-decouple-edge"
                 title="Split or mock the blocking interface so downstream issues can start work in parallel without waiting for this issue to finish 100%"
               >
-                ${decoupleBlockingEdges ? '✓ Dependency Split / Mocked' : '✂ Decouple Dependency'}
+                ${decoupleBlockingEdges ? '✓ Split / Mocked' : '✂ Decouple Dependency'}
+              </button>
+              <button
+                class="scope-toggle-btn ${trimScope ? 'active' : ''}"
+                id="btn-toggle-trim-scope"
+                title="Defer non-essential sub-tasks or stretch goals to the next sprint (-35% remaining work & -45% uncertainty) to protect the release date"
+              >
+                ${trimScope ? '✓ Scope Trimmed (MVP)' : '📦 Trim Scope (MVP)'}
               </button>
             </div>
             ${addDeveloper && activeSim.deliveryGovernance?.brooksLawDiagnostic
@@ -3695,13 +3821,13 @@ function renderScenarioPanel(props) {
             </div>
 
             <div class="mc-bell-curve-wrap" title="500-Run Monte Carlo Release Probability Curve (Likely Finish / Target Commit Date / Safe Buffer Date)">
-              <svg width="100%" height="44" viewBox="0 0 280 44" class="mc-bell-svg">
-                <path d="M 8 40 C 60 40, ${Math.max(40, simP85X - 45)} 6, ${simP85X - 14} 6 C ${simP85X + 18} 6, 235 40, 272 40 Z" fill="${bellFill}" />
-                <path d="M 8 40 C 60 40, ${Math.max(40, simP85X - 45)} 6, ${simP85X - 14} 6 C ${simP85X + 18} 6, 235 40, 272 40" fill="none" stroke="${bellStroke}" stroke-width="2" />
-                <line x1="${baseP50X}" y1="6" x2="${baseP50X}" y2="40" stroke="#64748B" stroke-width="1.2" stroke-dasharray="3 2" />
-                <line x1="${simP85X}" y1="4" x2="${simP85X}" y2="40" stroke="${bellStroke}" stroke-width="1.8" />
-                <rect x="8" y="3" width="94" height="14" rx="4" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1" />
-                <text x="55" y="13" text-anchor="middle" fill="${bellStroke}" font-size="8.5" font-weight="700">Target: ${escapeHtmlText(formatFriendlyDate(activeSim.p85Date))}</text>
+              <svg width="100%" height="52" viewBox="0 0 280 52" class="mc-bell-svg">
+                <path d="M 8 48 C 60 48, ${Math.max(40, simP85X - 45)} 8, ${simP85X - 14} 8 C ${simP85X + 18} 8, 235 48, 272 48 Z" fill="${bellFill}" />
+                <path d="M 8 48 C 60 48, ${Math.max(40, simP85X - 45)} 8, ${simP85X - 14} 8 C ${simP85X + 18} 8, 235 48, 272 48" fill="none" stroke="${bellStroke}" stroke-width="2" />
+                <line x1="${baseP50X}" y1="8" x2="${baseP50X}" y2="48" stroke="#64748B" stroke-width="1.3" stroke-dasharray="3 2" />
+                <line x1="${simP85X}" y1="5" x2="${simP85X}" y2="48" stroke="${bellStroke}" stroke-width="2" />
+                <rect x="8" y="3" width="104" height="16" rx="4" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.2" />
+                <text x="60" y="14" text-anchor="middle" fill="${bellStroke}" font-size="9.5" font-weight="700">Target: ${escapeHtmlText(formatFriendlyDate(activeSim.p85Date))}</text>
               </svg>
             </div>
 
@@ -3722,11 +3848,11 @@ function renderScenarioPanel(props) {
                         ${formatFriendlyDate(row.baseDate)} → <strong>${formatFriendlyDate(row.intDate)}</strong> ${diffBadge}
                       </span>
                     </div>
-                    <svg width="100%" height="12" class="dual-bar-svg">
-                      <rect x="0" y="0" width="100%" height="5" rx="2.5" fill="#DCDFE4" />
-                      <rect x="0" y="0" width="${pct(row.baseDays)}%" height="5" rx="2.5" fill="#8590A2" />
-                      <rect x="0" y="7" width="100%" height="5" rx="2.5" fill="#DCDFE4" />
-                      <rect x="0" y="7" width="${pct(row.intDays)}%" height="5" rx="2.5" fill="${intBarColor}" />
+                    <svg width="100%" height="14" class="dual-bar-svg">
+                      <rect x="0" y="0" width="100%" height="6" rx="3" fill="#DCDFE4" />
+                      <rect x="0" y="0" width="${pct(row.baseDays)}%" height="6" rx="3" fill="#8590A2" />
+                      <rect x="0" y="8" width="100%" height="6" rx="3" fill="#DCDFE4" />
+                      <rect x="0" y="8" width="${pct(row.intDays)}%" height="6" rx="3" fill="${intBarColor}" />
                     </svg>
                   </div>
                 `;
@@ -3867,6 +3993,7 @@ const state = {
     delayDays: 0,
     addDeveloper: false,
     decoupleBlockingEdges: false,
+    trimScope: false,
     selectedEpochIndex: 2, // Today
     scrubberDayOffset: 0,
     activeRightTab: 'cascade',
@@ -3875,12 +4002,16 @@ const state = {
 };
 function recomputeSimulation() {
     state.baselineSim = runMonteCarloSimulation(state.graph, { iterations: 500 });
-    const hasIntervention = state.delayDays !== 0 || state.addDeveloper || state.decoupleBlockingEdges;
+    const hasIntervention = state.delayDays !== 0 ||
+        state.addDeveloper ||
+        state.decoupleBlockingEdges ||
+        state.trimScope;
     if (hasIntervention && state.selectedNodeKey) {
         const intResult = runIntervention(state.graph, state.selectedNodeKey, state.delayDays, {
             iterations: 500,
             addDeveloper: state.addDeveloper,
             decoupleBlockingEdges: state.decoupleBlockingEdges,
+            trimScope: state.trimScope,
         });
         state.intervention = intResult;
         state.activeSim = intResult;
@@ -3889,6 +4020,16 @@ function recomputeSimulation() {
         state.intervention = null;
         state.activeSim = state.baselineSim;
     }
+}
+function triggerRemoteWhatIf() {
+    void invokeForgeResolver('runWhatIfSimulation', {
+        projectKey: state.graph.projectKey,
+        targetNodeId: state.selectedNodeKey,
+        deltaDays: state.delayDays,
+        addDeveloper: state.addDeveloper,
+        decoupleBlockingEdges: state.decoupleBlockingEdges,
+        trimScope: state.trimScope,
+    });
 }
 function scrollDagToSelectedNode(smooth = true) {
     const viewport = document.getElementById('dag-viewport-container');
@@ -3916,7 +4057,10 @@ function renderCockpit(activeSliderId) {
     const dagViewport = document.getElementById('dag-viewport-container');
     const prevDagScrollLeft = dagViewport?.scrollLeft ?? 0;
     const prevDagScrollTop = dagViewport?.scrollTop ?? 0;
-    const hasActiveIntervention = state.delayDays !== 0 || state.addDeveloper || state.decoupleBlockingEdges;
+    const hasActiveIntervention = state.delayDays !== 0 ||
+        state.addDeveloper ||
+        state.decoupleBlockingEdges ||
+        state.trimScope;
     const headerProps = {
         availableProjects: state.availableProjects,
         graph: state.graph,
@@ -3945,6 +4089,7 @@ function renderCockpit(activeSliderId) {
         delayDays: state.delayDays,
         addDeveloper: state.addDeveloper,
         decoupleBlockingEdges: state.decoupleBlockingEdges,
+        trimScope: state.trimScope,
         scrubberDayOffset: state.scrubberDayOffset,
     });
     const scenarioHtml = renderScenarioPanel({
@@ -3956,6 +4101,7 @@ function renderCockpit(activeSliderId) {
         delayDays: state.delayDays,
         addDeveloper: state.addDeveloper,
         decoupleBlockingEdges: state.decoupleBlockingEdges,
+        trimScope: state.trimScope,
         activeRightTab: state.activeRightTab,
         copiedPromptNotice: state.copiedPromptNotice,
     });
@@ -4047,6 +4193,7 @@ async function loadJiraProjectGraph(projectKey) {
         state.delayDays = 0;
         state.addDeveloper = false;
         state.decoupleBlockingEdges = false;
+        state.trimScope = false;
         recomputeSimulation();
         state.statusBanner = `Loaded live Jira project "${state.graph.projectName}" (${state.graph.projectKey}) with ${state.graph.nodes.length} ${state.graph.nodes.length === 1 ? 'issue' : 'issues'}.`;
         renderCockpit();
@@ -4056,20 +4203,14 @@ async function loadJiraProjectGraph(projectKey) {
         state.graph = createInitialRealProjectGraph(projectKey, matched?.name ?? `${projectKey} Project`);
         state.selectedNodeKey = state.graph.nodes[0]?.key ?? `${projectKey}-1`;
         state.delayDays = 0;
+        state.addDeveloper = false;
+        state.decoupleBlockingEdges = false;
+        state.trimScope = false;
         recomputeSimulation();
         renderCockpit();
     }
 }
 function attachCockpitEventListeners(skipMountForSlider) {
-    const triggerRemoteWhatIf = () => {
-        void invokeForgeResolver('runWhatIfSimulation', {
-            projectKey: state.graph.projectKey,
-            targetNodeId: state.selectedNodeKey,
-            deltaDays: state.delayDays,
-            addDeveloper: state.addDeveloper,
-            decoupleBlockingEdges: state.decoupleBlockingEdges,
-        });
-    };
     // 0. Project Switcher Dropdown (`#jira-project-select`)
     const projectSelect = document.getElementById('jira-project-select');
     if (projectSelect) {
@@ -4101,6 +4242,20 @@ function attachCockpitEventListeners(skipMountForSlider) {
             scrollDagToSelectedNode(true);
         });
     }
+    const issueJumpSelect = document.getElementById('dag-issue-jump-select');
+    if (issueJumpSelect) {
+        issueJumpSelect.addEventListener('change', () => {
+            const nextKey = issueJumpSelect.value;
+            if (nextKey) {
+                state.selectedNodeKey = nextKey;
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                triggerRemoteWhatIf();
+                renderCockpit();
+                scrollDagToSelectedNode(true);
+            }
+        });
+    }
     document.querySelectorAll('.dag-node-group').forEach((el) => {
         el.addEventListener('click', () => {
             const key = el.getAttribute('data-node-key');
@@ -4120,6 +4275,12 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 return;
             try {
                 const info = JSON.parse(rawHover);
+                const blockedByStr = info.blockedByKeys && info.blockedByKeys.length > 0
+                    ? info.blockedByKeys.join(', ')
+                    : 'None';
+                const blocksStr = info.blocksKeys && info.blocksKeys.length > 0
+                    ? info.blocksKeys.join(', ')
+                    : 'None';
                 const shiftLine = info.rippleShift > 0
                     ? `<strong class="text-danger">+${info.rippleShift.toFixed(1)}d downstream slip</strong>`
                     : info.rippleShift < 0
@@ -4150,6 +4311,8 @@ function attachCockpitEventListeners(skipMountForSlider) {
             <div><span>Projected Finish:</span> <strong>${escapeHtmlText(info.p85Date)}</strong></div>
             <div><span>Deadline Float:</span> ${floatBadge}</div>
             <div><span>Schedule Impact:</span> ${shiftLine}</div>
+            <div><span>Blocked by:</span> <strong>${escapeHtmlText(blockedByStr)}</strong></div>
+            <div><span>Blocks:</span> <strong>${escapeHtmlText(blocksStr)}</strong></div>
             <div><span>Linked Goal:</span> <strong>${escapeHtmlText(info.goalName)}</strong></div>
           </div>
           ${info.adr
@@ -4219,6 +4382,17 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 renderCockpit();
             });
         }
+        // 5b. Scope Toggle: Trim / Defer Scope (MVP)
+        const btnTrimScope = document.getElementById('btn-toggle-trim-scope');
+        if (btnTrimScope) {
+            btnTrimScope.addEventListener('click', () => {
+                state.trimScope = !state.trimScope;
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                triggerRemoteWhatIf();
+                renderCockpit();
+            });
+        }
         // 6. Copy Rovo Mitigation Prompt Button
         const btnCopyRovo = document.getElementById('btn-copy-rovo-prompt');
         if (btnCopyRovo) {
@@ -4232,6 +4406,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
                     delayDays: state.delayDays,
                     addDeveloper: state.addDeveloper,
                     decoupleBlockingEdges: state.decoupleBlockingEdges,
+                    trimScope: state.trimScope,
                     activeRightTab: state.activeRightTab,
                     copiedPromptNotice: state.copiedPromptNotice,
                 });
@@ -4264,9 +4439,9 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 const key = row.getAttribute('data-select-node');
                 if (key) {
                     state.selectedNodeKey = key;
-                    if (state.delayDays === 0)
-                        state.delayDays = 5;
+                    state.copiedPromptNotice = false;
                     recomputeSimulation();
+                    triggerRemoteWhatIf();
                     renderCockpit();
                     scrollDagToSelectedNode(true);
                 }
@@ -4359,6 +4534,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
             state.delayDays = 0;
             state.addDeveloper = false;
             state.decoupleBlockingEdges = false;
+            state.trimScope = false;
             state.scrubberDayOffset = 0;
             state.selectedEpochIndex = 2;
             recomputeSimulation();
@@ -4369,6 +4545,35 @@ function attachCockpitEventListeners(skipMountForSlider) {
         });
     }
 }
+// Global [ and ] keyboard stepping across issues in the Dependency Map (attached once)
+document.addEventListener('keydown', (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey)
+        return;
+    const activeEl = document.activeElement;
+    const tag = activeEl?.tagName?.toUpperCase();
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || activeEl?.isContentEditable) {
+        return;
+    }
+    if (event.key !== '[' && event.key !== ']')
+        return;
+    const order = state.graph.topologicalOrder.length > 0
+        ? state.graph.topologicalOrder
+        : state.graph.nodes.map((n) => n.key);
+    if (order.length === 0)
+        return;
+    const curIdx = order.indexOf(state.selectedNodeKey);
+    const step = event.key === '[' ? -1 : 1;
+    const nextIdx = curIdx < 0 ? 0 : (curIdx + step + order.length) % order.length;
+    const nextKey = order[nextIdx];
+    if (!nextKey || nextKey === state.selectedNodeKey)
+        return;
+    state.selectedNodeKey = nextKey;
+    state.copiedPromptNotice = false;
+    recomputeSimulation();
+    triggerRemoteWhatIf();
+    renderCockpit();
+    scrollDagToSelectedNode(true);
+});
 // Initialize on DOM load + sync with Forge Backend Resolver (`getGraphData`)
 document.addEventListener('DOMContentLoaded', async () => {
     renderCockpit();

@@ -24,6 +24,8 @@ import {
   simulateDelayImpact,
 } from '../../rovo/actions';
 import { mcpWebtriggerHandler } from '../../mcp/server';
+import type { RawJiraIssue } from '../types';
+import { computeFinishOddsOnDay } from '../../../static/ui/src/components/TimelineScrubber';
 
 describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () => {
   it('constructs the 18-node Project Chronos: Next-Gen Platform Launch DAG across Core Engine, Cloud Infra, Client UI and 2 Goals', () => {
@@ -495,5 +497,185 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
       multiTeamGraph.teams.map((t) => t.name),
       ['Platform Security', 'Mobile App']
     );
+  });
+
+  it('supports trimScope (MVP) counterfactual mitigation reducing p85Days and estimatedReworkHours', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const unmitigated = runIntervention(graph, 'CHRON-104', 0, { iterations: 500 });
+    const trimmed = runIntervention(graph, 'CHRON-104', 0, {
+      iterations: 500,
+      trimScope: true,
+    });
+
+    assert.equal(trimmed.trimScope, true);
+    assert.ok(
+      trimmed.p85Days < trimmed.baseline.p85Days,
+      `Expected trimScope P85 (${trimmed.p85Days}d) < baseline P85 (${trimmed.baseline.p85Days}d)`
+    );
+    assert.ok(trimmed.p85ShiftDays < 0, `Expected negative p85ShiftDays, got ${trimmed.p85ShiftDays}`);
+    assert.ok(
+      trimmed.estimatedReworkHours < unmitigated.estimatedReworkHours,
+      `Expected trimScope rework (${trimmed.estimatedReworkHours}h) < unmitigated rework (${unmitigated.estimatedReworkHours}h)`
+    );
+  });
+
+  it('enforces mathematical monotonicity, percentile ordering (P50 <= P85 <= P95 <= CVaR95), and CRN zero-noise determinism', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const baseline = runMonteCarloSimulation(graph, { iterations: 500 });
+
+    assert.ok(
+      baseline.p50Days <= baseline.p85Days &&
+        baseline.p85Days <= baseline.p95Days &&
+        baseline.p95Days <= baseline.cvar95Days,
+      `Expected P50 (${baseline.p50Days}) <= P85 (${baseline.p85Days}) <= P95 (${baseline.p95Days}) <= CVaR95 (${baseline.cvar95Days})`
+    );
+
+    const zeroShift = runIntervention(graph, 'CHRON-104', 0, { iterations: 500 });
+    assert.equal(zeroShift.p50ShiftDays, 0);
+    assert.equal(zeroShift.p85ShiftDays, 0);
+    assert.equal(zeroShift.p95ShiftDays, 0);
+
+    const deltas = [-4, 0, 5, 15];
+    const p85Series = deltas.map(
+      (d) => runIntervention(graph, 'CHRON-104', d, { iterations: 500 }).p85Days
+    );
+    for (let i = 1; i < p85Series.length; i++) {
+      assert.ok(
+        p85Series[i] >= p85Series[i - 1],
+        `Expected monotonic P85 across deltas (${deltas.join(', ')}): got ${p85Series.join(' -> ')}`
+      );
+    }
+
+    const unmitigatedDelay = runIntervention(graph, 'CHRON-104', 10, { iterations: 500 });
+    const withAddDev = runIntervention(graph, 'CHRON-104', 10, {
+      iterations: 500,
+      addDeveloper: true,
+    });
+    const withDecouple = runIntervention(graph, 'CHRON-104', 10, {
+      iterations: 500,
+      decoupleBlockingEdges: true,
+    });
+    const withTrimScope = runIntervention(graph, 'CHRON-104', 10, {
+      iterations: 500,
+      trimScope: true,
+    });
+
+    assert.ok(
+      withAddDev.p85Days <= unmitigatedDelay.p85Days,
+      `Expected addDeveloper P85 (${withAddDev.p85Days}) <= unmitigated (${unmitigatedDelay.p85Days})`
+    );
+    assert.ok(
+      withDecouple.p85Days <= unmitigatedDelay.p85Days,
+      `Expected decouple P85 (${withDecouple.p85Days}) <= unmitigated (${unmitigatedDelay.p85Days})`
+    );
+    assert.ok(
+      withTrimScope.p85Days <= unmitigatedDelay.p85Days,
+      `Expected trimScope P85 (${withTrimScope.p85Days}) <= unmitigated (${unmitigatedDelay.p85Days})`
+    );
+  });
+
+  it('handles 0-issue, 1-issue, and 150-issue scale stress tests with cyclic/dirty links in < 150ms', () => {
+    // 1. 0-issue project
+    const emptyGraph = buildDAGFromJiraIssues('EMPTY', []);
+    assert.equal(emptyGraph.nodes.length, 0);
+    const emptySim = runMonteCarloSimulation(emptyGraph, { iterations: 500 });
+    assert.equal(emptySim.p85Days, 0);
+    assert.equal(emptySim.criticalPathNodes.length, 0);
+
+    // 2. 1-issue project
+    const soloGraph = buildDAGFromJiraIssues('SOLO', [
+      {
+        id: '1',
+        key: 'SOLO-1',
+        fields: {
+          summary: 'Single task',
+          status: { name: 'In Progress' },
+          customfield_10016: 5,
+        },
+      },
+    ]);
+    assert.equal(soloGraph.nodes.length, 1);
+    const soloSim = runMonteCarloSimulation(soloGraph, { iterations: 500 });
+    assert.ok(soloSim.p85Days > 0);
+    assert.ok(soloSim.p85Date.length >= 8);
+
+    // 3. 150-issue scale + 5 intentional circular back-edges stress test
+    const backEdges = new Map<number, number>([
+      [25, 10],
+      [55, 35],
+      [85, 65],
+      [115, 95],
+      [145, 125],
+    ]);
+    const scaleIssues: RawJiraIssue[] = [];
+    for (let i = 1; i <= 150; i++) {
+      const links: NonNullable<RawJiraIssue['fields']['issuelinks']> = [];
+      if (i + 5 <= 150) {
+        links.push({
+          type: { name: 'Blocks', outward: 'blocks' },
+          outwardIssue: { key: `SCALE-${i + 5}` },
+        });
+      }
+      if (i % 10 === 1 && i + 1 <= 150) {
+        links.push({
+          type: { name: 'Blocks', outward: 'blocks' },
+          outwardIssue: { key: `SCALE-${i + 1}` },
+        });
+      }
+      const cycleTarget = backEdges.get(i);
+      if (cycleTarget !== undefined) {
+        links.push({
+          type: { name: 'Blocks', outward: 'blocks' },
+          outwardIssue: { key: `SCALE-${cycleTarget}` },
+        });
+      }
+
+      scaleIssues.push({
+        id: String(7000 + i),
+        key: `SCALE-${i}`,
+        fields: {
+          summary: `Scale Benchmark Task ${i}`,
+          status: { name: i <= 20 ? 'Done' : i <= 40 ? 'In Progress' : 'To Do' },
+          customfield_10016: (i % 5) + 1,
+          issuelinks: links,
+        },
+      });
+    }
+
+    const scaleGraph = buildDAGFromJiraIssues('SCALE', scaleIssues);
+    assert.equal(scaleGraph.nodes.length, 150);
+    assert.equal(scaleGraph.topologicalOrder.length, 150);
+    assert.ok(
+      scaleGraph.cycleWarnings.length >= 5,
+      `Expected >= 5 broken cycle warnings, got ${scaleGraph.cycleWarnings.length}`
+    );
+
+    const scaleSim = runMonteCarloSimulation(scaleGraph, { iterations: 500 });
+    assert.equal(scaleSim.iterations, 500);
+    assert.ok(
+      scaleSim.executionTimeMs < 150,
+      `Expected 150-issue 500-run Monte Carlo < 150ms, got ${scaleSim.executionTimeMs}ms`
+    );
+  });
+
+  it('computes monotonically non-decreasing target-date finish odds across the Timeline Scrubber horizon', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const sim = runMonteCarloSimulation(graph, { iterations: 500 });
+
+    assert.equal(computeFinishOddsOnDay(sim, 0), 0);
+    assert.equal(computeFinishOddsOnDay(sim, sim.p50Days), 50);
+    assert.equal(computeFinishOddsOnDay(sim, sim.p85Days), 85);
+    assert.equal(computeFinishOddsOnDay(sim, sim.p95Days), 95);
+
+    const maxDay = Math.ceil(sim.cvar95Days + 5);
+    let prev = computeFinishOddsOnDay(sim, 0);
+    for (let d = 1; d <= maxDay; d++) {
+      const cur = computeFinishOddsOnDay(sim, d);
+      assert.ok(
+        cur >= prev,
+        `Expected finish odds at day ${d} (${cur}%) >= day ${d - 1} (${prev}%)`
+      );
+      prev = cur;
+    }
   });
 });
