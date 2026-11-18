@@ -38,6 +38,7 @@ export interface HeaderBarProps {
   delayDays: number;
   addDeveloper: boolean;
   decoupleBlockingEdges: boolean;
+  hasAnyIntervention?: boolean;
   statusBanner: string | null;
 }
 
@@ -69,11 +70,12 @@ export function renderTopAppBar(props: HeaderBarProps): string {
     delayDays,
     addDeveloper,
     decoupleBlockingEdges,
+    hasAnyIntervention,
     statusBanner,
   } = props;
 
   const hasActiveIntervention =
-    delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
+    Boolean(hasAnyIntervention) || delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
 
   const topBlocker = activeSim.topBottlenecks[0];
   const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'BLP-7';
@@ -343,7 +345,7 @@ export function renderLeftStatusRail(props: HeaderBarProps): string {
                   </div>
                   <div class="rail-goal-meta">
                     <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
-                    <span>Commit: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> (${escapeHtmlText(goal.status)})</span>
+                    <span>Commit: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> · ${escapeHtmlText(goal.status)}</span>
                   </div>
                   <svg class="rail-goal-bar-svg" width="100%" height="5" viewBox="0 0 100 5" preserveAspectRatio="none">
                     <rect x="0" y="0" width="100" height="5" rx="2.5" fill="#1E293B" />

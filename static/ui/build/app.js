@@ -943,7 +943,7 @@ function runMonteCarloSimulation(graph, options = {}) {
     topoKeys.forEach((k, idx) => keyToIndex.set(k, idx));
     const nodeByKey = new Map(graph.nodes.map((node) => [node.key, node]));
     const orderedNodes = topoKeys.map((k) => nodeByKey.get(k));
-    // Resolve optional intervention target
+    // Resolve optional single-node and compound multi-node / assignee interventions
     const intervenedKey = options.intervention?.targetNodeId
         ? resolveNodeKey(graph.nodes, options.intervention.targetNodeId)
         : undefined;
@@ -951,19 +951,126 @@ function runMonteCarloSimulation(graph, options = {}) {
     const addDeveloper = Boolean(intervenedKey && options.intervention?.addDeveloper);
     const decoupleBlockingEdges = Boolean(intervenedKey && options.intervention?.decoupleBlockingEdges);
     const trimScope = Boolean(intervenedKey && options.intervention?.trimScope);
-    // Apply edge decoupling if requested
-    const effectiveEdges = decoupleBlockingEdges
-        ? graph.edges.map((e) => e.from === intervenedKey
+    const effectiveNodeOverrides = new Map();
+    if (intervenedKey &&
+        (interventionDelta !== 0 || addDeveloper || decoupleBlockingEdges || trimScope)) {
+        effectiveNodeOverrides.set(intervenedKey, {
+            deltaDays: interventionDelta,
+            addDeveloper,
+            decoupleBlockingEdges,
+            trimScope,
+        });
+    }
+    for (const [rawKey, ov] of Object.entries(options.intervention?.nodeOverrides ?? {})) {
+        if (!ov)
+            continue;
+        const resolved = resolveNodeKey(graph.nodes, rawKey);
+        if (!resolved)
+            continue;
+        const d = Number(ov.deltaDays || 0);
+        const hasMod = d !== 0 ||
+            Boolean(ov.addDeveloper) ||
+            Boolean(ov.decoupleBlockingEdges) ||
+            Boolean(ov.trimScope);
+        if (hasMod) {
+            effectiveNodeOverrides.set(resolved, {
+                deltaDays: d,
+                addDeveloper: Boolean(ov.addDeveloper),
+                decoupleBlockingEdges: Boolean(ov.decoupleBlockingEdges),
+                trimScope: Boolean(ov.trimScope),
+            });
+        }
+    }
+    const reassignedNodeKeys = new Set();
+    const serializedAssignees = new Set();
+    for (const [rawAssignee, aOv] of Object.entries(options.intervention?.assigneeOverrides ?? {})) {
+        if (!aOv)
+            continue;
+        const assigneeName = aOv.assignee || rawAssignee;
+        const activeAssigneeNodes = orderedNodes
+            .filter((node) => node.assignee === assigneeName && node.status.toLowerCase() !== 'done')
+            .sort((a, b) => b.baseEstimateDays * (1 + b.uncertaintySigma) -
+            a.baseEstimateDays * (1 + a.uncertaintySigma));
+        if (activeAssigneeNodes.length === 0)
+            continue;
+        const ptoDays = Number(aOv.unavailableDays || 0);
+        if (ptoDays !== 0) {
+            activeAssigneeNodes.forEach((aNode, idx) => {
+                const appliedDays = idx === 0 ? ptoDays : Number((ptoDays * 0.45).toFixed(1));
+                const prev = effectiveNodeOverrides.get(aNode.key) ?? { deltaDays: 0 };
+                effectiveNodeOverrides.set(aNode.key, {
+                    ...prev,
+                    deltaDays: Number((prev.deltaDays + appliedDays).toFixed(1)),
+                });
+            });
+        }
+        if (aOv.pairOnTopBlocker && activeAssigneeNodes[0]) {
+            const topKey = activeAssigneeNodes[0].key;
+            const prev = effectiveNodeOverrides.get(topKey) ?? { deltaDays: 0 };
+            effectiveNodeOverrides.set(topKey, {
+                ...prev,
+                addDeveloper: true,
+            });
+        }
+        if (aOv.reassignBottleneck) {
+            const targetParallelNode = activeAssigneeNodes[1] ?? activeAssigneeNodes[0];
+            reassignedNodeKeys.add(targetParallelNode.key);
+            if (!effectiveNodeOverrides.has(targetParallelNode.key)) {
+                effectiveNodeOverrides.set(targetParallelNode.key, { deltaDays: 0 });
+            }
+        }
+        if (aOv.serializeParallelWork) {
+            serializedAssignees.add(assigneeName);
+            if (!effectiveNodeOverrides.has(activeAssigneeNodes[0].key)) {
+                effectiveNodeOverrides.set(activeAssigneeNodes[0].key, { deltaDays: 0 });
+            }
+        }
+    }
+    const decoupledKeys = new Set();
+    for (const [k, ov] of effectiveNodeOverrides.entries()) {
+        if (ov.decoupleBlockingEdges) {
+            decoupledKeys.add(k);
+        }
+    }
+    const anyDecoupled = decoupledKeys.size > 0;
+    const anyAddDeveloper = addDeveloper || Array.from(effectiveNodeOverrides.values()).some((v) => v.addDeveloper);
+    const anyTrimScope = trimScope || Array.from(effectiveNodeOverrides.values()).some((v) => v.trimScope);
+    // Apply edge decoupling if requested for one or more intervened nodes
+    const effectiveEdges = anyDecoupled
+        ? graph.edges.map((e) => decoupledKeys.has(e.from)
             ? { ...e, propagationWeight: Math.min(e.propagationWeight, 0.25) }
             : e)
         : graph.edges;
-    const effectiveGraph = decoupleBlockingEdges
+    const effectiveGraph = anyDecoupled
         ? { ...graph, edges: effectiveEdges }
         : graph;
-    // Downstream blast radius from intervened node (if any)
-    const blastInfo = intervenedKey
-        ? getDownstreamBlastRadius(effectiveGraph, intervenedKey)
-        : { targetKey: undefined, blastRadiusKeys: [], effectiveWeights: {} };
+    // Combined downstream blast radius across all intervened nodes
+    const hasExplicitOverrides = effectiveNodeOverrides.size > 0 ||
+        reassignedNodeKeys.size > 0 ||
+        serializedAssignees.size > 0;
+    const blastSources = Array.from(new Set([
+        ...effectiveNodeOverrides.keys(),
+        ...reassignedNodeKeys.values(),
+        ...(intervenedKey && (!hasExplicitOverrides || effectiveNodeOverrides.has(intervenedKey))
+            ? [intervenedKey]
+            : []),
+    ]));
+    const combinedBlastKeys = new Set();
+    const combinedEffectiveWeights = {};
+    for (const srcKey of blastSources) {
+        const info = getDownstreamBlastRadius(effectiveGraph, srcKey);
+        for (const bk of info.blastRadiusKeys) {
+            combinedBlastKeys.add(bk);
+        }
+        for (const [wk, wVal] of Object.entries(info.effectiveWeights)) {
+            combinedEffectiveWeights[wk] = Math.max(combinedEffectiveWeights[wk] ?? 0, wVal);
+        }
+    }
+    const blastInfo = {
+        targetKey: blastSources[0],
+        blastRadiusKeys: Array.from(combinedBlastKeys),
+        effectiveWeights: combinedEffectiveWeights,
+    };
     // Pre-index incoming and outgoing edges for each topological index
     const predIndices = Array.from({ length: n }, () => []);
     const predWeights = Array.from({ length: n }, () => []);
@@ -984,15 +1091,26 @@ function runMonteCarloSimulation(graph, options = {}) {
             predLags[vIdx].push(edge.lagDays ?? 0);
         }
     }
-    // Detect parallel assignee contention across active non-Done tasks
+    // Detect parallel assignee contention across active non-Done tasks (reflecting reassignments/serialization)
     const assigneeActiveTasks = new Map();
     for (const node of orderedNodes) {
         if (node.status.toLowerCase() !== 'done' &&
             node.assignee &&
             node.assignee.toLowerCase() !== 'unassigned') {
-            const list = assigneeActiveTasks.get(node.assignee) ?? [];
+            const effectiveAssignee = reassignedNodeKeys.has(node.key)
+                ? 'Reassigned (+Dev)'
+                : node.assignee;
+            if (serializedAssignees.has(effectiveAssignee)) {
+                const list = assigneeActiveTasks.get(effectiveAssignee) ?? [];
+                if (list.length === 0) {
+                    list.push(node.key);
+                    assigneeActiveTasks.set(effectiveAssignee, list);
+                }
+                continue;
+            }
+            const list = assigneeActiveTasks.get(effectiveAssignee) ?? [];
             list.push(node.key);
-            assigneeActiveTasks.set(node.assignee, list);
+            assigneeActiveTasks.set(effectiveAssignee, list);
         }
     }
     // Deterministic CPM metrics (slack, totalFloat, downstream counts, ripple weights)
@@ -1016,12 +1134,18 @@ function runMonteCarloSimulation(graph, options = {}) {
         for (let i = 0; i < n; i++) {
             const node = orderedNodes[i];
             const pert = nodePert[i];
-            const isTarget = node.key === intervenedKey;
+            const nodeOv = effectiveNodeOverrides.get(node.key);
+            const nodeDelta = nodeOv ? Number(nodeOv.deltaDays || 0) : 0;
+            const nodeAddDev = Boolean(nodeOv?.addDeveloper);
+            const nodeTrimScope = Boolean(nodeOv?.trimScope);
+            const isNodeReassigned = reassignedNodeKeys.has(node.key);
+            const isAssigneeSerialized = serializedAssignees.has(node.assignee);
+            const isTarget = Boolean(nodeOv) || isNodeReassigned || isAssigneeSerialized;
             const isDone = node.status.toLowerCase() === 'done';
             // Sample stochastic task duration using right-skewed normal noise
             const z = sampleStandardNormal(rng);
             let sampledDuration = 0;
-            if (!isDone || (isTarget && (interventionDelta !== 0 || addDeveloper || trimScope))) {
+            if (!isDone || (isTarget && (nodeDelta !== 0 || nodeAddDev || nodeTrimScope))) {
                 let base = isDone ? 0 : pert.meanDays;
                 let sigma = isDone ? 0.25 : pert.sigmaDays;
                 // Multi-tasking fragmentation / overload adjustment if explicitly configured
@@ -1033,14 +1157,22 @@ function runMonteCarloSimulation(graph, options = {}) {
                         sigma *= 1.2;
                     }
                 }
-                if (isTarget && addDeveloper) {
+                if (nodeAddDev) {
                     const brooks = computeBrooksLawMetrics(node);
                     base = brooks.effectiveSwarmDurationDays;
                     sigma = Math.max(0.1, sigma * 0.6);
                 }
-                if (isTarget && trimScope) {
+                if (nodeTrimScope) {
                     base = Math.max(0.5, Number((base * 0.65).toFixed(2)));
                     sigma = Math.max(0.1, sigma * 0.55);
+                }
+                if (isNodeReassigned) {
+                    base = Math.max(0.5, Number((base * 0.72).toFixed(2)));
+                    sigma = Math.max(0.1, sigma * 0.65);
+                }
+                if (isAssigneeSerialized) {
+                    base = Math.max(0.5, Number((base * 0.88).toFixed(2)));
+                    sigma = Math.max(0.1, sigma * 0.7);
                 }
                 // Right-skewed software engineering tail distribution
                 const skewNoise = z >= 0 ? z * sigma * 1.28 : z * sigma * 0.62;
@@ -1054,8 +1186,8 @@ function runMonteCarloSimulation(graph, options = {}) {
                         }
                     }
                 }
-                const shiftedDuration = rawDuration + (isTarget ? interventionDelta : 0);
-                sampledDuration = isDone && interventionDelta <= 0 ? 0 : Math.max(0.5, shiftedDuration);
+                const shiftedDuration = rawDuration + (isTarget ? nodeDelta : 0);
+                sampledDuration = isDone && nodeDelta <= 0 ? 0 : Math.max(0.5, shiftedDuration);
             }
             // Compute earliest start time gated by upstream predecessors (FS, SS, FF, SF + lagDays)
             const pIdxList = predIndices[i];
@@ -1427,17 +1559,20 @@ function runMonteCarloSimulation(graph, options = {}) {
         },
     ];
     // Compute Asymmetric Quasimetric Latent Energy E(s -> s' | z_env) & Rework Hours (ported from ProjectWorldModel)
-    const gammaRev = decoupleBlockingEdges ? 0.92 : 0.72;
+    const gammaRev = anyDecoupled ? 0.92 : 0.72;
     let quadDiffSum = 0;
     let posLockInDelta = 0;
+    let totalPosInterventionDelta = 0;
     for (let i = 0; i < n; i++) {
         const baseEst = orderedNodes[i].baseEstimateDays;
         const p85Finish = nodeStats[orderedNodes[i].key]?.p85EndDay ?? baseEst;
         const diff = p85Finish - baseEst;
         const gDiag = 1.0 + (1.0 - gammaRev) * 0.5;
         quadDiffSum += diff * diff * gDiag;
-        if (orderedNodes[i].key === intervenedKey && interventionDelta > 0) {
-            posLockInDelta += interventionDelta;
+        const ovDelta = effectiveNodeOverrides.get(orderedNodes[i].key)?.deltaDays ?? 0;
+        if (ovDelta > 0) {
+            posLockInDelta += ovDelta;
+            totalPosInterventionDelta += ovDelta;
         }
     }
     const quasimetricEnergy = Number((Math.sqrt(Math.max(0, quadDiffSum)) + (1.0 - gammaRev) * posLockInDelta).toFixed(2));
@@ -1451,12 +1586,12 @@ function runMonteCarloSimulation(graph, options = {}) {
     const maturityRatio = orderedNodes.length > 0 ? (doneCount + inProgressCount * 0.5) / orderedNodes.length : 0;
     const lateChangeEscalationFactor = Number(Math.exp(0.65 * maturityRatio).toFixed(2));
     const estimatedReworkHours = Number(Math.max(4, (blastInfo.blastRadiusKeys.length * 3.5 +
-        Math.max(0, interventionDelta) * 5.2 +
+        totalPosInterventionDelta * 5.2 +
         fastTrackingReworkBonus) *
-        (interventionDelta > 0 ? lateChangeEscalationFactor * 0.78 : 1.0) *
-        (addDeveloper ? 0.65 : 1.0) *
-        (decoupleBlockingEdges ? 0.5 : 1.0) *
-        (trimScope ? 0.7 : 1.0)).toFixed(1));
+        (totalPosInterventionDelta > 0 ? lateChangeEscalationFactor * 0.78 : 1.0) *
+        (anyAddDeveloper ? 0.65 : 1.0) *
+        (anyDecoupled ? 0.5 : 1.0) *
+        (anyTrimScope ? 0.7 : 1.0)).toFixed(1));
     // 1. Three-Tier Schedule Reserve Breakdown (Base P50, PM Contingency P85-P50, Exec Reserve CVaR95-P85)
     const pmContingencyReserveDays = Number(Math.max(0.5, p85Days - p50Days).toFixed(1));
     const managementReserveDays = Number(Math.max(0.5, cvar95Days - p85Days).toFixed(1));
@@ -1471,7 +1606,7 @@ function runMonteCarloSimulation(graph, options = {}) {
         }
     }
     const committedEffortRatio = Number((totalBac > 0 ? Math.min(1, committedEffort / totalBac) : 0).toFixed(2));
-    const activeSlipOrBlock = Math.max(0, interventionDelta) + blockedCount * 1.5;
+    const activeSlipOrBlock = totalPosInterventionDelta + blockedCount * 1.5;
     const bufferBurnRatio = Number(Math.min(2.0, activeSlipOrBlock / Math.max(1.0, pmContingencyReserveDays)).toFixed(2));
     const reserves = {
         baseTargetDays: p50Days,
@@ -1508,8 +1643,9 @@ function runMonteCarloSimulation(graph, options = {}) {
                     : sLow.includes('progress')
                         ? bac * 0.52
                         : 0;
-        if (node.key === intervenedKey && interventionDelta > 0) {
-            acwp += interventionDelta * 0.75;
+        const ovDelta = effectiveNodeOverrides.get(node.key)?.deltaDays ?? 0;
+        if (ovDelta > 0) {
+            acwp += ovDelta * 0.75;
         }
         totalBcws += bcws;
         totalBcwp += bcwp;
@@ -1700,6 +1836,8 @@ function runIntervention(graph, targetNodeId, deltaDays, iterationsOrOptions = D
         ? Boolean(iterationsOrOptions.decoupleBlockingEdges)
         : false;
     const trimScope = typeof iterationsOrOptions === 'object' ? Boolean(iterationsOrOptions.trimScope) : false;
+    const nodeOverrides = typeof iterationsOrOptions === 'object' ? iterationsOrOptions.nodeOverrides : undefined;
+    const assigneeOverrides = typeof iterationsOrOptions === 'object' ? iterationsOrOptions.assigneeOverrides : undefined;
     // Support both acceleration (-5d) and delay (+120d)
     const sanitizedDelta = Math.max(-5, Math.min(120, Number(deltaDays) || 0));
     const resolvedKey = resolveNodeKey(graph.nodes, targetNodeId) ??
@@ -1722,9 +1860,12 @@ function runIntervention(graph, targetNodeId, deltaDays, iterationsOrOptions = D
             addDeveloper,
             decoupleBlockingEdges,
             trimScope,
+            nodeOverrides,
+            assigneeOverrides,
         },
     });
     const blastInfo = getDownstreamBlastRadius(graph, resolvedKey);
+    const intervenedBlastSet = new Set(intervenedSim.blastRadiusNodes);
     // Calculate exact signed per-node counterfactual shifts
     const nodeDeltas = [];
     let maxMagnitudeDownstreamShift = 0;
@@ -1734,13 +1875,16 @@ function runIntervention(graph, targetNodeId, deltaDays, iterationsOrOptions = D
         if (!baseStat || !intStat)
             continue;
         const shiftDays = Number((intStat.p85EndDay - baseStat.p85EndDay).toFixed(1));
-        const effectiveWeight = blastInfo.effectiveWeights[key] ?? 0;
+        const effectiveWeight = blastInfo.effectiveWeights[key] ?? (intervenedBlastSet.has(key) ? 0.75 : 0);
         if (key !== resolvedKey &&
             Math.abs(shiftDays) > Math.abs(maxMagnitudeDownstreamShift)) {
             maxMagnitudeDownstreamShift = shiftDays;
         }
         intStat.rippleDelayDays = shiftDays;
-        if (key === resolvedKey || effectiveWeight > 0 || Math.abs(shiftDays) > 0) {
+        if (key === resolvedKey ||
+            Boolean(nodeOverrides?.[key]) ||
+            effectiveWeight > 0 ||
+            Math.abs(shiftDays) > 0) {
             nodeDeltas.push({
                 key,
                 summary: intStat.summary,
@@ -1914,8 +2058,8 @@ function renderArchGaugeSvg(ratio, strokeColor, trackColor = '#334155') {
   `;
 }
 function renderTopAppBar(props) {
-    const { availableProjects, graph, activeSim, delayDays, addDeveloper, decoupleBlockingEdges, statusBanner, } = props;
-    const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
+    const { availableProjects, graph, activeSim, delayDays, addDeveloper, decoupleBlockingEdges, hasAnyIntervention, statusBanner, } = props;
+    const hasActiveIntervention = Boolean(hasAnyIntervention) || delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
     const topBlocker = activeSim.topBottlenecks[0];
     const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'BLP-7';
     const projectList = availableProjects.length > 0
@@ -2133,7 +2277,7 @@ function renderLeftStatusRail(props) {
                   </div>
                   <div class="rail-goal-meta">
                     <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
-                    <span>Commit: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> (${escapeHtmlText(goal.status)})</span>
+                    <span>Commit: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> · ${escapeHtmlText(goal.status)}</span>
                   </div>
                   <svg class="rail-goal-bar-svg" width="100%" height="5" viewBox="0 0 100 5" preserveAspectRatio="none">
                     <rect x="0" y="0" width="100" height="5" rx="2.5" fill="#1E293B" />
@@ -2659,14 +2803,23 @@ function computeNodeCoordinates(graph) {
     };
 }
 function renderDagCanvas(props) {
-    const { graph, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, scrubberDayOffset, } = props;
+    const { graph, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, scrubberDayOffset, simulatorMode = 'issue', pinnedNodeOverrides = {}, selectedAssignee = '', assigneeOverrides = {}, } = props;
     const { coords, activeTeams, svgHeight, svgWidth, laneHeight, goalColX, } = computeNodeCoordinates(graph);
     const blastSet = new Set(activeSim.blastRadiusNodes);
     const criticalSet = new Set(activeSim.criticalPathNodes);
     const topBlockerKey = activeSim.topBottlenecks[0]?.key ?? '';
     const topBlockerSet = new Set(activeSim.topBottlenecks.slice(0, 3).map((b) => b.key));
-    const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
-    const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
+    const pinnedKeys = Object.keys(pinnedNodeOverrides);
+    const hasAssigneeMods = Object.values(assigneeOverrides).some((a) => Number(a.unavailableDays ?? 0) !== 0 ||
+        a.reassignBottleneck ||
+        a.serializeParallelWork ||
+        a.pairOnTopBlocker);
+    const hasCurrentNodeIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
+    const hasActiveIntervention = hasCurrentNodeIntervention || pinnedKeys.length > 0 || hasAssigneeMods;
+    const intervenedKey = hasCurrentNodeIntervention ? selectedNodeKey : '';
+    const intervenedOriginSet = new Set(pinnedKeys);
+    if (intervenedKey)
+        intervenedOriginSet.add(intervenedKey);
     const blockedByMap = new Map();
     const blocksMap = new Map();
     for (const edge of graph.edges) {
@@ -2851,10 +3004,11 @@ function renderDagCanvas(props) {
             : sameCol
                 ? `M ${x1} ${y1} L ${x2} ${y2}`
                 : `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
-        const isDecoupledEdge = decoupleBlockingEdges && edge.from === selectedNodeKey;
-        const isBlastEdge = intervenedKey !== '' &&
+        const isDecoupledEdge = (decoupleBlockingEdges && edge.from === selectedNodeKey) ||
+            Boolean(pinnedNodeOverrides[edge.from]?.decoupleBlockingEdges);
+        const isBlastEdge = hasActiveIntervention &&
             !isDecoupledEdge &&
-            (edge.from === intervenedKey || blastSet.has(edge.from)) &&
+            (intervenedOriginSet.has(edge.from) || blastSet.has(edge.from)) &&
             blastSet.has(edge.to);
         const isCriticalEdge = criticalSet.has(edge.from) && criticalSet.has(edge.to);
         let edgeClass = 'dag-edge';
@@ -2976,7 +3130,12 @@ function renderDagCanvas(props) {
             return '';
         const stat = activeSim.nodeStats[node.key];
         const isSelected = node.key === selectedNodeKey;
-        const isIntervenedOrigin = intervenedKey === node.key;
+        const pinIndex = pinnedKeys.indexOf(node.key);
+        const nodePinOv = pinnedNodeOverrides[node.key];
+        const isIntervenedOrigin = intervenedKey === node.key || Boolean(nodePinOv);
+        const isPersonHighlighted = simulatorMode === 'person' &&
+            Boolean(selectedAssignee) &&
+            node.assignee === selectedAssignee;
         const isInBlast = hasActiveIntervention && blastSet.has(node.key);
         const isCritical = criticalSet.has(node.key);
         const temporalState = evaluateNodeTemporalState(node, stat, scrubberDayOffset, hasActiveIntervention);
@@ -2989,6 +3148,8 @@ function renderDagCanvas(props) {
             groupClass += ' selected';
         if (isIntervenedOrigin)
             groupClass += ' intervened-origin';
+        if (isPersonHighlighted)
+            groupClass += ' person-highlighted';
         // Sub-task / Epic completion metrics (Concept 1 node presentation)
         const totalSub = node.subtaskTotalCount ??
             Math.max(3, Math.min(8, Math.round(node.baseEstimateDays)));
@@ -3018,10 +3179,11 @@ function renderDagCanvas(props) {
         const isDiamondGate = shapeKind === 'gate';
         const isHexagonBlocker = shapeKind === 'blocker';
         const shapeType = isDiamondGate
-            ? 'Diamond Gate'
+            ? 'Gate'
             : isHexagonBlocker
-                ? 'Hexagon Blocker'
-                : 'Circle Task/Epic';
+                ? 'Blocker'
+                : 'Task';
+        const hoverStateLabel = temporalState === 'At Risk / Blocked' ? 'Blocked' : temporalState;
         const blockedByKeys = blockedByMap.get(node.key) ?? [];
         const blocksKeys = blocksMap.get(node.key) ?? [];
         const hoverJson = JSON.stringify({
@@ -3029,7 +3191,7 @@ function renderDagCanvas(props) {
             summary: node.summary,
             team: node.team,
             assignee: node.assignee,
-            status: `${temporalState} (${shapeType})`,
+            status: `${hoverStateLabel} · ${shapeType}`,
             estimateDays: node.baseEstimateDays,
             sigma: node.uncertaintySigma,
             pertMean: stat?.pertMeanDays ?? node.baseEstimateDays,
@@ -3048,23 +3210,39 @@ function renderDagCanvas(props) {
                 ? `${node.confluenceDecision.title} (${node.confluenceDecision.spaceKey})`
                 : '',
         });
-        // Top What-If intervention / slip badge
+        // Top What-If intervention / slip badge (supports multi-pinned nodes + person highlight)
+        const circledNums = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
+        const effectiveBadgeOv = isSelected && hasCurrentNodeIntervention
+            ? { deltaDays: delayDays, addDeveloper, decoupleBlockingEdges, trimScope }
+            : nodePinOv ?? null;
         let shiftBadge = '';
-        if (isSelected && hasActiveIntervention) {
-            const labelText = delayDays > 0
-                ? `+${delayDays}d Delay`
-                : delayDays < 0
-                    ? `${delayDays}d Faster`
-                    : addDeveloper
-                        ? '+1 Dev'
-                        : decoupleBlockingEdges
-                            ? 'Decoupled'
-                            : 'Scope MVP';
+        if (effectiveBadgeOv) {
+            const badgePrefix = pinIndex >= 0 ? `${circledNums[pinIndex] ?? `#${pinIndex + 1}`} ` : '';
+            const labelText = effectiveBadgeOv.deltaDays > 0
+                ? `${badgePrefix}+${effectiveBadgeOv.deltaDays}d Delay`
+                : effectiveBadgeOv.deltaDays < 0
+                    ? `${badgePrefix}${effectiveBadgeOv.deltaDays}d Faster`
+                    : effectiveBadgeOv.addDeveloper
+                        ? `${badgePrefix}+1 Dev`
+                        : effectiveBadgeOv.decoupleBlockingEdges
+                            ? `${badgePrefix}Decoupled`
+                            : `${badgePrefix}Scope MVP`;
+            const pillFill = pinIndex >= 0 ? '#6D28D9' : '#0C66E4';
             shiftBadge = `
           <g transform="translate(0, -56)">
-            <rect x="-34" y="0" width="68" height="16" rx="8" fill="#0C66E4" />
+            <rect x="-38" y="0" width="76" height="16" rx="8" fill="${pillFill}" />
             <text x="0" y="11.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
               ${escapeHtmlText(labelText)}
+            </text>
+          </g>
+        `;
+        }
+        else if (isPersonHighlighted) {
+            shiftBadge = `
+          <g transform="translate(0, -56)">
+            <rect x="-32" y="0" width="64" height="16" rx="8" fill="#0284C7" />
+            <text x="0" y="11.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+              👤 ${escapeHtmlText(avatarInitials)}
             </text>
           </g>
         `;
@@ -3097,8 +3275,8 @@ function renderDagCanvas(props) {
             data-node-hover="${escapeHtmlText(hoverJson)}"
             transform="translate(${pos.x}, ${pos.y})"
           >
-            ${isSelected
-                ? `<polygon points="0,-54 54,0 0,54 -54,0" fill="none" stroke="#0C66E4" stroke-width="3" stroke-dasharray="4 3" />`
+            ${isSelected || isPersonHighlighted || pinIndex >= 0
+                ? `<polygon points="0,-54 54,0 0,54 -54,0" fill="none" stroke="${pinIndex >= 0 ? '#6D28D9' : isPersonHighlighted ? '#0284C7' : '#0C66E4'}" stroke-width="3" stroke-dasharray="${isPersonHighlighted && !isSelected ? '5 3' : '4 3'}" />`
                 : ''}
             <polygon points="0,-48 48,0 0,48 -48,0" fill="#7C3AED" stroke="${diamondStroke}" stroke-width="2.5" stroke-linejoin="round" />
             <!-- Top small diamond badge -->
@@ -3136,8 +3314,8 @@ function renderDagCanvas(props) {
             data-node-hover="${escapeHtmlText(hoverJson)}"
             transform="translate(${pos.x}, ${pos.y})"
           >
-            ${isSelected
-                ? `<polygon points="0,-54 47,-27 47,27 0,54 -47,27 -47,-27" fill="none" stroke="#0C66E4" stroke-width="3" />`
+            ${isSelected || isPersonHighlighted || pinIndex >= 0
+                ? `<polygon points="0,-54 47,-27 47,27 0,54 -47,27 -47,-27" fill="none" stroke="${pinIndex >= 0 ? '#6D28D9' : isPersonHighlighted ? '#0284C7' : '#0C66E4'}" stroke-width="3" ${isPersonHighlighted && !isSelected ? 'stroke-dasharray="5 3"' : ''} />`
                 : ''}
             <!-- Outer Coral-Red Blocker Hexagon -->
             <polygon points="0,-48 42,-24 42,24 0,48 -42,24 -42,-24" fill="#EF4444" stroke="#B91C1C" stroke-width="2.5" stroke-linejoin="round" />
@@ -3194,8 +3372,14 @@ function renderDagCanvas(props) {
           data-node-hover="${escapeHtmlText(hoverJson)}"
           transform="translate(${pos.x}, ${pos.y})"
         >
-          ${isSelected || isHighRiskCircle
-            ? `<circle r="50" fill="none" stroke="${isSelected ? '#0C66E4' : '#FB923C'}" stroke-width="2.5" opacity="0.65" />`
+          ${isSelected || isHighRiskCircle || isPersonHighlighted || pinIndex >= 0
+            ? `<circle r="50" fill="none" stroke="${pinIndex >= 0
+                ? '#6D28D9'
+                : isPersonHighlighted
+                    ? '#0284C7'
+                    : isSelected
+                        ? '#0C66E4'
+                        : '#FB923C'}" stroke-width="${pinIndex >= 0 || isPersonHighlighted ? '3' : '2.5'}" ${isPersonHighlighted && !isSelected ? 'stroke-dasharray="5 3"' : ''} opacity="0.8" />`
             : ''}
           <!-- Base Circle Track -->
           <circle r="${radius}" fill="${innerFill}" stroke="${baseRingColor}" stroke-width="6" />
@@ -3318,10 +3502,64 @@ function renderDagCanvas(props) {
  * - Step 2: Release Date Comparison Bars + Solid Atlassian Blue (`#0C66E4`) `Ask @Rovo-World-Model Agent` button.
  * - Step 3: Teamwork Graph Goals & Inspector Tabs (`Impacted Issues`, `Top Blockers`, `Math & MCP Spec`).
  */
+function summarizeNodeOverride(ov) {
+    const parts = [];
+    if (ov.deltaDays > 0)
+        parts.push(`+${ov.deltaDays}d`);
+    else if (ov.deltaDays < 0)
+        parts.push(`${ov.deltaDays}d`);
+    if (ov.addDeveloper)
+        parts.push('+Dev');
+    if (ov.decoupleBlockingEdges)
+        parts.push('Split');
+    if (ov.trimScope)
+        parts.push('MVP');
+    return parts.join(' · ') || '0d';
+}
+function summarizeAssigneeOverride(aOv) {
+    const parts = [];
+    const uDays = Number(aOv.unavailableDays ?? 0);
+    if (uDays > 0)
+        parts.push(`+${uDays}d Away`);
+    else if (uDays < 0)
+        parts.push(`${uDays}d Focus`);
+    if (aOv.reassignBottleneck)
+        parts.push('Reassign');
+    if (aOv.serializeParallelWork)
+        parts.push('Serialize');
+    if (aOv.pairOnTopBlocker)
+        parts.push('Pair');
+    return parts.join(' · ') || 'Active';
+}
 function buildRovoMitigationPrompt(props) {
-    const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, activeSim, } = props;
+    const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, pinnedNodeOverrides, assigneeOverrides, activeSim, } = props;
+    const scenarioClauses = [];
+    const mergedNodes = {
+        ...pinnedNodeOverrides,
+    };
+    if (delayDays !== 0 ||
+        addDeveloper ||
+        decoupleBlockingEdges ||
+        trimScope) {
+        mergedNodes[selectedNodeKey] = {
+            deltaDays: delayDays,
+            addDeveloper,
+            decoupleBlockingEdges,
+            trimScope,
+        };
+    }
+    for (const [k, ov] of Object.entries(mergedNodes)) {
+        const n = graph.nodes.find((item) => item.key === k);
+        scenarioClauses.push(`issue ${k}${n ? ` ("${n.summary}")` : ''} [${summarizeNodeOverride(ov)}]`);
+    }
+    for (const [person, aOv] of Object.entries(assigneeOverrides)) {
+        scenarioClauses.push(`person "${person}" [${summarizeAssigneeOverride(aOv)}]`);
+    }
     const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
     const goal = graph.goals.find((g) => g.id === node.goalId) ?? graph.goals[0];
+    if (scenarioClauses.length > 1) {
+        return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), run a combined counterfactual simulation for: ${scenarioClauses.join(' + ')}. Projected Target Commit Date (85% safe) is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues affecting "${goal?.name ?? 'Sprint Delivery'}". Recommend a concrete mitigation plan.`;
+    }
     const shiftStr = delayDays >= 0
         ? `delayed by ${delayDays} days`
         : `accelerated by ${Math.abs(delayDays)} days`;
@@ -3333,13 +3571,24 @@ function buildRovoMitigationPrompt(props) {
     if (trimScope)
         modifiers.push('trimming non-essential scope to ship an MVP');
     const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
+    if (scenarioClauses.length === 1 && Object.keys(assigneeOverrides).length === 1) {
+        return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate workload impact for ${scenarioClauses[0]} towards our "${goal?.name ?? 'Sprint Delivery'}" goal. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
+    }
     return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate what happens to our "${goal?.name ?? 'Sprint Delivery'}" goal if issue ${node.key} ("${node.summary}") is ${shiftStr}${modSuffix}. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
 }
 function renderTabBody(props) {
-    const { activeRightTab, activeSim, intervention, graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, } = props;
-    const hasActiveIntervention = delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
+    const { activeRightTab, activeSim, intervention, graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, pinnedNodeOverrides, assigneeOverrides, } = props;
+    const hasActiveIntervention = delayDays !== 0 ||
+        addDeveloper ||
+        decoupleBlockingEdges ||
+        trimScope ||
+        Object.keys(pinnedNodeOverrides).length > 0 ||
+        Object.keys(assigneeOverrides).length > 0;
     if (activeRightTab === 'cascade') {
-        const deltas = intervention?.nodeDeltas.filter((d) => d.key !== selectedNodeKey && Math.abs(d.shiftDays) > 0) ?? [];
+        const deltas = intervention?.nodeDeltas.filter((d) => (Object.keys(pinnedNodeOverrides).length > 1 ||
+            Object.keys(assigneeOverrides).length > 0 ||
+            d.key !== selectedNodeKey) &&
+            Math.abs(d.shiftDays) > 0) ?? [];
         if (!hasActiveIntervention || deltas.length === 0) {
             return `
         <div class="empty-tab-notice">
@@ -3604,10 +3853,9 @@ function renderGoalsCard(activeSim) {
   `;
 }
 function renderScenarioPanel(props) {
-    const { graph, baselineSim, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, activeRightTab, copiedPromptNotice, } = props;
+    const { graph, baselineSim, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, simulatorMode, pinnedNodeOverrides, selectedAssignee, assigneeOverrides, activeRightTab, copiedPromptNotice, } = props;
     const selectedNode = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
     const selectedStat = activeSim.nodeStats[selectedNode.key];
-    const linkedGoal = graph.goals.find((g) => g.id === selectedNode.goalId) ?? graph.goals[0];
     const blockedByKeys = graph.edges
         .filter((e) => e.to === selectedNode.key)
         .map((e) => e.from);
@@ -3621,13 +3869,35 @@ function renderScenarioPanel(props) {
         : delayDays < 0
             ? `${delayDays} Days Faster`
             : '0 Days (Baseline)';
-    const activeLozenge = delayDays > 0
-        ? `<span class="jira-lozenge jira-lozenge-danger">+${delayDays}D DELAY</span>`
-        : delayDays < 0
-            ? `<span class="jira-lozenge jira-lozenge-done">${delayDays}D FASTER</span>`
-            : addDeveloper || decoupleBlockingEdges || trimScope
-                ? `<span class="jira-lozenge jira-lozenge-done">MITIGATED</span>`
-                : `<span class="jira-lozenge jira-lozenge-todo">BASELINE</span>`;
+    // Compute Pinned Scenario Stack (all pinned issues + current modified issue if not yet in pinnedNodeOverrides, + person overrides)
+    const pinnedEntries = Object.entries(pinnedNodeOverrides);
+    const isCurrentPinned = Boolean(pinnedNodeOverrides[selectedNode.key]);
+    const pinRank = isCurrentPinned
+        ? pinnedEntries.findIndex(([k]) => k === selectedNode.key) + 1
+        : 0;
+    const activePersonEntries = Object.entries(assigneeOverrides).filter(([, aOv]) => {
+        const u = Number(aOv.unavailableDays ?? 0);
+        return (u !== 0 ||
+            Boolean(aOv.reassignBottleneck) ||
+            Boolean(aOv.serializeParallelWork) ||
+            Boolean(aOv.pairOnTopBlocker));
+    });
+    const hasCurrentNodeMod = delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
+    const totalStackedCount = pinnedEntries.length +
+        (!isCurrentPinned && hasCurrentNodeMod ? 1 : 0) +
+        activePersonEntries.length;
+    const netP85Shift = Number((activeSim.p85Days - baselineSim.p85Days).toFixed(1));
+    const activeLozenge = totalStackedCount > 1
+        ? `<span class="jira-lozenge jira-lozenge-goal">${totalStackedCount} STACKED</span>`
+        : activePersonEntries.length === 1 && !hasCurrentNodeMod
+            ? `<span class="jira-lozenge jira-lozenge-inprogress">PERSON SCENARIO</span>`
+            : delayDays > 0
+                ? `<span class="jira-lozenge jira-lozenge-danger">+${delayDays}D DELAY</span>`
+                : delayDays < 0
+                    ? `<span class="jira-lozenge jira-lozenge-done">${delayDays}D FASTER</span>`
+                    : addDeveloper || decoupleBlockingEdges || trimScope
+                        ? `<span class="jira-lozenge jira-lozenge-done">MITIGATED</span>`
+                        : `<span class="jira-lozenge jira-lozenge-todo">BASELINE</span>`;
     const uncertaintyLabel = selectedNode.uncertaintySigma >= 1.8
         ? 'High'
         : selectedNode.uncertaintySigma >= 1.0
@@ -3661,8 +3931,111 @@ function renderScenarioPanel(props) {
             : '#0C66E4';
     const baseP50X = Math.max(24, Math.min(240, Math.round((baselineSim.p50Days / maxTimelineScale) * 260)));
     const simP85X = Math.max(36, Math.min(265, Math.round((activeSim.p85Days / maxTimelineScale) * 260)));
-    const bellStroke = delayDays > 0 ? '#E11D48' : delayDays < 0 ? '#10B981' : '#4F46E5';
-    const bellFill = delayDays > 0 ? '#FFE4E6' : delayDays < 0 ? '#D1FAE5' : '#E0E7FF';
+    const bellStroke = netP85Shift > 0 ? '#E11D48' : netP85Shift < 0 ? '#10B981' : '#4F46E5';
+    const bellFill = netP85Shift > 0 ? '#FFE4E6' : netP85Shift < 0 ? '#D1FAE5' : '#E0E7FF';
+    // Aggregate Assignee Roster from real Jira issues for "By Person & Team" mode
+    const assigneeStatsMap = new Map();
+    for (const node of graph.nodes) {
+        const aName = node.assignee || 'Unassigned';
+        const entry = assigneeStatsMap.get(aName) ?? {
+            name: aName,
+            totalCount: 0,
+            activeCount: 0,
+            totalEstimateDays: 0,
+            criticalCount: 0,
+            issueKeys: [],
+        };
+        entry.totalCount += 1;
+        if (node.status.toLowerCase() !== 'done') {
+            entry.activeCount += 1;
+            entry.totalEstimateDays += node.baseEstimateDays;
+        }
+        if ((activeSim.nodeStats[node.key]?.criticalityIndex ?? 0) >= 0.45) {
+            entry.criticalCount += 1;
+        }
+        entry.issueKeys.push(node.key);
+        assigneeStatsMap.set(aName, entry);
+    }
+    const assigneeList = Array.from(assigneeStatsMap.values()).sort((a, b) => {
+        if (a.name.toLowerCase() === 'unassigned')
+            return 1;
+        if (b.name.toLowerCase() === 'unassigned')
+            return -1;
+        return b.activeCount - a.activeCount || b.totalEstimateDays - a.totalEstimateDays;
+    });
+    const activeAssigneeStats = assigneeList.find((a) => a.name === selectedAssignee) ?? assigneeList[0];
+    const currentPersonName = activeAssigneeStats?.name ?? 'Unassigned';
+    const currentPersonOv = assigneeOverrides[currentPersonName] ?? {
+        assignee: currentPersonName,
+        unavailableDays: 0,
+        reassignBottleneck: false,
+        serializeParallelWork: false,
+        pairOnTopBlocker: false,
+    };
+    const ptoDays = Number(currentPersonOv.unavailableDays ?? 0);
+    const ptoSignLabel = ptoDays > 0
+        ? `+${ptoDays} Days Away`
+        : ptoDays < 0
+            ? `${ptoDays} Days Focus Gain`
+            : '0 Days (Normal Capacity)';
+    const personLoadPct = activeAssigneeStats
+        ? currentPersonOv.reassignBottleneck && currentPersonOv.serializeParallelWork
+            ? Math.max(65, Math.round(activeAssigneeStats.activeCount * 38))
+            : currentPersonOv.reassignBottleneck
+                ? Math.max(70, Math.round((activeAssigneeStats.activeCount - 1) * 55))
+                : Math.min(250, Math.max(40, activeAssigneeStats.activeCount * 65))
+        : 100;
+    // Build Pinned Scenario Stack chip tray HTML
+    const circledNums = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
+    const issueChipsHtml = pinnedEntries
+        .map(([key, ov], idx) => {
+        const badgeNum = circledNums[idx] ?? `#${idx + 1}`;
+        const activeCls = simulatorMode === 'issue' && key === selectedNodeKey ? 'active' : '';
+        return `
+        <div class="scenario-chip ${activeCls}" data-focus-pin="${escapeHtmlText(key)}" title="Click to edit pinned scenario for ${escapeHtmlText(key)}">
+          <span class="scenario-chip-label">${badgeNum} ${escapeHtmlText(key)}: ${escapeHtmlText(summarizeNodeOverride(ov))}</span>
+          <button type="button" class="scenario-chip-remove" data-unpin-node="${escapeHtmlText(key)}" title="Remove ${escapeHtmlText(key)} from scenario stack">×</button>
+        </div>
+      `;
+    })
+        .join('');
+    const personChipsHtml = activePersonEntries
+        .map(([name, aOv]) => {
+        const shortName = name.length > 14 ? `${name.split(/\s+/)[0]} ${name.split(/\s+/)[1]?.[0] ?? ''}.`.trim() : name;
+        const activeCls = simulatorMode === 'person' && name === currentPersonName ? 'active' : '';
+        return `
+        <div class="scenario-chip person-chip ${activeCls}" data-focus-person="${escapeHtmlText(name)}" title="Click to edit person capacity scenario for ${escapeHtmlText(name)}">
+          <span class="scenario-chip-label">👤 ${escapeHtmlText(shortName)}: ${escapeHtmlText(summarizeAssigneeOverride(aOv))}</span>
+          <button type="button" class="scenario-chip-remove" data-clear-person="${escapeHtmlText(name)}" title="Remove ${escapeHtmlText(name)} from scenario stack">×</button>
+        </div>
+      `;
+    })
+        .join('');
+    const stackBarHtml = `
+    <div class="scenario-stack-bar">
+      <div class="scenario-stack-header">
+        <span>Active Scenario Stack (${pinnedEntries.length + activePersonEntries.length})</span>
+        <div class="scenario-stack-actions">
+          ${simulatorMode === 'issue'
+        ? `<button
+                   type="button"
+                   class="btn-pin-issue ${isCurrentPinned ? 'is-pinned' : ''}"
+                   id="btn-pin-current-issue"
+                   title="${isCurrentPinned ? 'Unpin this issue from the multi-issue scenario stack' : 'Lock this issue into Active Scenario Stack so you can tweak other issues simultaneously'}"
+                 >
+                   ${isCurrentPinned ? `✓ Pinned (${circledNums[pinRank - 1] ?? `#${pinRank}`})` : `📌 Pin ${escapeHtmlText(selectedNode.key)}`}
+                 </button>`
+        : ''}
+          ${pinnedEntries.length + activePersonEntries.length > 0
+        ? `<button type="button" class="scenario-clear-btn" id="btn-clear-scenario-stack" title="Clear all pinned issue and person scenarios">Clear All</button>`
+        : ''}
+        </div>
+      </div>
+      ${pinnedEntries.length + activePersonEntries.length > 0
+        ? `<div class="scenario-chip-list">${issueChipsHtml}${personChipsHtml}</div>`
+        : ''}
+    </div>
+  `;
     const forecastRows = [
         {
             label: 'Likely Finish (50% odds)',
@@ -3689,6 +4062,242 @@ function renderScenarioPanel(props) {
             intDate: activeSim.p95Date,
         },
     ];
+    const issueModeContentHtml = `
+    <!-- Selected Issue Card -->
+    <div class="selected-node-banner">
+      <div class="node-banner-top">
+        <div class="node-banner-id-cluster">
+          <span class="node-avatar-circle" title="Responsible Assignee: ${escapeHtmlText(selectedNode.assignee)}">${escapeHtmlText(assigneeInitials)}</span>
+          <span class="node-key-tag">${escapeHtmlText(selectedNode.key)}</span>
+          ${shapeTaxonomyBadge}
+        </div>
+        ${renderJiraStatusLozenge(selectedNode.status)}
+      </div>
+      <div class="node-summary-text">${escapeHtmlText(selectedNode.summary)}</div>
+      <div class="node-subtask-bar-wrap" title="Overall Issue / Epic Sub-task Completion: ${doneSub}/${totalSub} Sub-tasks (${progPct}%)">
+        <div class="node-subtask-bar-labels">
+          <span>Sub-tasks / Epic Progress</span>
+          <strong>${doneSub}/${totalSub} Done (${progPct}%)</strong>
+        </div>
+        <svg width="100%" height="6" class="subtask-bar-svg">
+          <rect x="0" y="0" width="100%" height="6" rx="3" fill="#E2E8F0" />
+          <rect x="0" y="0" width="${Math.max(4, progPct)}%" height="6" rx="3" fill="${progBarColor}" />
+        </svg>
+      </div>
+      <div class="node-meta-grid">
+        <div class="meta-cell">
+          <span>Assignee</span>
+          <strong>${escapeHtmlText(selectedNode.assignee)}</strong>
+        </div>
+        <div class="meta-cell">
+          <span>Estimate</span>
+          <strong>${selectedNode.baseEstimateDays} Days</strong>
+        </div>
+        <div class="meta-cell" title="Estimate Uncertainty: ±${selectedNode.uncertaintySigma} days of potential schedule variance">
+          <span>Uncertainty ⓘ</span>
+          <strong>${uncertaintyLabel}</strong>
+        </div>
+        <div class="meta-cell" title="Criticality Index: ${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% of Monte Carlo runs place this issue on the critical path">
+          <span>Criticality ⓘ</span>
+          <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}%</strong>
+        </div>
+      </div>
+      <div class="node-lineage-row">
+        <div class="lineage-cell" title="${escapeHtmlText(blockedByKeys.length > 0 ? `Upstream blockers: ${blockedByKeys.join(', ')}` : 'Entry task with no upstream blockers')}">
+          <span>Blocked by:</span>
+          <strong>${escapeHtmlText(blockedByKeys.length > 0 ? blockedByKeys.join(', ') : 'None (Entry Task)')}</strong>
+        </div>
+        <div class="lineage-cell" title="${escapeHtmlText(blocksKeys.length > 0 ? `Downstream dependents: ${blocksKeys.join(', ')}` : 'Terminal task with no downstream dependents')}">
+          <span>Blocks:</span>
+          <strong>${escapeHtmlText(blocksKeys.length > 0 ? blocksKeys.join(', ') : 'None (Terminal Task)')}</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 1: Schedule Change Slider & Mitigations -->
+    <div class="delay-slider-card">
+      <div class="slider-header">
+        <span class="slider-title">1. Schedule Change (-5d to +30d)</span>
+        <span class="slider-readout ${delayDays < 0 ? 'accel-text' : delayDays === 0 ? 'neutral-text' : ''}">
+          ${delaySignLabel}
+        </span>
+      </div>
+      <input
+        type="range"
+        min="-5"
+        max="30"
+        step="1"
+        value="${delayDays}"
+        class="delay-range-input"
+        id="delay-slider-input"
+      />
+      <div class="preset-row">
+        ${[-5, -3, 0, 5, 10, 18, 30]
+        .map((val) => `
+            <button class="preset-btn ${delayDays === val ? 'active' : ''}" data-preset-delay="${val}">
+              ${val === 0 ? '0d' : val > 0 ? `+${val}d` : `${val}d`}
+            </button>
+          `)
+        .join('')}
+      </div>
+
+      <div class="mitigation-label">2. Recovery Mitigations</div>
+      <div class="scope-toggles-row">
+        <button
+          class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
+          id="btn-toggle-add-dev"
+          title="Assign 1 extra full-time developer to help finish this issue faster (automatically accounts for ramp-up and coordination time)"
+        >
+          ${addDeveloper ? '✓ Extra Dev Added' : '+ Assign Extra Developer'}
+        </button>
+        <button
+          class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
+          id="btn-toggle-decouple-edge"
+          title="Split or mock the blocking interface so downstream issues can start work in parallel without waiting for this issue to finish 100%"
+        >
+          ${decoupleBlockingEdges ? '✓ Split / Mocked' : '✂ Decouple Dependency'}
+        </button>
+        <button
+          class="scope-toggle-btn ${trimScope ? 'active' : ''}"
+          id="btn-toggle-trim-scope"
+          title="Defer non-essential sub-tasks or stretch goals to the next sprint (-35% remaining work & -45% uncertainty) to protect the release date"
+        >
+          ${trimScope ? '✓ Scope Trimmed (MVP)' : '📦 Trim Scope (MVP)'}
+        </button>
+      </div>
+      ${addDeveloper && activeSim.deliveryGovernance?.brooksLawDiagnostic
+        ? `<div class="brooks-advisory-banner" title="Accounts for realistic developer onboarding and team sync time">
+               <span><strong>Team Ramp-Up Note:</strong> Net <strong>${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays >= 0
+            ? `${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays}d saved`
+            : `${Math.abs(activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays)}d slower`}</strong> after ${activeSim.deliveryGovernance.brooksLawDiagnostic.onboardingPenaltyDays}d of ramp-up &amp; handoff sync</span>
+             </div>`
+        : ''}
+    </div>
+  `;
+    const personModeContentHtml = `
+    <!-- Selected Person & Team Card -->
+    <div class="selected-node-banner">
+      <div class="node-banner-top">
+        <div class="node-banner-id-cluster">
+          <span class="node-avatar-circle">${escapeHtmlText(getInitials(currentPersonName))}</span>
+          <span class="node-key-tag">${escapeHtmlText(currentPersonName)}</span>
+        </div>
+        <span class="jira-lozenge ${personLoadPct > 105 ? 'jira-lozenge-danger' : 'jira-lozenge-done'}">
+          ${personLoadPct}% LOAD
+        </span>
+      </div>
+
+      <div class="assignee-roster-grid">
+        ${assigneeList
+        .map((person) => {
+        const pOv = assigneeOverrides[person.name];
+        const hasOv = pOv &&
+            ((pOv.unavailableDays ?? 0) !== 0 ||
+                pOv.reassignBottleneck ||
+                pOv.serializeParallelWork ||
+                pOv.pairOnTopBlocker);
+        return `
+              <button
+                type="button"
+                class="assignee-pill-btn ${person.name === currentPersonName ? 'active' : ''} ${hasOv ? 'has-override' : ''}"
+                data-select-assignee="${escapeHtmlText(person.name)}"
+                title="${escapeHtmlText(person.name)}: ${person.activeCount} active / ${person.totalCount} total issues (${person.totalEstimateDays}d remaining)"
+              >
+                <span class="assignee-pill-initials">${escapeHtmlText(getInitials(person.name))}</span>
+                <span class="assignee-pill-name">${escapeHtmlText(person.name)}</span>
+                <span class="assignee-pill-count">${person.activeCount}/${person.totalCount}</span>
+              </button>
+            `;
+    })
+        .join('')}
+      </div>
+
+      <div class="node-meta-grid">
+        <div class="meta-cell">
+          <span>Active Tasks</span>
+          <strong>${activeAssigneeStats?.activeCount ?? 0} Issues</strong>
+        </div>
+        <div class="meta-cell">
+          <span>Remaining</span>
+          <strong>${activeAssigneeStats?.totalEstimateDays ?? 0} Days</strong>
+        </div>
+        <div class="meta-cell">
+          <span>Critical Path</span>
+          <strong>${activeAssigneeStats?.criticalCount ?? 0} Issues</strong>
+        </div>
+        <div class="meta-cell">
+          <span>Parallel WIP</span>
+          <strong>${personLoadPct}%</strong>
+        </div>
+      </div>
+
+      <div class="node-lineage-row">
+        <div class="lineage-cell" title="Jira issues assigned to ${escapeHtmlText(currentPersonName)}">
+          <span>Assigned Issues:</span>
+          <strong>${escapeHtmlText(activeAssigneeStats?.issueKeys.join(', ') || 'None')}</strong>
+        </div>
+        <div class="lineage-cell">
+          <span>Focus Status:</span>
+          <strong>${(activeAssigneeStats?.activeCount ?? 0) >= 2 && !currentPersonOv.serializeParallelWork
+        ? 'Parallel Overload'
+        : 'Balanced Focus'}</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 1 (Person): Unavailability Slider & Workload Mitigations -->
+    <div class="delay-slider-card">
+      <div class="slider-header">
+        <span class="slider-title">1. Unavailability / Absence (-3d to +15d)</span>
+        <span class="slider-readout ${ptoDays < 0 ? 'accel-text' : ptoDays === 0 ? 'neutral-text' : ''}">
+          ${ptoSignLabel}
+        </span>
+      </div>
+      <input
+        type="range"
+        min="-3"
+        max="15"
+        step="1"
+        value="${ptoDays}"
+        class="delay-range-input"
+        id="person-pto-slider-input"
+      />
+      <div class="preset-row">
+        ${[-3, 0, 2, 5, 10, 15]
+        .map((val) => `
+            <button class="preset-btn ${ptoDays === val ? 'active' : ''}" data-preset-pto="${val}">
+              ${val === 0 ? '0d' : val > 0 ? `+${val}d` : `${val}d`}
+            </button>
+          `)
+        .join('')}
+      </div>
+
+      <div class="mitigation-label">2. Workload Mitigations</div>
+      <div class="scope-toggles-row">
+        <button
+          class="scope-toggle-btn ${currentPersonOv.reassignBottleneck ? 'active' : ''}"
+          id="btn-person-reassign"
+          title="Offload this person's parallel bottleneck task to an available developer (-28% duration & removes concurrent contention)"
+        >
+          ${currentPersonOv.reassignBottleneck ? '✓ Bottleneck Reassigned' : '⇄ Reassign Bottleneck'}
+        </button>
+        <button
+          class="scope-toggle-btn ${currentPersonOv.serializeParallelWork ? 'active' : ''}"
+          id="btn-person-serialize"
+          title="Eliminate multi-tasking context switches so active tasks run in clean sequence"
+        >
+          ${currentPersonOv.serializeParallelWork ? '✓ Parallel Serialized' : '🧹 Serialize Parallel Work'}
+        </button>
+        <button
+          class="scope-toggle-btn ${currentPersonOv.pairOnTopBlocker ? 'active' : ''}"
+          id="btn-person-pair"
+          title="Pair +1 developer on this person's highest-impact critical blocker issue"
+        >
+          ${currentPersonOv.pairOnTopBlocker ? '✓ Paired Blocker' : '🤝 Pair on Top Blocker'}
+        </button>
+      </div>
+    </div>
+  `;
     return `
     <div class="right-column">
       <!-- What-If Simulator Controls Card -->
@@ -3696,122 +4305,33 @@ function renderScenarioPanel(props) {
         <div class="panel-header">
           <div class="panel-title">
             <span>What-If Scenario Simulator</span>
-            ${renderInfoTooltip('What-If Scenario Simulator', 'Select any issue from your Jira project and test how a delay, acceleration, or resource change affects the overall delivery date and Teamwork Graph goals.', `Active Scenario: ${selectedNode.key} (${delayDays >= 0 ? `+${delayDays}d` : `${delayDays}d`})`)}
+            ${renderInfoTooltip('What-If Scenario Simulator', 'Simulate schedule delays or recovery mitigations on single or multiple pinned Jira issues, or switch to By Person & Team to test absences and workload rebalancing.', `Active Interventions: ${totalStackedCount} | Selected: ${selectedNode.key}`)}
           </div>
           ${activeLozenge}
         </div>
 
         <div class="intervention-box">
-          <!-- Selected Issue Card -->
-          <div class="selected-node-banner">
-            <div class="node-banner-top">
-              <div class="node-banner-id-cluster">
-                <span class="node-avatar-circle" title="Responsible Assignee: ${escapeHtmlText(selectedNode.assignee)}">${escapeHtmlText(assigneeInitials)}</span>
-                <span class="node-key-tag">${escapeHtmlText(selectedNode.key)}</span>
-                ${shapeTaxonomyBadge}
-              </div>
-              ${renderJiraStatusLozenge(selectedNode.status)}
-            </div>
-            <div class="node-summary-text">${escapeHtmlText(selectedNode.summary)}</div>
-            <div class="node-subtask-bar-wrap" title="Overall Issue / Epic Sub-task Completion: ${doneSub}/${totalSub} Sub-tasks (${progPct}%)">
-              <div class="node-subtask-bar-labels">
-                <span>Sub-tasks / Epic Progress</span>
-                <strong>${doneSub}/${totalSub} Done (${progPct}%)</strong>
-              </div>
-              <svg width="100%" height="6" class="subtask-bar-svg">
-                <rect x="0" y="0" width="100%" height="6" rx="3" fill="#E2E8F0" />
-                <rect x="0" y="0" width="${Math.max(4, progPct)}%" height="6" rx="3" fill="${progBarColor}" />
-              </svg>
-            </div>
-            <div class="node-meta-grid">
-              <div class="meta-cell">
-                <span>Assignee</span>
-                <strong>${escapeHtmlText(selectedNode.assignee)}</strong>
-              </div>
-              <div class="meta-cell">
-                <span>Estimate</span>
-                <strong>${selectedNode.baseEstimateDays} Days</strong>
-              </div>
-              <div class="meta-cell" title="Estimate Uncertainty: ±${selectedNode.uncertaintySigma} days of potential schedule variance">
-                <span>Uncertainty ⓘ</span>
-                <strong>${uncertaintyLabel}</strong>
-              </div>
-              <div class="meta-cell" title="Criticality Index: ${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}% of Monte Carlo runs place this issue on the critical path">
-                <span>Criticality ⓘ</span>
-                <strong>${Math.round((selectedStat?.criticalityIndex ?? 0) * 100)}%</strong>
-              </div>
-            </div>
-            <div class="node-lineage-row">
-              <div class="lineage-cell" title="${escapeHtmlText(blockedByKeys.length > 0 ? `Upstream blockers: ${blockedByKeys.join(', ')}` : 'Entry task with no upstream blockers')}">
-                <span>Blocked by:</span>
-                <strong>${escapeHtmlText(blockedByKeys.length > 0 ? blockedByKeys.join(', ') : 'None (Entry Task)')}</strong>
-              </div>
-              <div class="lineage-cell" title="${escapeHtmlText(blocksKeys.length > 0 ? `Downstream dependents: ${blocksKeys.join(', ')}` : 'Terminal task with no downstream dependents')}">
-                <span>Blocks:</span>
-                <strong>${escapeHtmlText(blocksKeys.length > 0 ? blocksKeys.join(', ') : 'None (Terminal Task)')}</strong>
-              </div>
-            </div>
+          <!-- Dual-Mode Switcher (By Issue vs. By Person & Team) -->
+          <div class="sim-mode-switcher" role="tablist" aria-label="Simulation target mode">
+            <button
+              type="button"
+              class="sim-mode-btn ${simulatorMode === 'issue' ? 'active' : ''}"
+              data-sim-mode="issue"
+            >
+              📋 By Issue
+            </button>
+            <button
+              type="button"
+              class="sim-mode-btn ${simulatorMode === 'person' ? 'active' : ''}"
+              data-sim-mode="person"
+            >
+              👤 By Person &amp; Team
+            </button>
           </div>
 
-          <!-- Step 1: Schedule Change Slider & Mitigations -->
-          <div class="delay-slider-card">
-            <div class="slider-header">
-              <span class="slider-title">1. Schedule Change (-5d to +30d)</span>
-              <span class="slider-readout ${delayDays < 0 ? 'accel-text' : delayDays === 0 ? 'neutral-text' : ''}">
-                ${delaySignLabel}
-              </span>
-            </div>
-            <input
-              type="range"
-              min="-5"
-              max="30"
-              step="1"
-              value="${delayDays}"
-              class="delay-range-input"
-              id="delay-slider-input"
-            />
-            <div class="preset-row">
-              ${[-5, -3, 0, 5, 10, 18, 30]
-        .map((val) => `
-                  <button class="preset-btn ${delayDays === val ? 'active' : ''}" data-preset-delay="${val}">
-                    ${val === 0 ? '0d' : val > 0 ? `+${val}d` : `${val}d`}
-                  </button>
-                `)
-        .join('')}
-            </div>
+          ${stackBarHtml}
 
-            <div class="mitigation-label">2. Recovery Mitigations</div>
-            <div class="scope-toggles-row">
-              <button
-                class="scope-toggle-btn ${addDeveloper ? 'active' : ''}"
-                id="btn-toggle-add-dev"
-                title="Assign 1 extra full-time developer to help finish this issue faster (automatically accounts for ramp-up and coordination time)"
-              >
-                ${addDeveloper ? '✓ Extra Dev Added' : '+ Assign Extra Developer'}
-              </button>
-              <button
-                class="scope-toggle-btn ${decoupleBlockingEdges ? 'active' : ''}"
-                id="btn-toggle-decouple-edge"
-                title="Split or mock the blocking interface so downstream issues can start work in parallel without waiting for this issue to finish 100%"
-              >
-                ${decoupleBlockingEdges ? '✓ Split / Mocked' : '✂ Decouple Dependency'}
-              </button>
-              <button
-                class="scope-toggle-btn ${trimScope ? 'active' : ''}"
-                id="btn-toggle-trim-scope"
-                title="Defer non-essential sub-tasks or stretch goals to the next sprint (-35% remaining work & -45% uncertainty) to protect the release date"
-              >
-                ${trimScope ? '✓ Scope Trimmed (MVP)' : '📦 Trim Scope (MVP)'}
-              </button>
-            </div>
-            ${addDeveloper && activeSim.deliveryGovernance?.brooksLawDiagnostic
-        ? `<div class="brooks-advisory-banner" title="Accounts for realistic developer onboarding and team sync time">
-                     <span><strong>Team Ramp-Up Note:</strong> Net <strong>${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays >= 0
-            ? `${activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays}d saved`
-            : `${Math.abs(activeSim.deliveryGovernance.brooksLawDiagnostic.netAccelerationDays)}d slower`}</strong> after ${activeSim.deliveryGovernance.brooksLawDiagnostic.onboardingPenaltyDays}d of ramp-up &amp; handoff sync</span>
-                   </div>`
-        : ''}
-          </div>
+          ${simulatorMode === 'person' ? personModeContentHtml : issueModeContentHtml}
 
           <!-- Step 2: Release Date Comparison Bars -->
           <div class="comparison-bars-card">
@@ -3978,6 +4498,21 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
         isSyntheticDemo: false,
     };
 }
+function pickDefaultAssignee(graph) {
+    const counts = new Map();
+    for (const node of graph.nodes) {
+        const a = node.assignee || 'Unassigned';
+        counts.set(a, (counts.get(a) ?? 0) + (node.status.toLowerCase() === 'done' ? 0.1 : 1));
+    }
+    const sorted = Array.from(counts.entries()).sort((a, b) => {
+        if (a[0].toLowerCase() === 'unassigned')
+            return 1;
+        if (b[0].toLowerCase() === 'unassigned')
+            return -1;
+        return b[1] - a[1];
+    });
+    return sorted[0]?.[0] ?? 'Unassigned';
+}
 const initialGraph = createInitialRealProjectGraph('BLP', 'BloomPath Sprint');
 const initialBaseline = runMonteCarloSimulation(initialGraph, { iterations: 500 });
 const state = {
@@ -3994,24 +4529,122 @@ const state = {
     addDeveloper: false,
     decoupleBlockingEdges: false,
     trimScope: false,
+    simulatorMode: 'issue',
+    pinnedNodeOverrides: {},
+    selectedAssignee: pickDefaultAssignee(initialGraph),
+    assigneeOverrides: {},
     selectedEpochIndex: 2, // Today
     scrubberDayOffset: 0,
     activeRightTab: 'cascade',
     copiedPromptNotice: false,
     statusBanner: 'Connected to Jira project — Click any issue card or drag the Schedule Change slider to simulate timeline impacts.',
 };
-function recomputeSimulation() {
-    state.baselineSim = runMonteCarloSimulation(state.graph, { iterations: 500 });
-    const hasIntervention = state.delayDays !== 0 ||
-        state.addDeveloper ||
-        state.decoupleBlockingEdges ||
-        state.trimScope;
-    if (hasIntervention && state.selectedNodeKey) {
-        const intResult = runIntervention(state.graph, state.selectedNodeKey, state.delayDays, {
-            iterations: 500,
+function getMergedNodeOverrides() {
+    const merged = {
+        ...state.pinnedNodeOverrides,
+    };
+    if (state.selectedNodeKey &&
+        (state.delayDays !== 0 ||
+            state.addDeveloper ||
+            state.decoupleBlockingEdges ||
+            state.trimScope)) {
+        merged[state.selectedNodeKey] = {
+            deltaDays: state.delayDays,
             addDeveloper: state.addDeveloper,
             decoupleBlockingEdges: state.decoupleBlockingEdges,
             trimScope: state.trimScope,
+        };
+    }
+    return merged;
+}
+function getActiveAssigneeOverrides() {
+    const active = {};
+    for (const [name, aOv] of Object.entries(state.assigneeOverrides)) {
+        const uDays = Number(aOv.unavailableDays ?? 0);
+        if (uDays !== 0 ||
+            aOv.reassignBottleneck ||
+            aOv.serializeParallelWork ||
+            aOv.pairOnTopBlocker) {
+            active[name] = aOv;
+        }
+    }
+    return active;
+}
+function syncCurrentNodeToPinIfPinned() {
+    if (state.selectedNodeKey && state.pinnedNodeOverrides[state.selectedNodeKey]) {
+        state.pinnedNodeOverrides[state.selectedNodeKey] = {
+            deltaDays: state.delayDays,
+            addDeveloper: state.addDeveloper,
+            decoupleBlockingEdges: state.decoupleBlockingEdges,
+            trimScope: state.trimScope,
+        };
+    }
+}
+function switchSelectedIssue(nextKey, autoPinPrevious = false) {
+    if (!nextKey)
+        return;
+    if (autoPinPrevious &&
+        state.selectedNodeKey &&
+        state.selectedNodeKey !== nextKey &&
+        (state.delayDays !== 0 ||
+            state.addDeveloper ||
+            state.decoupleBlockingEdges ||
+            state.trimScope)) {
+        state.pinnedNodeOverrides[state.selectedNodeKey] = {
+            deltaDays: state.delayDays,
+            addDeveloper: state.addDeveloper,
+            decoupleBlockingEdges: state.decoupleBlockingEdges,
+            trimScope: state.trimScope,
+        };
+    }
+    state.selectedNodeKey = nextKey;
+    const existingPin = state.pinnedNodeOverrides[nextKey];
+    if (existingPin) {
+        state.delayDays = existingPin.deltaDays;
+        state.addDeveloper = Boolean(existingPin.addDeveloper);
+        state.decoupleBlockingEdges = Boolean(existingPin.decoupleBlockingEdges);
+        state.trimScope = Boolean(existingPin.trimScope);
+    }
+    else {
+        state.delayDays = 0;
+        state.addDeveloper = false;
+        state.decoupleBlockingEdges = false;
+        state.trimScope = false;
+    }
+    state.copiedPromptNotice = false;
+}
+function getOrCreateAssigneeOverride(name) {
+    if (!state.assigneeOverrides[name]) {
+        state.assigneeOverrides[name] = {
+            assignee: name,
+            unavailableDays: 0,
+            reassignBottleneck: false,
+            serializeParallelWork: false,
+            pairOnTopBlocker: false,
+        };
+    }
+    return state.assigneeOverrides[name];
+}
+function recomputeSimulation() {
+    state.baselineSim = runMonteCarloSimulation(state.graph, { iterations: 500 });
+    const mergedNodes = getMergedNodeOverrides();
+    const activeAssignees = getActiveAssigneeOverrides();
+    const nodeKeys = Object.keys(mergedNodes);
+    const assigneeKeys = Object.keys(activeAssignees);
+    const hasIntervention = nodeKeys.length > 0 || assigneeKeys.length > 0;
+    if (hasIntervention) {
+        const primaryKey = (mergedNodes[state.selectedNodeKey] ? state.selectedNodeKey : nodeKeys[0]) ||
+            state.selectedNodeKey ||
+            state.graph.nodes[0]?.key ||
+            '';
+        const primaryOv = mergedNodes[primaryKey] ?? { deltaDays: 0 };
+        const intResult = runIntervention(state.graph, primaryKey, primaryOv.deltaDays, {
+            iterations: 500,
+            addDeveloper: Boolean(primaryOv.addDeveloper),
+            decoupleBlockingEdges: Boolean(primaryOv.decoupleBlockingEdges),
+            trimScope: Boolean(primaryOv.trimScope),
+            nodeOverrides: mergedNodes,
+            assigneeOverrides: activeAssignees,
         });
         state.intervention = intResult;
         state.activeSim = intResult;
@@ -4022,6 +4655,8 @@ function recomputeSimulation() {
     }
 }
 function triggerRemoteWhatIf() {
+    const mergedNodes = getMergedNodeOverrides();
+    const activeAssignees = getActiveAssigneeOverrides();
     void invokeForgeResolver('runWhatIfSimulation', {
         projectKey: state.graph.projectKey,
         targetNodeId: state.selectedNodeKey,
@@ -4029,6 +4664,8 @@ function triggerRemoteWhatIf() {
         addDeveloper: state.addDeveloper,
         decoupleBlockingEdges: state.decoupleBlockingEdges,
         trimScope: state.trimScope,
+        nodeOverrides: mergedNodes,
+        assigneeOverrides: activeAssignees,
     });
 }
 function scrollDagToSelectedNode(smooth = true) {
@@ -4057,10 +4694,9 @@ function renderCockpit(activeSliderId) {
     const dagViewport = document.getElementById('dag-viewport-container');
     const prevDagScrollLeft = dagViewport?.scrollLeft ?? 0;
     const prevDagScrollTop = dagViewport?.scrollTop ?? 0;
-    const hasActiveIntervention = state.delayDays !== 0 ||
-        state.addDeveloper ||
-        state.decoupleBlockingEdges ||
-        state.trimScope;
+    const mergedNodes = getMergedNodeOverrides();
+    const activeAssignees = getActiveAssigneeOverrides();
+    const hasAnyIntervention = Object.keys(mergedNodes).length > 0 || Object.keys(activeAssignees).length > 0;
     const headerProps = {
         availableProjects: state.availableProjects,
         graph: state.graph,
@@ -4071,6 +4707,7 @@ function renderCockpit(activeSliderId) {
         delayDays: state.delayDays,
         addDeveloper: state.addDeveloper,
         decoupleBlockingEdges: state.decoupleBlockingEdges,
+        hasAnyIntervention,
         statusBanner: state.statusBanner,
     };
     const headerHtml = renderTopAppBar(headerProps);
@@ -4080,7 +4717,7 @@ function renderCockpit(activeSliderId) {
         activeSim: state.activeSim,
         selectedEpochIndex: state.selectedEpochIndex,
         scrubberDayOffset: state.scrubberDayOffset,
-        hasActiveIntervention,
+        hasActiveIntervention: hasAnyIntervention,
     });
     const dagHtml = renderDagCanvas({
         graph: state.graph,
@@ -4091,6 +4728,10 @@ function renderCockpit(activeSliderId) {
         decoupleBlockingEdges: state.decoupleBlockingEdges,
         trimScope: state.trimScope,
         scrubberDayOffset: state.scrubberDayOffset,
+        simulatorMode: state.simulatorMode,
+        pinnedNodeOverrides: state.pinnedNodeOverrides,
+        selectedAssignee: state.selectedAssignee,
+        assigneeOverrides: state.assigneeOverrides,
     });
     const scenarioHtml = renderScenarioPanel({
         graph: state.graph,
@@ -4102,6 +4743,10 @@ function renderCockpit(activeSliderId) {
         addDeveloper: state.addDeveloper,
         decoupleBlockingEdges: state.decoupleBlockingEdges,
         trimScope: state.trimScope,
+        simulatorMode: state.simulatorMode,
+        pinnedNodeOverrides: state.pinnedNodeOverrides,
+        selectedAssignee: state.selectedAssignee,
+        assigneeOverrides: state.assigneeOverrides,
         activeRightTab: state.activeRightTab,
         copiedPromptNotice: state.copiedPromptNotice,
     });
@@ -4124,28 +4769,77 @@ function renderCockpit(activeSliderId) {
             nextViewport.scrollLeft = prevDagScrollLeft;
             nextViewport.scrollTop = prevDagScrollTop;
         }
-        if (activeSliderId === 'delay-slider-input') {
+        if (activeSliderId === 'delay-slider-input' ||
+            activeSliderId === 'person-pto-slider-input') {
             scrubberMount.innerHTML = scrubberHtml;
-            const readoutEl = scenarioMount.querySelector('.slider-readout');
-            if (readoutEl) {
-                readoutEl.textContent =
-                    state.delayDays > 0
-                        ? `+${state.delayDays} Days Delay`
-                        : state.delayDays < 0
-                            ? `${state.delayDays} Days Faster`
-                            : '0 Days (Baseline)';
-                readoutEl.className = `slider-readout ${state.delayDays < 0
-                    ? 'accel-text'
-                    : state.delayDays === 0
-                        ? 'neutral-text'
-                        : ''}`;
+            const tmp = document.createElement('div');
+            tmp.innerHTML = scenarioHtml;
+            const curLozenge = scenarioMount.querySelector('.panel-header .jira-lozenge');
+            const nextLozenge = tmp.querySelector('.panel-header .jira-lozenge');
+            if (curLozenge && nextLozenge)
+                curLozenge.replaceWith(nextLozenge);
+            const curStack = scenarioMount.querySelector('.scenario-stack-bar');
+            const nextStack = tmp.querySelector('.scenario-stack-bar');
+            if (curStack && nextStack)
+                curStack.innerHTML = nextStack.innerHTML;
+            const curCompare = scenarioMount.querySelector('.comparison-bars-card');
+            const nextCompare = tmp.querySelector('.comparison-bars-card');
+            if (curCompare && nextCompare)
+                curCompare.innerHTML = nextCompare.innerHTML;
+            const curTabs = scenarioMount.querySelector('.tab-bar');
+            const nextTabs = tmp.querySelector('.tab-bar');
+            if (curTabs && nextTabs)
+                curTabs.innerHTML = nextTabs.innerHTML;
+            const curTabBody = scenarioMount.querySelector('.tab-body');
+            const nextTabBody = tmp.querySelector('.tab-body');
+            if (curTabBody && nextTabBody)
+                curTabBody.innerHTML = nextTabBody.innerHTML;
+            if (activeSliderId === 'delay-slider-input') {
+                const readoutEl = scenarioMount.querySelector('.slider-readout');
+                if (readoutEl) {
+                    readoutEl.textContent =
+                        state.delayDays > 0
+                            ? `+${state.delayDays} Days Delay`
+                            : state.delayDays < 0
+                                ? `${state.delayDays} Days Faster`
+                                : '0 Days (Baseline)';
+                    readoutEl.className = `slider-readout ${state.delayDays < 0
+                        ? 'accel-text'
+                        : state.delayDays === 0
+                            ? 'neutral-text'
+                            : ''}`;
+                }
+                scenarioMount
+                    .querySelectorAll('[data-preset-delay]')
+                    .forEach((btn) => {
+                    const d = Number(btn.getAttribute('data-preset-delay') ?? 0);
+                    btn.classList.toggle('active', d === state.delayDays);
+                });
             }
-            scenarioMount
-                .querySelectorAll('[data-preset-delay]')
-                .forEach((btn) => {
-                const d = Number(btn.getAttribute('data-preset-delay') ?? 0);
-                btn.classList.toggle('active', d === state.delayDays);
-            });
+            else {
+                const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+                const ptoDays = Number(pOv.unavailableDays ?? 0);
+                const readoutEl = scenarioMount.querySelector('.slider-readout');
+                if (readoutEl) {
+                    readoutEl.textContent =
+                        ptoDays > 0
+                            ? `+${ptoDays} Days Away`
+                            : ptoDays < 0
+                                ? `${ptoDays} Days Focus Gain`
+                                : '0 Days (Normal Capacity)';
+                    readoutEl.className = `slider-readout ${ptoDays < 0
+                        ? 'accel-text'
+                        : ptoDays === 0
+                            ? 'neutral-text'
+                            : ''}`;
+                }
+                scenarioMount
+                    .querySelectorAll('[data-preset-pto]')
+                    .forEach((btn) => {
+                    const d = Number(btn.getAttribute('data-preset-pto') ?? 0);
+                    btn.classList.toggle('active', d === ptoDays);
+                });
+            }
         }
         else if (activeSliderId === 'time-machine-range') {
             scenarioMount.innerHTML = scenarioHtml;
@@ -4194,6 +4888,9 @@ async function loadJiraProjectGraph(projectKey) {
         state.addDeveloper = false;
         state.decoupleBlockingEdges = false;
         state.trimScope = false;
+        state.pinnedNodeOverrides = {};
+        state.assigneeOverrides = {};
+        state.selectedAssignee = pickDefaultAssignee(state.graph);
         recomputeSimulation();
         state.statusBanner = `Loaded live Jira project "${state.graph.projectName}" (${state.graph.projectKey}) with ${state.graph.nodes.length} ${state.graph.nodes.length === 1 ? 'issue' : 'issues'}.`;
         renderCockpit();
@@ -4206,6 +4903,9 @@ async function loadJiraProjectGraph(projectKey) {
         state.addDeveloper = false;
         state.decoupleBlockingEdges = false;
         state.trimScope = false;
+        state.pinnedNodeOverrides = {};
+        state.assigneeOverrides = {};
+        state.selectedAssignee = pickDefaultAssignee(state.graph);
         recomputeSimulation();
         renderCockpit();
     }
@@ -4247,8 +4947,8 @@ function attachCockpitEventListeners(skipMountForSlider) {
         issueJumpSelect.addEventListener('change', () => {
             const nextKey = issueJumpSelect.value;
             if (nextKey) {
-                state.selectedNodeKey = nextKey;
-                state.copiedPromptNotice = false;
+                switchSelectedIssue(nextKey);
+                state.simulatorMode = 'issue';
                 recomputeSimulation();
                 triggerRemoteWhatIf();
                 renderCockpit();
@@ -4257,11 +4957,11 @@ function attachCockpitEventListeners(skipMountForSlider) {
         });
     }
     document.querySelectorAll('.dag-node-group').forEach((el) => {
-        el.addEventListener('click', () => {
+        el.addEventListener('click', (event) => {
             const key = el.getAttribute('data-node-key');
             if (key) {
-                state.selectedNodeKey = key;
-                state.copiedPromptNotice = false;
+                switchSelectedIssue(key, event.shiftKey);
+                state.simulatorMode = 'issue';
                 recomputeSimulation();
                 triggerRemoteWhatIf();
                 renderCockpit();
@@ -4335,17 +5035,188 @@ function attachCockpitEventListeners(skipMountForSlider) {
             }
         });
     });
-    if (skipMountForSlider !== 'delay-slider-input') {
+    // Stack chips & right panel sections updated dynamically even during slider drag
+    document.querySelectorAll('[data-focus-pin]').forEach((chip) => {
+        chip.addEventListener('click', (e) => {
+            const target = e.target;
+            if (target?.closest('[data-unpin-node]'))
+                return;
+            const key = chip.getAttribute('data-focus-pin');
+            if (key) {
+                switchSelectedIssue(key);
+                state.simulatorMode = 'issue';
+                recomputeSimulation();
+                renderCockpit();
+                scrollDagToSelectedNode(true);
+            }
+        });
+    });
+    document.querySelectorAll('[data-unpin-node]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const key = btn.getAttribute('data-unpin-node');
+            if (key && state.pinnedNodeOverrides[key]) {
+                delete state.pinnedNodeOverrides[key];
+                if (state.selectedNodeKey === key) {
+                    state.delayDays = 0;
+                    state.addDeveloper = false;
+                    state.decoupleBlockingEdges = false;
+                    state.trimScope = false;
+                }
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                triggerRemoteWhatIf();
+                renderCockpit();
+            }
+        });
+    });
+    document.querySelectorAll('[data-focus-person]').forEach((chip) => {
+        chip.addEventListener('click', (e) => {
+            const target = e.target;
+            if (target?.closest('[data-clear-person]'))
+                return;
+            const name = chip.getAttribute('data-focus-person');
+            if (name) {
+                state.selectedAssignee = name;
+                state.simulatorMode = 'person';
+                renderCockpit();
+            }
+        });
+    });
+    document.querySelectorAll('[data-clear-person]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const name = btn.getAttribute('data-clear-person');
+            if (name && state.assigneeOverrides[name]) {
+                delete state.assigneeOverrides[name];
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                triggerRemoteWhatIf();
+                renderCockpit();
+            }
+        });
+    });
+    const btnClearStack = document.getElementById('btn-clear-scenario-stack');
+    if (btnClearStack) {
+        btnClearStack.addEventListener('click', () => {
+            state.pinnedNodeOverrides = {};
+            state.assigneeOverrides = {};
+            state.delayDays = 0;
+            state.addDeveloper = false;
+            state.decoupleBlockingEdges = false;
+            state.trimScope = false;
+            state.copiedPromptNotice = false;
+            recomputeSimulation();
+            triggerRemoteWhatIf();
+            renderCockpit();
+        });
+    }
+    // 6. Copy Rovo Mitigation Prompt Button (kept live even when slider drags)
+    const btnCopyRovo = document.getElementById('btn-copy-rovo-prompt');
+    if (btnCopyRovo) {
+        btnCopyRovo.addEventListener('click', async () => {
+            const promptText = buildRovoMitigationPrompt({
+                graph: state.graph,
+                baselineSim: state.baselineSim,
+                activeSim: state.activeSim,
+                intervention: state.intervention,
+                selectedNodeKey: state.selectedNodeKey,
+                delayDays: state.delayDays,
+                addDeveloper: state.addDeveloper,
+                decoupleBlockingEdges: state.decoupleBlockingEdges,
+                trimScope: state.trimScope,
+                simulatorMode: state.simulatorMode,
+                pinnedNodeOverrides: state.pinnedNodeOverrides,
+                selectedAssignee: state.selectedAssignee,
+                assigneeOverrides: state.assigneeOverrides,
+                activeRightTab: state.activeRightTab,
+                copiedPromptNotice: state.copiedPromptNotice,
+            });
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(promptText);
+                }
+            }
+            catch {
+                // Fallback when clipboard permission is restricted in sandboxed iframe
+            }
+            state.copiedPromptNotice = true;
+            state.statusBanner = `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
+            renderCockpit();
+        });
+    }
+    // 13. Right Panel Tabs
+    document.querySelectorAll('[data-tab]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const tab = btn.getAttribute('data-tab');
+            if (tab) {
+                state.activeRightTab = tab;
+                renderCockpit();
+            }
+        });
+    });
+    // 14. Clickable rows in Cascade / Bottlenecks list
+    document.querySelectorAll('[data-select-node]').forEach((row) => {
+        row.addEventListener('click', () => {
+            const key = row.getAttribute('data-select-node');
+            if (key) {
+                switchSelectedIssue(key);
+                state.simulatorMode = 'issue';
+                recomputeSimulation();
+                triggerRemoteWhatIf();
+                renderCockpit();
+                scrollDagToSelectedNode(true);
+            }
+        });
+    });
+    // Pin / Unpin Current Issue (kept live inside .scenario-stack-bar even during slider drag)
+    const btnPinCurrent = document.getElementById('btn-pin-current-issue');
+    if (btnPinCurrent) {
+        btnPinCurrent.addEventListener('click', () => {
+            if (state.pinnedNodeOverrides[state.selectedNodeKey]) {
+                delete state.pinnedNodeOverrides[state.selectedNodeKey];
+            }
+            else {
+                state.pinnedNodeOverrides[state.selectedNodeKey] = {
+                    deltaDays: state.delayDays,
+                    addDeveloper: state.addDeveloper,
+                    decoupleBlockingEdges: state.decoupleBlockingEdges,
+                    trimScope: state.trimScope,
+                };
+            }
+            state.copiedPromptNotice = false;
+            recomputeSimulation();
+            triggerRemoteWhatIf();
+            renderCockpit();
+        });
+    }
+    if (skipMountForSlider !== 'delay-slider-input' &&
+        skipMountForSlider !== 'person-pto-slider-input') {
+        // Mode Switcher: By Issue vs. By Person & Team
+        document.querySelectorAll('[data-sim-mode]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const nextMode = btn.getAttribute('data-sim-mode');
+                if (nextMode && nextMode !== state.simulatorMode) {
+                    state.simulatorMode = nextMode;
+                    if (nextMode === 'person' && !state.selectedAssignee) {
+                        state.selectedAssignee = pickDefaultAssignee(state.graph);
+                    }
+                    renderCockpit();
+                }
+            });
+        });
         // 2. Delay / Accelerate Slider input (-5d to +30d)
         const delaySlider = document.getElementById('delay-slider-input');
         if (delaySlider) {
             delaySlider.addEventListener('input', () => {
                 state.delayDays = Number(delaySlider.value);
+                syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
                 renderCockpit('delay-slider-input');
             });
             delaySlider.addEventListener('change', () => {
+                syncCurrentNodeToPinIfPinned();
                 renderCockpit();
                 triggerRemoteWhatIf();
             });
@@ -4354,6 +5225,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
         document.querySelectorAll('[data-preset-delay]').forEach((btn) => {
             btn.addEventListener('click', () => {
                 state.delayDays = Number(btn.getAttribute('data-preset-delay') ?? 0);
+                syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
                 triggerRemoteWhatIf();
@@ -4365,6 +5237,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
         if (btnAddDev) {
             btnAddDev.addEventListener('click', () => {
                 state.addDeveloper = !state.addDeveloper;
+                syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
                 triggerRemoteWhatIf();
@@ -4376,6 +5249,7 @@ function attachCockpitEventListeners(skipMountForSlider) {
         if (btnDecouple) {
             btnDecouple.addEventListener('click', () => {
                 state.decoupleBlockingEdges = !state.decoupleBlockingEdges;
+                syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
                 triggerRemoteWhatIf();
@@ -4387,66 +5261,81 @@ function attachCockpitEventListeners(skipMountForSlider) {
         if (btnTrimScope) {
             btnTrimScope.addEventListener('click', () => {
                 state.trimScope = !state.trimScope;
+                syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
                 triggerRemoteWhatIf();
                 renderCockpit();
             });
         }
-        // 6. Copy Rovo Mitigation Prompt Button
-        const btnCopyRovo = document.getElementById('btn-copy-rovo-prompt');
-        if (btnCopyRovo) {
-            btnCopyRovo.addEventListener('click', async () => {
-                const promptText = buildRovoMitigationPrompt({
-                    graph: state.graph,
-                    baselineSim: state.baselineSim,
-                    activeSim: state.activeSim,
-                    intervention: state.intervention,
-                    selectedNodeKey: state.selectedNodeKey,
-                    delayDays: state.delayDays,
-                    addDeveloper: state.addDeveloper,
-                    decoupleBlockingEdges: state.decoupleBlockingEdges,
-                    trimScope: state.trimScope,
-                    activeRightTab: state.activeRightTab,
-                    copiedPromptNotice: state.copiedPromptNotice,
-                });
-                try {
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        await navigator.clipboard.writeText(promptText);
-                    }
+        // Person Mode Listeners: Select Assignee, Unavailability Slider, Presets, Workload Mitigations
+        document.querySelectorAll('[data-select-assignee]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const name = btn.getAttribute('data-select-assignee');
+                if (name) {
+                    state.selectedAssignee = name;
+                    state.copiedPromptNotice = false;
+                    renderCockpit();
                 }
-                catch {
-                    // Fallback when clipboard permission is restricted in sandboxed iframe
-                }
-                state.copiedPromptNotice = true;
-                state.statusBanner = `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
+            });
+        });
+        const ptoSlider = document.getElementById('person-pto-slider-input');
+        if (ptoSlider) {
+            ptoSlider.addEventListener('input', () => {
+                const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+                pOv.unavailableDays = Number(ptoSlider.value);
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                renderCockpit('person-pto-slider-input');
+            });
+            ptoSlider.addEventListener('change', () => {
+                renderCockpit();
+                triggerRemoteWhatIf();
+            });
+        }
+        document.querySelectorAll('[data-preset-pto]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+                pOv.unavailableDays = Number(btn.getAttribute('data-preset-pto') ?? 0);
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                triggerRemoteWhatIf();
+                renderCockpit();
+            });
+        });
+        const btnPersonReassign = document.getElementById('btn-person-reassign');
+        if (btnPersonReassign) {
+            btnPersonReassign.addEventListener('click', () => {
+                const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+                pOv.reassignBottleneck = !pOv.reassignBottleneck;
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                triggerRemoteWhatIf();
                 renderCockpit();
             });
         }
-        // 13. Right Panel Tabs
-        document.querySelectorAll('[data-tab]').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                const tab = btn.getAttribute('data-tab');
-                if (tab) {
-                    state.activeRightTab = tab;
-                    renderCockpit();
-                }
+        const btnPersonSerialize = document.getElementById('btn-person-serialize');
+        if (btnPersonSerialize) {
+            btnPersonSerialize.addEventListener('click', () => {
+                const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+                pOv.serializeParallelWork = !pOv.serializeParallelWork;
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                triggerRemoteWhatIf();
+                renderCockpit();
             });
-        });
-        // 14. Clickable rows in Cascade / Bottlenecks list
-        document.querySelectorAll('[data-select-node]').forEach((row) => {
-            row.addEventListener('click', () => {
-                const key = row.getAttribute('data-select-node');
-                if (key) {
-                    state.selectedNodeKey = key;
-                    state.copiedPromptNotice = false;
-                    recomputeSimulation();
-                    triggerRemoteWhatIf();
-                    renderCockpit();
-                    scrollDagToSelectedNode(true);
-                }
+        }
+        const btnPersonPair = document.getElementById('btn-person-pair');
+        if (btnPersonPair) {
+            btnPersonPair.addEventListener('click', () => {
+                const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+                pOv.pairOnTopBlocker = !pOv.pairOnTopBlocker;
+                state.copiedPromptNotice = false;
+                recomputeSimulation();
+                triggerRemoteWhatIf();
+                renderCockpit();
             });
-        });
+        }
     }
     if (skipMountForSlider !== 'time-machine-range') {
         // 7. Time Machine Epoch Buttons
@@ -4518,9 +5407,11 @@ function attachCockpitEventListeners(skipMountForSlider) {
             const topKey = state.activeSim.topBottlenecks[0]?.key ??
                 state.graph.nodes[0]?.key ??
                 'BLP-7';
-            state.selectedNodeKey = topKey;
+            switchSelectedIssue(topKey);
+            state.simulatorMode = 'issue';
             if (state.delayDays === 0)
                 state.delayDays = 5;
+            syncCurrentNodeToPinIfPinned();
             recomputeSimulation();
             state.statusBanner = `Focused #1 Critical Blocker (${topKey}) — simulating a +${state.delayDays} day delay.`;
             renderCockpit();
@@ -4535,6 +5426,8 @@ function attachCockpitEventListeners(skipMountForSlider) {
             state.addDeveloper = false;
             state.decoupleBlockingEdges = false;
             state.trimScope = false;
+            state.pinnedNodeOverrides = {};
+            state.assigneeOverrides = {};
             state.scrubberDayOffset = 0;
             state.selectedEpochIndex = 2;
             recomputeSimulation();
@@ -4567,8 +5460,8 @@ document.addEventListener('keydown', (event) => {
     const nextKey = order[nextIdx];
     if (!nextKey || nextKey === state.selectedNodeKey)
         return;
-    state.selectedNodeKey = nextKey;
-    state.copiedPromptNotice = false;
+    switchSelectedIssue(nextKey);
+    state.simulatorMode = 'issue';
     recomputeSimulation();
     triggerRemoteWhatIf();
     renderCockpit();

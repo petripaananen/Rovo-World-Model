@@ -678,4 +678,74 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
       prev = cur;
     }
   });
+
+  it('supports compound multi-issue What-If overrides via nodeOverrides', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const singleIssueDelay = runIntervention(graph, 'CHRON-104', 5, { iterations: 500 });
+    const stackedWithSecondDelay = runIntervention(graph, 'CHRON-104', 5, {
+      iterations: 500,
+      nodeOverrides: {
+        'CHRON-104': { deltaDays: 5 },
+        'CHRON-105': { deltaDays: 6 },
+      },
+    });
+    const stackedWithMitigation = runIntervention(graph, 'CHRON-104', 5, {
+      iterations: 500,
+      nodeOverrides: {
+        'CHRON-104': { deltaDays: 5, addDeveloper: true, trimScope: true },
+        'CHRON-105': { deltaDays: 6, decoupleBlockingEdges: true },
+      },
+    });
+
+    assert.ok(
+      stackedWithSecondDelay.p85Days >= singleIssueDelay.p85Days,
+      `Expected compound delay (${stackedWithSecondDelay.p85Days}d) >= single delay (${singleIssueDelay.p85Days}d)`
+    );
+    assert.ok(
+      stackedWithMitigation.p85Days < stackedWithSecondDelay.p85Days,
+      `Expected compound mitigations (${stackedWithMitigation.p85Days}d) < unmitigated stacked delay (${stackedWithSecondDelay.p85Days}d)`
+    );
+  });
+
+  it('supports person-level assigneeOverrides for unavailability shocks and workload mitigations', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const targetAssignee =
+      graph.nodes.find((n) => n.status.toLowerCase() !== 'done' && n.assignee)?.assignee ??
+      'Marcus Chen';
+
+    const baseline = runMonteCarloSimulation(graph, { iterations: 500 });
+    const personAway = runIntervention(graph, graph.nodes[0].key, 0, {
+      iterations: 500,
+      assigneeOverrides: {
+        [targetAssignee]: {
+          assignee: targetAssignee,
+          unavailableDays: 6,
+          reassignBottleneck: false,
+          serializeParallelWork: false,
+          pairOnTopBlocker: false,
+        },
+      },
+    });
+    const personRebalanced = runIntervention(graph, graph.nodes[0].key, 0, {
+      iterations: 500,
+      assigneeOverrides: {
+        [targetAssignee]: {
+          assignee: targetAssignee,
+          unavailableDays: 6,
+          reassignBottleneck: true,
+          serializeParallelWork: true,
+          pairOnTopBlocker: true,
+        },
+      },
+    });
+
+    assert.ok(
+      personAway.p85Days > baseline.p85Days,
+      `Expected person absence (+6d) P85 (${personAway.p85Days}d) > baseline (${baseline.p85Days}d)`
+    );
+    assert.ok(
+      personRebalanced.p85Days < personAway.p85Days,
+      `Expected person workload mitigation P85 (${personRebalanced.p85Days}d) < unmitigated absence (${personAway.p85Days}d)`
+    );
+  });
 });

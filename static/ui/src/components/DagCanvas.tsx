@@ -17,7 +17,13 @@
  *      terminal edge of the swimlanes (`Sprint Delivery`, `Release Milestone`).
  */
 
-import { CausalGraph, CausalNode, SimulationResult } from '../../../../src/engine/types';
+import {
+  AssigneeInterventionOverride,
+  CausalGraph,
+  CausalNode,
+  NodeInterventionOverride,
+  SimulationResult,
+} from '../../../../src/engine/types';
 import { evaluateNodeTemporalState } from './TimelineScrubber';
 import {
   escapeHtmlText,
@@ -35,6 +41,10 @@ export interface DagCanvasProps {
   decoupleBlockingEdges: boolean;
   trimScope: boolean;
   scrubberDayOffset: number;
+  simulatorMode?: 'issue' | 'person';
+  pinnedNodeOverrides?: Record<string, NodeInterventionOverride>;
+  selectedAssignee?: string;
+  assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
 }
 
 type NodeShapeKind = 'gate' | 'blocker' | 'task';
@@ -217,6 +227,10 @@ export function renderDagCanvas(props: DagCanvasProps): string {
     decoupleBlockingEdges,
     trimScope,
     scrubberDayOffset,
+    simulatorMode = 'issue',
+    pinnedNodeOverrides = {},
+    selectedAssignee = '',
+    assigneeOverrides = {},
   } = props;
 
   const {
@@ -234,9 +248,21 @@ export function renderDagCanvas(props: DagCanvasProps): string {
   const topBlockerSet = new Set(
     activeSim.topBottlenecks.slice(0, 3).map((b) => b.key)
   );
-  const hasActiveIntervention =
+  const pinnedKeys = Object.keys(pinnedNodeOverrides);
+  const hasAssigneeMods = Object.values(assigneeOverrides).some(
+    (a) =>
+      Number(a.unavailableDays ?? 0) !== 0 ||
+      a.reassignBottleneck ||
+      a.serializeParallelWork ||
+      a.pairOnTopBlocker
+  );
+  const hasCurrentNodeIntervention =
     delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
-  const intervenedKey = hasActiveIntervention ? selectedNodeKey : '';
+  const hasActiveIntervention =
+    hasCurrentNodeIntervention || pinnedKeys.length > 0 || hasAssigneeMods;
+  const intervenedKey = hasCurrentNodeIntervention ? selectedNodeKey : '';
+  const intervenedOriginSet = new Set<string>(pinnedKeys);
+  if (intervenedKey) intervenedOriginSet.add(intervenedKey);
 
   const blockedByMap = new Map<string, string[]>();
   const blocksMap = new Map<string, string[]>();
@@ -435,11 +461,12 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           : `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 
       const isDecoupledEdge =
-        decoupleBlockingEdges && edge.from === selectedNodeKey;
+        (decoupleBlockingEdges && edge.from === selectedNodeKey) ||
+        Boolean(pinnedNodeOverrides[edge.from]?.decoupleBlockingEdges);
       const isBlastEdge =
-        intervenedKey !== '' &&
+        hasActiveIntervention &&
         !isDecoupledEdge &&
-        (edge.from === intervenedKey || blastSet.has(edge.from)) &&
+        (intervenedOriginSet.has(edge.from) || blastSet.has(edge.from)) &&
         blastSet.has(edge.to);
       const isCriticalEdge =
         criticalSet.has(edge.from) && criticalSet.has(edge.to);
@@ -579,7 +606,13 @@ export function renderDagCanvas(props: DagCanvasProps): string {
 
       const stat = activeSim.nodeStats[node.key];
       const isSelected = node.key === selectedNodeKey;
-      const isIntervenedOrigin = intervenedKey === node.key;
+      const pinIndex = pinnedKeys.indexOf(node.key);
+      const nodePinOv = pinnedNodeOverrides[node.key];
+      const isIntervenedOrigin = intervenedKey === node.key || Boolean(nodePinOv);
+      const isPersonHighlighted =
+        simulatorMode === 'person' &&
+        Boolean(selectedAssignee) &&
+        node.assignee === selectedAssignee;
       const isInBlast = hasActiveIntervention && blastSet.has(node.key);
       const isCritical = criticalSet.has(node.key);
 
@@ -595,6 +628,7 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       if (isInBlast) groupClass += ' in-blast-radius';
       if (isSelected) groupClass += ' selected';
       if (isIntervenedOrigin) groupClass += ' intervened-origin';
+      if (isPersonHighlighted) groupClass += ' person-highlighted';
 
       // Sub-task / Epic completion metrics (Concept 1 node presentation)
       const totalSub =
@@ -633,10 +667,13 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       const isHexagonBlocker = shapeKind === 'blocker';
 
       const shapeType = isDiamondGate
-        ? 'Diamond Gate'
+        ? 'Gate'
         : isHexagonBlocker
-          ? 'Hexagon Blocker'
-          : 'Circle Task/Epic';
+          ? 'Blocker'
+          : 'Task';
+
+      const hoverStateLabel =
+        temporalState === 'At Risk / Blocked' ? 'Blocked' : temporalState;
 
       const blockedByKeys = blockedByMap.get(node.key) ?? [];
       const blocksKeys = blocksMap.get(node.key) ?? [];
@@ -646,7 +683,7 @@ export function renderDagCanvas(props: DagCanvasProps): string {
         summary: node.summary,
         team: node.team,
         assignee: node.assignee,
-        status: `${temporalState} (${shapeType})`,
+        status: `${hoverStateLabel} · ${shapeType}`,
         estimateDays: node.baseEstimateDays,
         sigma: node.uncertaintySigma,
         pertMean: stat?.pertMeanDays ?? node.baseEstimateDays,
@@ -666,24 +703,41 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           : '',
       });
 
-      // Top What-If intervention / slip badge
+      // Top What-If intervention / slip badge (supports multi-pinned nodes + person highlight)
+      const circledNums = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
+      const effectiveBadgeOv: NodeInterventionOverride | null =
+        isSelected && hasCurrentNodeIntervention
+          ? { deltaDays: delayDays, addDeveloper, decoupleBlockingEdges, trimScope }
+          : nodePinOv ?? null;
+
       let shiftBadge = '';
-      if (isSelected && hasActiveIntervention) {
+      if (effectiveBadgeOv) {
+        const badgePrefix = pinIndex >= 0 ? `${circledNums[pinIndex] ?? `#${pinIndex + 1}`} ` : '';
         const labelText =
-          delayDays > 0
-            ? `+${delayDays}d Delay`
-            : delayDays < 0
-              ? `${delayDays}d Faster`
-              : addDeveloper
-                ? '+1 Dev'
-                : decoupleBlockingEdges
-                  ? 'Decoupled'
-                  : 'Scope MVP';
+          effectiveBadgeOv.deltaDays > 0
+            ? `${badgePrefix}+${effectiveBadgeOv.deltaDays}d Delay`
+            : effectiveBadgeOv.deltaDays < 0
+              ? `${badgePrefix}${effectiveBadgeOv.deltaDays}d Faster`
+              : effectiveBadgeOv.addDeveloper
+                ? `${badgePrefix}+1 Dev`
+                : effectiveBadgeOv.decoupleBlockingEdges
+                  ? `${badgePrefix}Decoupled`
+                  : `${badgePrefix}Scope MVP`;
+        const pillFill = pinIndex >= 0 ? '#6D28D9' : '#0C66E4';
         shiftBadge = `
           <g transform="translate(0, -56)">
-            <rect x="-34" y="0" width="68" height="16" rx="8" fill="#0C66E4" />
+            <rect x="-38" y="0" width="76" height="16" rx="8" fill="${pillFill}" />
             <text x="0" y="11.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
               ${escapeHtmlText(labelText)}
+            </text>
+          </g>
+        `;
+      } else if (isPersonHighlighted) {
+        shiftBadge = `
+          <g transform="translate(0, -56)">
+            <rect x="-32" y="0" width="64" height="16" rx="8" fill="#0284C7" />
+            <text x="0" y="11.5" text-anchor="middle" fill="#FFFFFF" font-size="9" font-weight="800">
+              👤 ${escapeHtmlText(avatarInitials)}
             </text>
           </g>
         `;
@@ -719,8 +773,10 @@ export function renderDagCanvas(props: DagCanvasProps): string {
             transform="translate(${pos.x}, ${pos.y})"
           >
             ${
-              isSelected
-                ? `<polygon points="0,-54 54,0 0,54 -54,0" fill="none" stroke="#0C66E4" stroke-width="3" stroke-dasharray="4 3" />`
+              isSelected || isPersonHighlighted || pinIndex >= 0
+                ? `<polygon points="0,-54 54,0 0,54 -54,0" fill="none" stroke="${
+                    pinIndex >= 0 ? '#6D28D9' : isPersonHighlighted ? '#0284C7' : '#0C66E4'
+                  }" stroke-width="3" stroke-dasharray="${isPersonHighlighted && !isSelected ? '5 3' : '4 3'}" />`
                 : ''
             }
             <polygon points="0,-48 48,0 0,48 -48,0" fill="#7C3AED" stroke="${diamondStroke}" stroke-width="2.5" stroke-linejoin="round" />
@@ -765,8 +821,10 @@ export function renderDagCanvas(props: DagCanvasProps): string {
             transform="translate(${pos.x}, ${pos.y})"
           >
             ${
-              isSelected
-                ? `<polygon points="0,-54 47,-27 47,27 0,54 -47,27 -47,-27" fill="none" stroke="#0C66E4" stroke-width="3" />`
+              isSelected || isPersonHighlighted || pinIndex >= 0
+                ? `<polygon points="0,-54 47,-27 47,27 0,54 -47,27 -47,-27" fill="none" stroke="${
+                    pinIndex >= 0 ? '#6D28D9' : isPersonHighlighted ? '#0284C7' : '#0C66E4'
+                  }" stroke-width="3" ${isPersonHighlighted && !isSelected ? 'stroke-dasharray="5 3"' : ''} />`
                 : ''
             }
             <!-- Outer Coral-Red Blocker Hexagon -->
@@ -830,8 +888,18 @@ export function renderDagCanvas(props: DagCanvasProps): string {
           transform="translate(${pos.x}, ${pos.y})"
         >
           ${
-            isSelected || isHighRiskCircle
-              ? `<circle r="50" fill="none" stroke="${isSelected ? '#0C66E4' : '#FB923C'}" stroke-width="2.5" opacity="0.65" />`
+            isSelected || isHighRiskCircle || isPersonHighlighted || pinIndex >= 0
+              ? `<circle r="50" fill="none" stroke="${
+                  pinIndex >= 0
+                    ? '#6D28D9'
+                    : isPersonHighlighted
+                      ? '#0284C7'
+                      : isSelected
+                        ? '#0C66E4'
+                        : '#FB923C'
+                }" stroke-width="${pinIndex >= 0 || isPersonHighlighted ? '3' : '2.5'}" ${
+                  isPersonHighlighted && !isSelected ? 'stroke-dasharray="5 3"' : ''
+                } opacity="0.8" />`
               : ''
           }
           <!-- Base Circle Track -->

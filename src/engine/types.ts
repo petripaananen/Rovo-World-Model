@@ -148,6 +148,29 @@ export interface CausalGraph {
   topologicalOrder: string[];
 }
 
+export interface NodeInterventionOverride {
+  /** Signed day shift: -5 (accelerate) to +60 (delay) */
+  deltaDays: number;
+  /** Simulate adding a swarm developer (+1 resource -> -35% estimate, -40% sigma) */
+  addDeveloper?: boolean;
+  /** Simulate decoupling hard blocking edges from targetNodeId (reduces outgoing weight to 0.25) */
+  decoupleBlockingEdges?: boolean;
+  /** Simulate trimming / deferring non-essential sub-tasks to next cycle (-35% duration, -45% sigma) */
+  trimScope?: boolean;
+}
+
+export interface AssigneeInterventionOverride {
+  assignee: string;
+  /** Signed absence / PTO / unavailability shift in days (-3 to +15) across this person's active issues */
+  unavailableDays?: number;
+  /** Offload this person's parallel bottleneck issue to reduce multi-tasking contention */
+  reassignBottleneck?: boolean;
+  /** Serialize concurrent WIP to eliminate context-switching variance */
+  serializeParallelWork?: boolean;
+  /** Pair an extra developer on this person's highest-criticality blocker issue */
+  pairOnTopBlocker?: boolean;
+}
+
 /**
  * Counterfactual $do$-calculus intervention parameters.
  */
@@ -161,6 +184,10 @@ export interface WhatIfInterventionOptions {
   decoupleBlockingEdges?: boolean;
   /** Simulate trimming / deferring non-essential sub-tasks to next cycle (-35% duration, -45% sigma) */
   trimScope?: boolean;
+  /** Optional compound multi-task overrides keyed by Jira issue key */
+  nodeOverrides?: Record<string, NodeInterventionOverride>;
+  /** Optional person / assignee capacity & unavailability overrides keyed by assignee name */
+  assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
 }
 
 /**

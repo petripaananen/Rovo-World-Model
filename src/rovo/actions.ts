@@ -8,6 +8,10 @@
  */
 
 import { runIntervention, runMonteCarloSimulation } from '../engine/simulator';
+import {
+  AssigneeInterventionOverride,
+  NodeInterventionOverride,
+} from '../engine/types';
 import { fetchProjectCausalGraph } from '../twg/graphFetcher';
 import { seedProjectChronosScenario } from '../twg/syntheticSeeder';
 
@@ -24,6 +28,8 @@ export interface RovoSimulateDelayPayload {
   addDeveloper?: boolean;
   decoupleBlockingEdges?: boolean;
   trimScope?: boolean;
+  nodeOverrides?: Record<string, NodeInterventionOverride>;
+  assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
   projectKey?: string;
   context?: RovoActionContext;
 }
@@ -79,6 +85,8 @@ export async function simulateDelayImpact(
     addDeveloper: payload.addDeveloper,
     decoupleBlockingEdges: payload.decoupleBlockingEdges,
     trimScope: payload.trimScope,
+    nodeOverrides: payload.nodeOverrides,
+    assigneeOverrides: payload.assigneeOverrides,
   });
 
   const formatSigned = (n: number) => (n >= 0 ? `+${n}d` : `${n}d`);

@@ -20,6 +20,7 @@ import {
   topologicalSort,
 } from './dag';
 import {
+  AssigneeInterventionOverride,
   BottleneckDiagnostic,
   CausalEdge,
   CausalGraph,
@@ -28,6 +29,7 @@ import {
   EarnedValueSummary,
   GoalImpact,
   InterventionResult,
+  NodeInterventionOverride,
   NodeSimulationStats,
   PrecedenceType,
   ProbabilityConeBucket,
@@ -190,7 +192,7 @@ export function runMonteCarloSimulation(
   const nodeByKey = new Map(graph.nodes.map((node) => [node.key, node]));
   const orderedNodes = topoKeys.map((k) => nodeByKey.get(k)!);
 
-  // Resolve optional intervention target
+  // Resolve optional single-node and compound multi-node / assignee interventions
   const intervenedKey = options.intervention?.targetNodeId
     ? resolveNodeKey(graph.nodes, options.intervention.targetNodeId)
     : undefined;
@@ -202,23 +204,153 @@ export function runMonteCarloSimulation(
   );
   const trimScope = Boolean(intervenedKey && options.intervention?.trimScope);
 
-  // Apply edge decoupling if requested
-  const effectiveEdges = decoupleBlockingEdges
+  const effectiveNodeOverrides = new Map<string, NodeInterventionOverride>();
+  if (
+    intervenedKey &&
+    (interventionDelta !== 0 || addDeveloper || decoupleBlockingEdges || trimScope)
+  ) {
+    effectiveNodeOverrides.set(intervenedKey, {
+      deltaDays: interventionDelta,
+      addDeveloper,
+      decoupleBlockingEdges,
+      trimScope,
+    });
+  }
+
+  for (const [rawKey, ov] of Object.entries(options.intervention?.nodeOverrides ?? {})) {
+    if (!ov) continue;
+    const resolved = resolveNodeKey(graph.nodes, rawKey);
+    if (!resolved) continue;
+    const d = Number(ov.deltaDays || 0);
+    const hasMod =
+      d !== 0 ||
+      Boolean(ov.addDeveloper) ||
+      Boolean(ov.decoupleBlockingEdges) ||
+      Boolean(ov.trimScope);
+    if (hasMod) {
+      effectiveNodeOverrides.set(resolved, {
+        deltaDays: d,
+        addDeveloper: Boolean(ov.addDeveloper),
+        decoupleBlockingEdges: Boolean(ov.decoupleBlockingEdges),
+        trimScope: Boolean(ov.trimScope),
+      });
+    }
+  }
+
+  const reassignedNodeKeys = new Set<string>();
+  const serializedAssignees = new Set<string>();
+
+  for (const [rawAssignee, aOv] of Object.entries(
+    options.intervention?.assigneeOverrides ?? {}
+  )) {
+    if (!aOv) continue;
+    const assigneeName = aOv.assignee || rawAssignee;
+    const activeAssigneeNodes = orderedNodes
+      .filter(
+        (node) =>
+          node.assignee === assigneeName && node.status.toLowerCase() !== 'done'
+      )
+      .sort(
+        (a, b) =>
+          b.baseEstimateDays * (1 + b.uncertaintySigma) -
+          a.baseEstimateDays * (1 + a.uncertaintySigma)
+      );
+
+    if (activeAssigneeNodes.length === 0) continue;
+
+    const ptoDays = Number(aOv.unavailableDays || 0);
+    if (ptoDays !== 0) {
+      activeAssigneeNodes.forEach((aNode, idx) => {
+        const appliedDays =
+          idx === 0 ? ptoDays : Number((ptoDays * 0.45).toFixed(1));
+        const prev = effectiveNodeOverrides.get(aNode.key) ?? { deltaDays: 0 };
+        effectiveNodeOverrides.set(aNode.key, {
+          ...prev,
+          deltaDays: Number((prev.deltaDays + appliedDays).toFixed(1)),
+        });
+      });
+    }
+
+    if (aOv.pairOnTopBlocker && activeAssigneeNodes[0]) {
+      const topKey = activeAssigneeNodes[0].key;
+      const prev = effectiveNodeOverrides.get(topKey) ?? { deltaDays: 0 };
+      effectiveNodeOverrides.set(topKey, {
+        ...prev,
+        addDeveloper: true,
+      });
+    }
+
+    if (aOv.reassignBottleneck) {
+      const targetParallelNode = activeAssigneeNodes[1] ?? activeAssigneeNodes[0];
+      reassignedNodeKeys.add(targetParallelNode.key);
+      if (!effectiveNodeOverrides.has(targetParallelNode.key)) {
+        effectiveNodeOverrides.set(targetParallelNode.key, { deltaDays: 0 });
+      }
+    }
+
+    if (aOv.serializeParallelWork) {
+      serializedAssignees.add(assigneeName);
+      if (!effectiveNodeOverrides.has(activeAssigneeNodes[0].key)) {
+        effectiveNodeOverrides.set(activeAssigneeNodes[0].key, { deltaDays: 0 });
+      }
+    }
+  }
+
+  const decoupledKeys = new Set<string>();
+  for (const [k, ov] of effectiveNodeOverrides.entries()) {
+    if (ov.decoupleBlockingEdges) {
+      decoupledKeys.add(k);
+    }
+  }
+  const anyDecoupled = decoupledKeys.size > 0;
+  const anyAddDeveloper =
+    addDeveloper || Array.from(effectiveNodeOverrides.values()).some((v) => v.addDeveloper);
+  const anyTrimScope =
+    trimScope || Array.from(effectiveNodeOverrides.values()).some((v) => v.trimScope);
+
+  // Apply edge decoupling if requested for one or more intervened nodes
+  const effectiveEdges = anyDecoupled
     ? graph.edges.map((e) =>
-        e.from === intervenedKey
+        decoupledKeys.has(e.from)
           ? { ...e, propagationWeight: Math.min(e.propagationWeight, 0.25) }
           : e
       )
     : graph.edges;
 
-  const effectiveGraph: CausalGraph = decoupleBlockingEdges
+  const effectiveGraph: CausalGraph = anyDecoupled
     ? { ...graph, edges: effectiveEdges }
     : graph;
 
-  // Downstream blast radius from intervened node (if any)
-  const blastInfo = intervenedKey
-    ? getDownstreamBlastRadius(effectiveGraph, intervenedKey)
-    : { targetKey: undefined, blastRadiusKeys: [], effectiveWeights: {} as Record<string, number> };
+  // Combined downstream blast radius across all intervened nodes
+  const hasExplicitOverrides =
+    effectiveNodeOverrides.size > 0 ||
+    reassignedNodeKeys.size > 0 ||
+    serializedAssignees.size > 0;
+  const blastSources = Array.from(
+    new Set<string>([
+      ...effectiveNodeOverrides.keys(),
+      ...reassignedNodeKeys.values(),
+      ...(intervenedKey && (!hasExplicitOverrides || effectiveNodeOverrides.has(intervenedKey))
+        ? [intervenedKey]
+        : []),
+    ])
+  );
+  const combinedBlastKeys = new Set<string>();
+  const combinedEffectiveWeights: Record<string, number> = {};
+  for (const srcKey of blastSources) {
+    const info = getDownstreamBlastRadius(effectiveGraph, srcKey);
+    for (const bk of info.blastRadiusKeys) {
+      combinedBlastKeys.add(bk);
+    }
+    for (const [wk, wVal] of Object.entries(info.effectiveWeights)) {
+      combinedEffectiveWeights[wk] = Math.max(combinedEffectiveWeights[wk] ?? 0, wVal);
+    }
+  }
+  const blastInfo = {
+    targetKey: blastSources[0],
+    blastRadiusKeys: Array.from(combinedBlastKeys),
+    effectiveWeights: combinedEffectiveWeights,
+  };
 
   // Pre-index incoming and outgoing edges for each topological index
   const predIndices: number[][] = Array.from({ length: n }, () => []);
@@ -242,7 +374,7 @@ export function runMonteCarloSimulation(
     }
   }
 
-  // Detect parallel assignee contention across active non-Done tasks
+  // Detect parallel assignee contention across active non-Done tasks (reflecting reassignments/serialization)
   const assigneeActiveTasks = new Map<string, string[]>();
   for (const node of orderedNodes) {
     if (
@@ -250,9 +382,20 @@ export function runMonteCarloSimulation(
       node.assignee &&
       node.assignee.toLowerCase() !== 'unassigned'
     ) {
-      const list = assigneeActiveTasks.get(node.assignee) ?? [];
+      const effectiveAssignee = reassignedNodeKeys.has(node.key)
+        ? 'Reassigned (+Dev)'
+        : node.assignee;
+      if (serializedAssignees.has(effectiveAssignee)) {
+        const list = assigneeActiveTasks.get(effectiveAssignee) ?? [];
+        if (list.length === 0) {
+          list.push(node.key);
+          assigneeActiveTasks.set(effectiveAssignee, list);
+        }
+        continue;
+      }
+      const list = assigneeActiveTasks.get(effectiveAssignee) ?? [];
       list.push(node.key);
-      assigneeActiveTasks.set(node.assignee, list);
+      assigneeActiveTasks.set(effectiveAssignee, list);
     }
   }
 
@@ -289,14 +432,20 @@ export function runMonteCarloSimulation(
     for (let i = 0; i < n; i++) {
       const node = orderedNodes[i];
       const pert = nodePert[i];
-      const isTarget = node.key === intervenedKey;
+      const nodeOv = effectiveNodeOverrides.get(node.key);
+      const nodeDelta = nodeOv ? Number(nodeOv.deltaDays || 0) : 0;
+      const nodeAddDev = Boolean(nodeOv?.addDeveloper);
+      const nodeTrimScope = Boolean(nodeOv?.trimScope);
+      const isNodeReassigned = reassignedNodeKeys.has(node.key);
+      const isAssigneeSerialized = serializedAssignees.has(node.assignee);
+      const isTarget = Boolean(nodeOv) || isNodeReassigned || isAssigneeSerialized;
       const isDone = node.status.toLowerCase() === 'done';
 
       // Sample stochastic task duration using right-skewed normal noise
       const z = sampleStandardNormal(rng);
       let sampledDuration = 0;
 
-      if (!isDone || (isTarget && (interventionDelta !== 0 || addDeveloper || trimScope))) {
+      if (!isDone || (isTarget && (nodeDelta !== 0 || nodeAddDev || nodeTrimScope))) {
         let base = isDone ? 0 : pert.meanDays;
         let sigma = isDone ? 0.25 : pert.sigmaDays;
 
@@ -309,15 +458,25 @@ export function runMonteCarloSimulation(
           }
         }
 
-        if (isTarget && addDeveloper) {
+        if (nodeAddDev) {
           const brooks = computeBrooksLawMetrics(node);
           base = brooks.effectiveSwarmDurationDays;
           sigma = Math.max(0.1, sigma * 0.6);
         }
 
-        if (isTarget && trimScope) {
+        if (nodeTrimScope) {
           base = Math.max(0.5, Number((base * 0.65).toFixed(2)));
           sigma = Math.max(0.1, sigma * 0.55);
+        }
+
+        if (isNodeReassigned) {
+          base = Math.max(0.5, Number((base * 0.72).toFixed(2)));
+          sigma = Math.max(0.1, sigma * 0.65);
+        }
+
+        if (isAssigneeSerialized) {
+          base = Math.max(0.5, Number((base * 0.88).toFixed(2)));
+          sigma = Math.max(0.1, sigma * 0.7);
         }
 
         // Right-skewed software engineering tail distribution
@@ -334,8 +493,8 @@ export function runMonteCarloSimulation(
           }
         }
 
-        const shiftedDuration = rawDuration + (isTarget ? interventionDelta : 0);
-        sampledDuration = isDone && interventionDelta <= 0 ? 0 : Math.max(0.5, shiftedDuration);
+        const shiftedDuration = rawDuration + (isTarget ? nodeDelta : 0);
+        sampledDuration = isDone && nodeDelta <= 0 ? 0 : Math.max(0.5, shiftedDuration);
       }
 
       // Compute earliest start time gated by upstream predecessors (FS, SS, FF, SF + lagDays)
@@ -766,17 +925,20 @@ export function runMonteCarloSimulation(
   ];
 
   // Compute Asymmetric Quasimetric Latent Energy E(s -> s' | z_env) & Rework Hours (ported from ProjectWorldModel)
-  const gammaRev = decoupleBlockingEdges ? 0.92 : 0.72;
+  const gammaRev = anyDecoupled ? 0.92 : 0.72;
   let quadDiffSum = 0;
   let posLockInDelta = 0;
+  let totalPosInterventionDelta = 0;
   for (let i = 0; i < n; i++) {
     const baseEst = orderedNodes[i].baseEstimateDays;
     const p85Finish = nodeStats[orderedNodes[i].key]?.p85EndDay ?? baseEst;
     const diff = p85Finish - baseEst;
     const gDiag = 1.0 + (1.0 - gammaRev) * 0.5;
     quadDiffSum += diff * diff * gDiag;
-    if (orderedNodes[i].key === intervenedKey && interventionDelta > 0) {
-      posLockInDelta += interventionDelta;
+    const ovDelta = effectiveNodeOverrides.get(orderedNodes[i].key)?.deltaDays ?? 0;
+    if (ovDelta > 0) {
+      posLockInDelta += ovDelta;
+      totalPosInterventionDelta += ovDelta;
     }
   }
   const quasimetricEnergy = Number(
@@ -798,12 +960,12 @@ export function runMonteCarloSimulation(
     Math.max(
       4,
       (blastInfo.blastRadiusKeys.length * 3.5 +
-        Math.max(0, interventionDelta) * 5.2 +
+        totalPosInterventionDelta * 5.2 +
         fastTrackingReworkBonus) *
-        (interventionDelta > 0 ? lateChangeEscalationFactor * 0.78 : 1.0) *
-        (addDeveloper ? 0.65 : 1.0) *
-        (decoupleBlockingEdges ? 0.5 : 1.0) *
-        (trimScope ? 0.7 : 1.0)
+        (totalPosInterventionDelta > 0 ? lateChangeEscalationFactor * 0.78 : 1.0) *
+        (anyAddDeveloper ? 0.65 : 1.0) *
+        (anyDecoupled ? 0.5 : 1.0) *
+        (anyTrimScope ? 0.7 : 1.0)
     ).toFixed(1)
   );
 
@@ -823,7 +985,7 @@ export function runMonteCarloSimulation(
   const committedEffortRatio = Number(
     (totalBac > 0 ? Math.min(1, committedEffort / totalBac) : 0).toFixed(2)
   );
-  const activeSlipOrBlock = Math.max(0, interventionDelta) + blockedCount * 1.5;
+  const activeSlipOrBlock = totalPosInterventionDelta + blockedCount * 1.5;
   const bufferBurnRatio = Number(
     Math.min(2.0, activeSlipOrBlock / Math.max(1.0, pmContingencyReserveDays)).toFixed(2)
   );
@@ -872,8 +1034,9 @@ export function runMonteCarloSimulation(
             : sLow.includes('progress')
               ? bac * 0.52
               : 0;
-    if (node.key === intervenedKey && interventionDelta > 0) {
-      acwp += interventionDelta * 0.75;
+    const ovDelta = effectiveNodeOverrides.get(node.key)?.deltaDays ?? 0;
+    if (ovDelta > 0) {
+      acwp += ovDelta * 0.75;
     }
 
     totalBcws += bcws;
@@ -1106,6 +1269,8 @@ export function runIntervention(
         addDeveloper?: boolean;
         decoupleBlockingEdges?: boolean;
         trimScope?: boolean;
+        nodeOverrides?: Record<string, NodeInterventionOverride>;
+        assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
       } = DEFAULT_ITERATIONS
 ): InterventionResult {
   const startClock = performance.now();
@@ -1121,6 +1286,10 @@ export function runIntervention(
       : false;
   const trimScope =
     typeof iterationsOrOptions === 'object' ? Boolean(iterationsOrOptions.trimScope) : false;
+  const nodeOverrides =
+    typeof iterationsOrOptions === 'object' ? iterationsOrOptions.nodeOverrides : undefined;
+  const assigneeOverrides =
+    typeof iterationsOrOptions === 'object' ? iterationsOrOptions.assigneeOverrides : undefined;
 
   // Support both acceleration (-5d) and delay (+120d)
   const sanitizedDelta = Math.max(-5, Math.min(120, Number(deltaDays) || 0));
@@ -1148,10 +1317,13 @@ export function runIntervention(
       addDeveloper,
       decoupleBlockingEdges,
       trimScope,
+      nodeOverrides,
+      assigneeOverrides,
     },
   });
 
   const blastInfo = getDownstreamBlastRadius(graph, resolvedKey);
+  const intervenedBlastSet = new Set(intervenedSim.blastRadiusNodes);
 
   // Calculate exact signed per-node counterfactual shifts
   const nodeDeltas: InterventionResult['nodeDeltas'] = [];
@@ -1163,7 +1335,8 @@ export function runIntervention(
     if (!baseStat || !intStat) continue;
 
     const shiftDays = Number((intStat.p85EndDay - baseStat.p85EndDay).toFixed(1));
-    const effectiveWeight = blastInfo.effectiveWeights[key] ?? 0;
+    const effectiveWeight =
+      blastInfo.effectiveWeights[key] ?? (intervenedBlastSet.has(key) ? 0.75 : 0);
 
     if (
       key !== resolvedKey &&
@@ -1174,7 +1347,12 @@ export function runIntervention(
 
     intStat.rippleDelayDays = shiftDays;
 
-    if (key === resolvedKey || effectiveWeight > 0 || Math.abs(shiftDays) > 0) {
+    if (
+      key === resolvedKey ||
+      Boolean(nodeOverrides?.[key]) ||
+      effectiveWeight > 0 ||
+      Math.abs(shiftDays) > 0
+    ) {
       nodeDeltas.push({
         key,
         summary: intStat.summary,

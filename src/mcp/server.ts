@@ -56,6 +56,16 @@ export const MCP_TOOLS_MANIFEST = [
           description:
             'Simulate trimming or deferring non-essential sub-tasks to the next cycle (-35% duration, -45% uncertainty)',
         },
+        nodeOverrides: {
+          type: 'object',
+          description:
+            'Optional map of additional issue keys to { deltaDays, addDeveloper, decoupleBlockingEdges, trimScope } for compound multi-task What-If simulation',
+        },
+        assigneeOverrides: {
+          type: 'object',
+          description:
+            'Optional map of assignee display names to { assignee, unavailableDays, reassignBottleneck, serializeParallelWork, pairOnTopBlocker } for person-level capacity simulation',
+        },
         projectKey: {
           type: 'string',
           description: 'Optional Jira project key (defaults to CHRON)',

@@ -8,8 +8,10 @@
 import { buildDAGFromJiraIssues } from '../../../src/engine/dag';
 import { runIntervention, runMonteCarloSimulation } from '../../../src/engine/simulator';
 import {
+  AssigneeInterventionOverride,
   CausalGraph,
   InterventionResult,
+  NodeInterventionOverride,
   SimulationResult,
 } from '../../../src/engine/types';
 import { renderDagCanvas } from './components/DagCanvas';
@@ -36,6 +38,10 @@ interface CockpitState {
   addDeveloper: boolean;
   decoupleBlockingEdges: boolean;
   trimScope: boolean;
+  simulatorMode: 'issue' | 'person';
+  pinnedNodeOverrides: Record<string, NodeInterventionOverride>;
+  selectedAssignee: string;
+  assigneeOverrides: Record<string, AssigneeInterventionOverride>;
   selectedEpochIndex: number;
   scrubberDayOffset: number;
   activeRightTab: 'cascade' | 'bottlenecks' | 'governance' | 'rovo-mcp';
@@ -142,6 +148,20 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
   };
 }
 
+function pickDefaultAssignee(graph: CausalGraph): string {
+  const counts = new Map<string, number>();
+  for (const node of graph.nodes) {
+    const a = node.assignee || 'Unassigned';
+    counts.set(a, (counts.get(a) ?? 0) + (node.status.toLowerCase() === 'done' ? 0.1 : 1));
+  }
+  const sorted = Array.from(counts.entries()).sort((a, b) => {
+    if (a[0].toLowerCase() === 'unassigned') return 1;
+    if (b[0].toLowerCase() === 'unassigned') return -1;
+    return b[1] - a[1];
+  });
+  return sorted[0]?.[0] ?? 'Unassigned';
+}
+
 const initialGraph = createInitialRealProjectGraph('BLP', 'BloomPath Sprint');
 const initialBaseline = runMonteCarloSimulation(initialGraph, { iterations: 500 });
 
@@ -159,6 +179,10 @@ const state: CockpitState = {
   addDeveloper: false,
   decoupleBlockingEdges: false,
   trimScope: false,
+  simulatorMode: 'issue',
+  pinnedNodeOverrides: {},
+  selectedAssignee: pickDefaultAssignee(initialGraph),
+  assigneeOverrides: {},
   selectedEpochIndex: 2, // Today
   scrubberDayOffset: 0,
   activeRightTab: 'cascade',
@@ -167,24 +191,128 @@ const state: CockpitState = {
     'Connected to Jira project — Click any issue card or drag the Schedule Change slider to simulate timeline impacts.',
 };
 
+function getMergedNodeOverrides(): Record<string, NodeInterventionOverride> {
+  const merged: Record<string, NodeInterventionOverride> = {
+    ...state.pinnedNodeOverrides,
+  };
+  if (
+    state.selectedNodeKey &&
+    (state.delayDays !== 0 ||
+      state.addDeveloper ||
+      state.decoupleBlockingEdges ||
+      state.trimScope)
+  ) {
+    merged[state.selectedNodeKey] = {
+      deltaDays: state.delayDays,
+      addDeveloper: state.addDeveloper,
+      decoupleBlockingEdges: state.decoupleBlockingEdges,
+      trimScope: state.trimScope,
+    };
+  }
+  return merged;
+}
+
+function getActiveAssigneeOverrides(): Record<string, AssigneeInterventionOverride> {
+  const active: Record<string, AssigneeInterventionOverride> = {};
+  for (const [name, aOv] of Object.entries(state.assigneeOverrides)) {
+    const uDays = Number(aOv.unavailableDays ?? 0);
+    if (
+      uDays !== 0 ||
+      aOv.reassignBottleneck ||
+      aOv.serializeParallelWork ||
+      aOv.pairOnTopBlocker
+    ) {
+      active[name] = aOv;
+    }
+  }
+  return active;
+}
+
+function syncCurrentNodeToPinIfPinned(): void {
+  if (state.selectedNodeKey && state.pinnedNodeOverrides[state.selectedNodeKey]) {
+    state.pinnedNodeOverrides[state.selectedNodeKey] = {
+      deltaDays: state.delayDays,
+      addDeveloper: state.addDeveloper,
+      decoupleBlockingEdges: state.decoupleBlockingEdges,
+      trimScope: state.trimScope,
+    };
+  }
+}
+
+function switchSelectedIssue(nextKey: string, autoPinPrevious = false): void {
+  if (!nextKey) return;
+  if (
+    autoPinPrevious &&
+    state.selectedNodeKey &&
+    state.selectedNodeKey !== nextKey &&
+    (state.delayDays !== 0 ||
+      state.addDeveloper ||
+      state.decoupleBlockingEdges ||
+      state.trimScope)
+  ) {
+    state.pinnedNodeOverrides[state.selectedNodeKey] = {
+      deltaDays: state.delayDays,
+      addDeveloper: state.addDeveloper,
+      decoupleBlockingEdges: state.decoupleBlockingEdges,
+      trimScope: state.trimScope,
+    };
+  }
+
+  state.selectedNodeKey = nextKey;
+  const existingPin = state.pinnedNodeOverrides[nextKey];
+  if (existingPin) {
+    state.delayDays = existingPin.deltaDays;
+    state.addDeveloper = Boolean(existingPin.addDeveloper);
+    state.decoupleBlockingEdges = Boolean(existingPin.decoupleBlockingEdges);
+    state.trimScope = Boolean(existingPin.trimScope);
+  } else {
+    state.delayDays = 0;
+    state.addDeveloper = false;
+    state.decoupleBlockingEdges = false;
+    state.trimScope = false;
+  }
+  state.copiedPromptNotice = false;
+}
+
+function getOrCreateAssigneeOverride(name: string): AssigneeInterventionOverride {
+  if (!state.assigneeOverrides[name]) {
+    state.assigneeOverrides[name] = {
+      assignee: name,
+      unavailableDays: 0,
+      reassignBottleneck: false,
+      serializeParallelWork: false,
+      pairOnTopBlocker: false,
+    };
+  }
+  return state.assigneeOverrides[name];
+}
+
 function recomputeSimulation(): void {
   state.baselineSim = runMonteCarloSimulation(state.graph, { iterations: 500 });
-  const hasIntervention =
-    state.delayDays !== 0 ||
-    state.addDeveloper ||
-    state.decoupleBlockingEdges ||
-    state.trimScope;
+  const mergedNodes = getMergedNodeOverrides();
+  const activeAssignees = getActiveAssigneeOverrides();
+  const nodeKeys = Object.keys(mergedNodes);
+  const assigneeKeys = Object.keys(activeAssignees);
+  const hasIntervention = nodeKeys.length > 0 || assigneeKeys.length > 0;
 
-  if (hasIntervention && state.selectedNodeKey) {
+  if (hasIntervention) {
+    const primaryKey =
+      (mergedNodes[state.selectedNodeKey] ? state.selectedNodeKey : nodeKeys[0]) ||
+      state.selectedNodeKey ||
+      state.graph.nodes[0]?.key ||
+      '';
+    const primaryOv = mergedNodes[primaryKey] ?? { deltaDays: 0 };
     const intResult = runIntervention(
       state.graph,
-      state.selectedNodeKey,
-      state.delayDays,
+      primaryKey,
+      primaryOv.deltaDays,
       {
         iterations: 500,
-        addDeveloper: state.addDeveloper,
-        decoupleBlockingEdges: state.decoupleBlockingEdges,
-        trimScope: state.trimScope,
+        addDeveloper: Boolean(primaryOv.addDeveloper),
+        decoupleBlockingEdges: Boolean(primaryOv.decoupleBlockingEdges),
+        trimScope: Boolean(primaryOv.trimScope),
+        nodeOverrides: mergedNodes,
+        assigneeOverrides: activeAssignees,
       }
     );
     state.intervention = intResult;
@@ -196,6 +324,8 @@ function recomputeSimulation(): void {
 }
 
 function triggerRemoteWhatIf(): void {
+  const mergedNodes = getMergedNodeOverrides();
+  const activeAssignees = getActiveAssigneeOverrides();
   void invokeForgeResolver('runWhatIfSimulation', {
     projectKey: state.graph.projectKey,
     targetNodeId: state.selectedNodeKey,
@@ -203,6 +333,8 @@ function triggerRemoteWhatIf(): void {
     addDeveloper: state.addDeveloper,
     decoupleBlockingEdges: state.decoupleBlockingEdges,
     trimScope: state.trimScope,
+    nodeOverrides: mergedNodes,
+    assigneeOverrides: activeAssignees,
   });
 }
 
@@ -226,7 +358,7 @@ function scrollDagToSelectedNode(smooth = true): void {
 }
 
 export function renderCockpit(
-  activeSliderId?: 'delay-slider-input' | 'time-machine-range'
+  activeSliderId?: 'delay-slider-input' | 'person-pto-slider-input' | 'time-machine-range'
 ): void {
   const root = document.getElementById('app-root');
   if (!root) return;
@@ -235,11 +367,10 @@ export function renderCockpit(
   const prevDagScrollLeft = dagViewport?.scrollLeft ?? 0;
   const prevDagScrollTop = dagViewport?.scrollTop ?? 0;
 
-  const hasActiveIntervention =
-    state.delayDays !== 0 ||
-    state.addDeveloper ||
-    state.decoupleBlockingEdges ||
-    state.trimScope;
+  const mergedNodes = getMergedNodeOverrides();
+  const activeAssignees = getActiveAssigneeOverrides();
+  const hasAnyIntervention =
+    Object.keys(mergedNodes).length > 0 || Object.keys(activeAssignees).length > 0;
 
   const headerProps = {
     availableProjects: state.availableProjects,
@@ -251,6 +382,7 @@ export function renderCockpit(
     delayDays: state.delayDays,
     addDeveloper: state.addDeveloper,
     decoupleBlockingEdges: state.decoupleBlockingEdges,
+    hasAnyIntervention,
     statusBanner: state.statusBanner,
   };
 
@@ -262,7 +394,7 @@ export function renderCockpit(
     activeSim: state.activeSim,
     selectedEpochIndex: state.selectedEpochIndex,
     scrubberDayOffset: state.scrubberDayOffset,
-    hasActiveIntervention,
+    hasActiveIntervention: hasAnyIntervention,
   });
 
   const dagHtml = renderDagCanvas({
@@ -274,6 +406,10 @@ export function renderCockpit(
     decoupleBlockingEdges: state.decoupleBlockingEdges,
     trimScope: state.trimScope,
     scrubberDayOffset: state.scrubberDayOffset,
+    simulatorMode: state.simulatorMode,
+    pinnedNodeOverrides: state.pinnedNodeOverrides,
+    selectedAssignee: state.selectedAssignee,
+    assigneeOverrides: state.assigneeOverrides,
   });
 
   const scenarioHtml = renderScenarioPanel({
@@ -286,6 +422,10 @@ export function renderCockpit(
     addDeveloper: state.addDeveloper,
     decoupleBlockingEdges: state.decoupleBlockingEdges,
     trimScope: state.trimScope,
+    simulatorMode: state.simulatorMode,
+    pinnedNodeOverrides: state.pinnedNodeOverrides,
+    selectedAssignee: state.selectedAssignee,
+    assigneeOverrides: state.assigneeOverrides,
     activeRightTab: state.activeRightTab,
     copiedPromptNotice: state.copiedPromptNotice,
   });
@@ -312,30 +452,84 @@ export function renderCockpit(
       nextViewport.scrollLeft = prevDagScrollLeft;
       nextViewport.scrollTop = prevDagScrollTop;
     }
-    if (activeSliderId === 'delay-slider-input') {
+    if (
+      activeSliderId === 'delay-slider-input' ||
+      activeSliderId === 'person-pto-slider-input'
+    ) {
       scrubberMount.innerHTML = scrubberHtml;
-      const readoutEl = scenarioMount.querySelector('.slider-readout');
-      if (readoutEl) {
-        readoutEl.textContent =
-          state.delayDays > 0
-            ? `+${state.delayDays} Days Delay`
-            : state.delayDays < 0
-              ? `${state.delayDays} Days Faster`
-              : '0 Days (Baseline)';
-        readoutEl.className = `slider-readout ${
-          state.delayDays < 0
-            ? 'accel-text'
-            : state.delayDays === 0
-              ? 'neutral-text'
-              : ''
-        }`;
+
+      const tmp = document.createElement('div');
+      tmp.innerHTML = scenarioHtml;
+
+      const curLozenge = scenarioMount.querySelector('.panel-header .jira-lozenge');
+      const nextLozenge = tmp.querySelector('.panel-header .jira-lozenge');
+      if (curLozenge && nextLozenge) curLozenge.replaceWith(nextLozenge);
+
+      const curStack = scenarioMount.querySelector('.scenario-stack-bar');
+      const nextStack = tmp.querySelector('.scenario-stack-bar');
+      if (curStack && nextStack) curStack.innerHTML = nextStack.innerHTML;
+
+      const curCompare = scenarioMount.querySelector('.comparison-bars-card');
+      const nextCompare = tmp.querySelector('.comparison-bars-card');
+      if (curCompare && nextCompare) curCompare.innerHTML = nextCompare.innerHTML;
+
+      const curTabs = scenarioMount.querySelector('.tab-bar');
+      const nextTabs = tmp.querySelector('.tab-bar');
+      if (curTabs && nextTabs) curTabs.innerHTML = nextTabs.innerHTML;
+
+      const curTabBody = scenarioMount.querySelector('.tab-body');
+      const nextTabBody = tmp.querySelector('.tab-body');
+      if (curTabBody && nextTabBody) curTabBody.innerHTML = nextTabBody.innerHTML;
+
+      if (activeSliderId === 'delay-slider-input') {
+        const readoutEl = scenarioMount.querySelector('.slider-readout');
+        if (readoutEl) {
+          readoutEl.textContent =
+            state.delayDays > 0
+              ? `+${state.delayDays} Days Delay`
+              : state.delayDays < 0
+                ? `${state.delayDays} Days Faster`
+                : '0 Days (Baseline)';
+          readoutEl.className = `slider-readout ${
+            state.delayDays < 0
+              ? 'accel-text'
+              : state.delayDays === 0
+                ? 'neutral-text'
+                : ''
+          }`;
+        }
+        scenarioMount
+          .querySelectorAll<HTMLButtonElement>('[data-preset-delay]')
+          .forEach((btn) => {
+            const d = Number(btn.getAttribute('data-preset-delay') ?? 0);
+            btn.classList.toggle('active', d === state.delayDays);
+          });
+      } else {
+        const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+        const ptoDays = Number(pOv.unavailableDays ?? 0);
+        const readoutEl = scenarioMount.querySelector('.slider-readout');
+        if (readoutEl) {
+          readoutEl.textContent =
+            ptoDays > 0
+              ? `+${ptoDays} Days Away`
+              : ptoDays < 0
+                ? `${ptoDays} Days Focus Gain`
+                : '0 Days (Normal Capacity)';
+          readoutEl.className = `slider-readout ${
+            ptoDays < 0
+              ? 'accel-text'
+              : ptoDays === 0
+                ? 'neutral-text'
+                : ''
+          }`;
+        }
+        scenarioMount
+          .querySelectorAll<HTMLButtonElement>('[data-preset-pto]')
+          .forEach((btn) => {
+            const d = Number(btn.getAttribute('data-preset-pto') ?? 0);
+            btn.classList.toggle('active', d === ptoDays);
+          });
       }
-      scenarioMount
-        .querySelectorAll<HTMLButtonElement>('[data-preset-delay]')
-        .forEach((btn) => {
-          const d = Number(btn.getAttribute('data-preset-delay') ?? 0);
-          btn.classList.toggle('active', d === state.delayDays);
-        });
     } else if (activeSliderId === 'time-machine-range') {
       scenarioMount.innerHTML = scenarioHtml;
       scrubberMount
@@ -391,6 +585,9 @@ async function loadJiraProjectGraph(projectKey?: string): Promise<void> {
     state.addDeveloper = false;
     state.decoupleBlockingEdges = false;
     state.trimScope = false;
+    state.pinnedNodeOverrides = {};
+    state.assigneeOverrides = {};
+    state.selectedAssignee = pickDefaultAssignee(state.graph);
     recomputeSimulation();
     state.statusBanner = `Loaded live Jira project "${state.graph.projectName}" (${state.graph.projectKey}) with ${state.graph.nodes.length} ${
       state.graph.nodes.length === 1 ? 'issue' : 'issues'
@@ -407,13 +604,16 @@ async function loadJiraProjectGraph(projectKey?: string): Promise<void> {
     state.addDeveloper = false;
     state.decoupleBlockingEdges = false;
     state.trimScope = false;
+    state.pinnedNodeOverrides = {};
+    state.assigneeOverrides = {};
+    state.selectedAssignee = pickDefaultAssignee(state.graph);
     recomputeSimulation();
     renderCockpit();
   }
 }
 
 function attachCockpitEventListeners(
-  skipMountForSlider?: 'delay-slider-input' | 'time-machine-range'
+  skipMountForSlider?: 'delay-slider-input' | 'person-pto-slider-input' | 'time-machine-range'
 ): void {
   // 0. Project Switcher Dropdown (`#jira-project-select`)
   const projectSelect = document.getElementById(
@@ -460,8 +660,8 @@ function attachCockpitEventListeners(
     issueJumpSelect.addEventListener('change', () => {
       const nextKey = issueJumpSelect.value;
       if (nextKey) {
-        state.selectedNodeKey = nextKey;
-        state.copiedPromptNotice = false;
+        switchSelectedIssue(nextKey);
+        state.simulatorMode = 'issue';
         recomputeSimulation();
         triggerRemoteWhatIf();
         renderCockpit();
@@ -471,11 +671,11 @@ function attachCockpitEventListeners(
   }
 
   document.querySelectorAll<SVGGElement>('.dag-node-group').forEach((el) => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (event: MouseEvent) => {
       const key = el.getAttribute('data-node-key');
       if (key) {
-        state.selectedNodeKey = key;
-        state.copiedPromptNotice = false;
+        switchSelectedIssue(key, event.shiftKey);
+        state.simulatorMode = 'issue';
         recomputeSimulation();
         triggerRemoteWhatIf();
         renderCockpit();
@@ -582,7 +782,184 @@ function attachCockpitEventListeners(
     });
   });
 
-  if (skipMountForSlider !== 'delay-slider-input') {
+  // Stack chips & right panel sections updated dynamically even during slider drag
+  document.querySelectorAll<HTMLElement>('[data-focus-pin]').forEach((chip) => {
+    chip.addEventListener('click', (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-unpin-node]')) return;
+      const key = chip.getAttribute('data-focus-pin');
+      if (key) {
+        switchSelectedIssue(key);
+        state.simulatorMode = 'issue';
+        recomputeSimulation();
+        renderCockpit();
+        scrollDagToSelectedNode(true);
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-unpin-node]').forEach((btn) => {
+    btn.addEventListener('click', (e: MouseEvent) => {
+      e.stopPropagation();
+      const key = btn.getAttribute('data-unpin-node');
+      if (key && state.pinnedNodeOverrides[key]) {
+        delete state.pinnedNodeOverrides[key];
+        if (state.selectedNodeKey === key) {
+          state.delayDays = 0;
+          state.addDeveloper = false;
+          state.decoupleBlockingEdges = false;
+          state.trimScope = false;
+        }
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>('[data-focus-person]').forEach((chip) => {
+    chip.addEventListener('click', (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-clear-person]')) return;
+      const name = chip.getAttribute('data-focus-person');
+      if (name) {
+        state.selectedAssignee = name;
+        state.simulatorMode = 'person';
+        renderCockpit();
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-clear-person]').forEach((btn) => {
+    btn.addEventListener('click', (e: MouseEvent) => {
+      e.stopPropagation();
+      const name = btn.getAttribute('data-clear-person');
+      if (name && state.assigneeOverrides[name]) {
+        delete state.assigneeOverrides[name];
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+      }
+    });
+  });
+
+  const btnClearStack = document.getElementById('btn-clear-scenario-stack');
+  if (btnClearStack) {
+    btnClearStack.addEventListener('click', () => {
+      state.pinnedNodeOverrides = {};
+      state.assigneeOverrides = {};
+      state.delayDays = 0;
+      state.addDeveloper = false;
+      state.decoupleBlockingEdges = false;
+      state.trimScope = false;
+      state.copiedPromptNotice = false;
+      recomputeSimulation();
+      triggerRemoteWhatIf();
+      renderCockpit();
+    });
+  }
+
+  // 6. Copy Rovo Mitigation Prompt Button (kept live even when slider drags)
+  const btnCopyRovo = document.getElementById('btn-copy-rovo-prompt');
+  if (btnCopyRovo) {
+    btnCopyRovo.addEventListener('click', async () => {
+      const promptText = buildRovoMitigationPrompt({
+        graph: state.graph,
+        baselineSim: state.baselineSim,
+        activeSim: state.activeSim,
+        intervention: state.intervention,
+        selectedNodeKey: state.selectedNodeKey,
+        delayDays: state.delayDays,
+        addDeveloper: state.addDeveloper,
+        decoupleBlockingEdges: state.decoupleBlockingEdges,
+        trimScope: state.trimScope,
+        simulatorMode: state.simulatorMode,
+        pinnedNodeOverrides: state.pinnedNodeOverrides,
+        selectedAssignee: state.selectedAssignee,
+        assigneeOverrides: state.assigneeOverrides,
+        activeRightTab: state.activeRightTab,
+        copiedPromptNotice: state.copiedPromptNotice,
+      });
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(promptText);
+        }
+      } catch {
+        // Fallback when clipboard permission is restricted in sandboxed iframe
+      }
+      state.copiedPromptNotice = true;
+      state.statusBanner = `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
+      renderCockpit();
+    });
+  }
+
+  // 13. Right Panel Tabs
+  document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const tab = btn.getAttribute('data-tab') as CockpitState['activeRightTab'];
+      if (tab) {
+        state.activeRightTab = tab;
+        renderCockpit();
+      }
+    });
+  });
+
+  // 14. Clickable rows in Cascade / Bottlenecks list
+  document.querySelectorAll<HTMLElement>('[data-select-node]').forEach((row) => {
+    row.addEventListener('click', () => {
+      const key = row.getAttribute('data-select-node');
+      if (key) {
+        switchSelectedIssue(key);
+        state.simulatorMode = 'issue';
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+        scrollDagToSelectedNode(true);
+      }
+    });
+  });
+
+  // Pin / Unpin Current Issue (kept live inside .scenario-stack-bar even during slider drag)
+  const btnPinCurrent = document.getElementById('btn-pin-current-issue');
+  if (btnPinCurrent) {
+    btnPinCurrent.addEventListener('click', () => {
+      if (state.pinnedNodeOverrides[state.selectedNodeKey]) {
+        delete state.pinnedNodeOverrides[state.selectedNodeKey];
+      } else {
+        state.pinnedNodeOverrides[state.selectedNodeKey] = {
+          deltaDays: state.delayDays,
+          addDeveloper: state.addDeveloper,
+          decoupleBlockingEdges: state.decoupleBlockingEdges,
+          trimScope: state.trimScope,
+        };
+      }
+      state.copiedPromptNotice = false;
+      recomputeSimulation();
+      triggerRemoteWhatIf();
+      renderCockpit();
+    });
+  }
+
+  if (
+    skipMountForSlider !== 'delay-slider-input' &&
+    skipMountForSlider !== 'person-pto-slider-input'
+  ) {
+    // Mode Switcher: By Issue vs. By Person & Team
+    document.querySelectorAll<HTMLButtonElement>('[data-sim-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextMode = btn.getAttribute('data-sim-mode') as 'issue' | 'person';
+        if (nextMode && nextMode !== state.simulatorMode) {
+          state.simulatorMode = nextMode;
+          if (nextMode === 'person' && !state.selectedAssignee) {
+            state.selectedAssignee = pickDefaultAssignee(state.graph);
+          }
+          renderCockpit();
+        }
+      });
+    });
+
     // 2. Delay / Accelerate Slider input (-5d to +30d)
     const delaySlider = document.getElementById(
       'delay-slider-input'
@@ -590,11 +967,13 @@ function attachCockpitEventListeners(
     if (delaySlider) {
       delaySlider.addEventListener('input', () => {
         state.delayDays = Number(delaySlider.value);
+        syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
         renderCockpit('delay-slider-input');
       });
       delaySlider.addEventListener('change', () => {
+        syncCurrentNodeToPinIfPinned();
         renderCockpit();
         triggerRemoteWhatIf();
       });
@@ -604,6 +983,7 @@ function attachCockpitEventListeners(
     document.querySelectorAll<HTMLButtonElement>('[data-preset-delay]').forEach((btn) => {
       btn.addEventListener('click', () => {
         state.delayDays = Number(btn.getAttribute('data-preset-delay') ?? 0);
+        syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
         triggerRemoteWhatIf();
@@ -616,6 +996,7 @@ function attachCockpitEventListeners(
     if (btnAddDev) {
       btnAddDev.addEventListener('click', () => {
         state.addDeveloper = !state.addDeveloper;
+        syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
         triggerRemoteWhatIf();
@@ -628,6 +1009,7 @@ function attachCockpitEventListeners(
     if (btnDecouple) {
       btnDecouple.addEventListener('click', () => {
         state.decoupleBlockingEdges = !state.decoupleBlockingEdges;
+        syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
         triggerRemoteWhatIf();
@@ -640,6 +1022,7 @@ function attachCockpitEventListeners(
     if (btnTrimScope) {
       btnTrimScope.addEventListener('click', () => {
         state.trimScope = !state.trimScope;
+        syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
         triggerRemoteWhatIf();
@@ -647,61 +1030,81 @@ function attachCockpitEventListeners(
       });
     }
 
-    // 6. Copy Rovo Mitigation Prompt Button
-    const btnCopyRovo = document.getElementById('btn-copy-rovo-prompt');
-    if (btnCopyRovo) {
-      btnCopyRovo.addEventListener('click', async () => {
-        const promptText = buildRovoMitigationPrompt({
-          graph: state.graph,
-          baselineSim: state.baselineSim,
-          activeSim: state.activeSim,
-          intervention: state.intervention,
-          selectedNodeKey: state.selectedNodeKey,
-          delayDays: state.delayDays,
-          addDeveloper: state.addDeveloper,
-          decoupleBlockingEdges: state.decoupleBlockingEdges,
-          trimScope: state.trimScope,
-          activeRightTab: state.activeRightTab,
-          copiedPromptNotice: state.copiedPromptNotice,
-        });
-        try {
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(promptText);
-          }
-        } catch {
-          // Fallback when clipboard permission is restricted in sandboxed iframe
+    // Person Mode Listeners: Select Assignee, Unavailability Slider, Presets, Workload Mitigations
+    document.querySelectorAll<HTMLButtonElement>('[data-select-assignee]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const name = btn.getAttribute('data-select-assignee');
+        if (name) {
+          state.selectedAssignee = name;
+          state.copiedPromptNotice = false;
+          renderCockpit();
         }
-        state.copiedPromptNotice = true;
-        state.statusBanner = `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
+      });
+    });
+
+    const ptoSlider = document.getElementById(
+      'person-pto-slider-input'
+    ) as HTMLInputElement | null;
+    if (ptoSlider) {
+      ptoSlider.addEventListener('input', () => {
+        const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+        pOv.unavailableDays = Number(ptoSlider.value);
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        renderCockpit('person-pto-slider-input');
+      });
+      ptoSlider.addEventListener('change', () => {
+        renderCockpit();
+        triggerRemoteWhatIf();
+      });
+    }
+
+    document.querySelectorAll<HTMLButtonElement>('[data-preset-pto]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+        pOv.unavailableDays = Number(btn.getAttribute('data-preset-pto') ?? 0);
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
+      });
+    });
+
+    const btnPersonReassign = document.getElementById('btn-person-reassign');
+    if (btnPersonReassign) {
+      btnPersonReassign.addEventListener('click', () => {
+        const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+        pOv.reassignBottleneck = !pOv.reassignBottleneck;
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
         renderCockpit();
       });
     }
 
-    // 13. Right Panel Tabs
-    document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const tab = btn.getAttribute('data-tab') as CockpitState['activeRightTab'];
-        if (tab) {
-          state.activeRightTab = tab;
-          renderCockpit();
-        }
+    const btnPersonSerialize = document.getElementById('btn-person-serialize');
+    if (btnPersonSerialize) {
+      btnPersonSerialize.addEventListener('click', () => {
+        const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+        pOv.serializeParallelWork = !pOv.serializeParallelWork;
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
       });
-    });
+    }
 
-    // 14. Clickable rows in Cascade / Bottlenecks list
-    document.querySelectorAll<HTMLElement>('[data-select-node]').forEach((row) => {
-      row.addEventListener('click', () => {
-        const key = row.getAttribute('data-select-node');
-        if (key) {
-          state.selectedNodeKey = key;
-          state.copiedPromptNotice = false;
-          recomputeSimulation();
-          triggerRemoteWhatIf();
-          renderCockpit();
-          scrollDagToSelectedNode(true);
-        }
+    const btnPersonPair = document.getElementById('btn-person-pair');
+    if (btnPersonPair) {
+      btnPersonPair.addEventListener('click', () => {
+        const pOv = getOrCreateAssigneeOverride(state.selectedAssignee);
+        pOv.pairOnTopBlocker = !pOv.pairOnTopBlocker;
+        state.copiedPromptNotice = false;
+        recomputeSimulation();
+        triggerRemoteWhatIf();
+        renderCockpit();
       });
-    });
+    }
   }
 
   if (skipMountForSlider !== 'time-machine-range') {
@@ -784,8 +1187,10 @@ function attachCockpitEventListeners(
         state.activeSim.topBottlenecks[0]?.key ??
         state.graph.nodes[0]?.key ??
         'BLP-7';
-      state.selectedNodeKey = topKey;
+      switchSelectedIssue(topKey);
+      state.simulatorMode = 'issue';
       if (state.delayDays === 0) state.delayDays = 5;
+      syncCurrentNodeToPinIfPinned();
       recomputeSimulation();
       state.statusBanner = `Focused #1 Critical Blocker (${topKey}) — simulating a +${state.delayDays} day delay.`;
       renderCockpit();
@@ -801,6 +1206,8 @@ function attachCockpitEventListeners(
       state.addDeveloper = false;
       state.decoupleBlockingEdges = false;
       state.trimScope = false;
+      state.pinnedNodeOverrides = {};
+      state.assigneeOverrides = {};
       state.scrubberDayOffset = 0;
       state.selectedEpochIndex = 2;
       recomputeSimulation();
@@ -835,8 +1242,8 @@ document.addEventListener('keydown', (event: KeyboardEvent) => {
   const nextKey = order[nextIdx];
   if (!nextKey || nextKey === state.selectedNodeKey) return;
 
-  state.selectedNodeKey = nextKey;
-  state.copiedPromptNotice = false;
+  switchSelectedIssue(nextKey);
+  state.simulatorMode = 'issue';
   recomputeSimulation();
   triggerRemoteWhatIf();
   renderCockpit();

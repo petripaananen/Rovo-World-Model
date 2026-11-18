@@ -13,6 +13,10 @@
 
 import Resolver from '@forge/resolver';
 import { runIntervention, runMonteCarloSimulation } from './engine/simulator';
+import {
+  AssigneeInterventionOverride,
+  NodeInterventionOverride,
+} from './engine/types';
 import { MCP_TOOLS_MANIFEST, mcpWebtriggerHandler } from './mcp/server';
 import {
   analyzeCriticalPath,
@@ -80,6 +84,8 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
     addDeveloper?: boolean;
     decoupleBlockingEdges?: boolean;
     trimScope?: boolean;
+    nodeOverrides?: Record<string, NodeInterventionOverride>;
+    assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
     forceDemo?: boolean;
   };
   const projectKey = extractProjectKey(req, payload.projectKey);
@@ -95,8 +101,21 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
   const addDeveloper = Boolean(payload.addDeveloper);
   const decoupleBlockingEdges = Boolean(payload.decoupleBlockingEdges);
   const trimScope = Boolean(payload.trimScope);
+  const hasNodeOverrides = Boolean(
+    payload.nodeOverrides && Object.keys(payload.nodeOverrides).length > 0
+  );
+  const hasAssigneeOverrides = Boolean(
+    payload.assigneeOverrides && Object.keys(payload.assigneeOverrides).length > 0
+  );
 
-  if (deltaDays === 0 && !addDeveloper && !decoupleBlockingEdges && !trimScope) {
+  if (
+    deltaDays === 0 &&
+    !addDeveloper &&
+    !decoupleBlockingEdges &&
+    !trimScope &&
+    !hasNodeOverrides &&
+    !hasAssigneeOverrides
+  ) {
     const baseline = runMonteCarloSimulation(graph, { iterations: 500 });
     return {
       graph,
@@ -110,6 +129,8 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
     addDeveloper,
     decoupleBlockingEdges,
     trimScope,
+    nodeOverrides: payload.nodeOverrides,
+    assigneeOverrides: payload.assigneeOverrides,
   });
 
   return {
