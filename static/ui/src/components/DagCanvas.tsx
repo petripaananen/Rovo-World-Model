@@ -29,6 +29,7 @@ import {
   escapeHtmlText,
   formatFriendlyDate,
   getInitials,
+  renderDragHandleBadge,
   renderInfoTooltip,
 } from './tooltip';
 
@@ -972,9 +973,10 @@ export function renderDagCanvas(props: DagCanvasProps): string {
     .join('');
 
   return `
-    <div class="panel-card dag-panel-card">
+    <div class="panel-card dag-panel-card" data-drop-zone="dag">
       <div class="panel-header">
         <div class="panel-title">
+          ${renderDragHandleBadge('dag', 'Issue Dependency Map')}
           <span class="stage-heading-title">Issue Dependency Map (${escapeHtmlText(graph.projectName)})</span>
           ${renderInfoTooltip(
             'Issue Dependency Map & Jira Team Swimlanes',

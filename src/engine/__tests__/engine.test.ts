@@ -271,10 +271,20 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
 
   it('compiles a valid Custom UI browser bundle at static/ui/build/app.js', () => {
     const appJsPath = path.resolve(__dirname, '../../../static/ui/build/app.js');
+    const stylesCssPath = path.resolve(__dirname, '../../../static/ui/build/styles.css');
     assert.ok(fs.existsSync(appJsPath), 'Expected static/ui/build/app.js to exist');
+    assert.ok(fs.existsSync(stylesCssPath), 'Expected static/ui/build/styles.css to exist');
     const code = fs.readFileSync(appJsPath, 'utf8');
+    const css = fs.readFileSync(stylesCssPath, 'utf8');
     const script = new vm.Script(code, { filename: 'app.js' });
     assert.ok(script);
+    assert.ok(code.includes('data-drag-panel'), 'Expected drag handles in app.js');
+    assert.ok(code.includes('data-drop-zone'), 'Expected drop zones in app.js');
+    assert.ok(css.includes('.panel-drag-handle'), 'Expected .panel-drag-handle in styles.css');
+    assert.ok(
+      css.includes('.cols-right-center-left'),
+      'Expected dynamic column permutations in styles.css'
+    );
   });
 
   it('evaluates 4 precedence types (FS, SS, FF, SF), positive/negative lagDays, and forced-deadline negative float', () => {

@@ -15,6 +15,7 @@ import {
 import {
   escapeHtmlText,
   formatFriendlyDate,
+  renderDragHandleBadge,
   renderInfoTooltip,
 } from './tooltip';
 
@@ -264,11 +265,12 @@ export function renderTimelineScrubber(props: TimelineScrubberProps): string {
   const execReserveTooltip = `Executive Contingency (+${execReserveDays.toFixed(1)} days, worst-case safe date ${formatFriendlyDate(activeSim.cvar95Date)}): Leadership reserve held for rare, severe disruptions (cross-team blocker cascades, architecture rework, or key-person bottlenecks) to protect the release in the worst 5% of scenarios.`;
 
   return `
-    <section class="time-machine-panel">
+    <section class="time-machine-panel" data-drop-zone="scrubber">
       <!-- Top Full-Width Section: Header, 6-Milestone Stepper & Scrubber Slider -->
       <div class="tm-top-full">
         <div class="tm-header">
           <div class="tm-title">
+            ${renderDragHandleBadge('scrubber', 'Timeline & Sprint Forecast Scrubber')}
             <span>Timeline &amp; Sprint Forecast Scrubber</span>
             ${renderInfoTooltip(
               'Timeline & Sprint Forecast Scrubber',

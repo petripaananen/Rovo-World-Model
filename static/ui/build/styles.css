@@ -849,6 +849,30 @@ body {
   align-items: stretch;
 }
 
+.workspace-grid-3col.cols-left-center-right {
+  grid-template-columns: 280px minmax(0, 1fr) 396px;
+}
+
+.workspace-grid-3col.cols-right-center-left {
+  grid-template-columns: 396px minmax(0, 1fr) 280px;
+}
+
+.workspace-grid-3col.cols-left-right-center {
+  grid-template-columns: 280px 396px minmax(0, 1fr);
+}
+
+.workspace-grid-3col.cols-right-left-center {
+  grid-template-columns: 396px 280px minmax(0, 1fr);
+}
+
+.workspace-grid-3col.cols-center-left-right {
+  grid-template-columns: minmax(0, 1fr) 280px 396px;
+}
+
+.workspace-grid-3col.cols-center-right-left {
+  grid-template-columns: minmax(0, 1fr) 396px 280px;
+}
+
 .center-stage-column {
   display: flex;
   flex-direction: column;
@@ -893,6 +917,13 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 6px;
+}
+
+.rail-title-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
 }
 
 .rail-title {
@@ -2385,8 +2416,85 @@ body {
   color: #334155;
 }
 
+/* ==========================================================================
+   DRAG & DROP TOP-CORNER GRIP HANDLES & DROP TARGET HIGHLIGHTS
+   ========================================================================== */
+.panel-drag-handle {
+  cursor: grab;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 5px;
+  border-radius: 6px;
+  border: 1.5px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: all 0.14s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.panel-drag-handle:hover {
+  border-color: var(--atlassian-blue);
+  background: #e9f2ff;
+  color: var(--atlassian-blue);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(12, 102, 228, 0.22);
+}
+
+.panel-drag-handle:active {
+  cursor: grabbing;
+  transform: scale(0.97);
+}
+
+.panel-drag-handle-dark {
+  border-color: #475569;
+  background: #1e293b;
+  color: #94a3b8;
+}
+
+.panel-drag-handle-dark:hover {
+  border-color: #38bdf8;
+  background: #0f172a;
+  color: #38bdf8;
+  box-shadow: 0 2px 6px rgba(56, 189, 248, 0.25);
+}
+
+.drag-grip-svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.drag-grip-arrow {
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 1;
+  opacity: 0.85;
+}
+
+.cockpit-dragging-active [data-drop-zone] {
+  transition: outline 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+
+.is-dragging-source {
+  opacity: 0.55;
+}
+
+.is-drop-target-hover {
+  outline: 2.5px dashed #0c66e4 !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px rgba(12, 102, 228, 0.16) !important;
+}
+
 @media (max-width: 1180px) {
   .workspace-grid-3col,
+  .workspace-grid-3col.cols-left-center-right,
+  .workspace-grid-3col.cols-right-center-left,
+  .workspace-grid-3col.cols-left-right-center,
+  .workspace-grid-3col.cols-right-left-center,
+  .workspace-grid-3col.cols-center-left-right,
+  .workspace-grid-3col.cols-center-right-left,
   .workspace-grid,
   .tm-bottom-split-2col {
     grid-template-columns: 1fr;

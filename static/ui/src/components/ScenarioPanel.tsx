@@ -20,6 +20,7 @@ import { MCP_TOOLS_MANIFEST } from '../../../../src/mcp/server';
 import {
   escapeHtmlText,
   formatFriendlyDate,
+  renderDragHandleBadge,
   renderInfoTooltip,
   renderJiraStatusLozenge,
 } from './tooltip';
@@ -991,11 +992,12 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
   `;
 
   return `
-    <div class="right-column">
+    <div class="right-column" data-drop-zone="scenario">
       <!-- What-If Simulator Controls Card -->
       <div class="panel-card">
         <div class="panel-header">
           <div class="panel-title">
+            ${renderDragHandleBadge('scenario', 'What-If Scenario Simulator')}
             <span>What-If Scenario Simulator</span>
             ${renderInfoTooltip(
               'What-If Scenario Simulator',

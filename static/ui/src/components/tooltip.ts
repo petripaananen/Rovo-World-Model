@@ -83,3 +83,36 @@ export function renderInfoTooltip(
     </span>
   `;
 }
+
+export type DraggablePanelId = 'left-rail' | 'dag' | 'scrubber' | 'scenario';
+
+/**
+ * Renders a prominent top-corner Drag & Drop grip badge (`⠿⇄`) so users immediately
+ * notice that cockpit panels can be dragged or clicked to swap layout positions.
+ */
+export function renderDragHandleBadge(
+  panelId: DraggablePanelId,
+  panelLabel: string,
+  isDark = false
+): string {
+  return `
+    <button
+      type="button"
+      class="panel-drag-handle ${isDark ? 'panel-drag-handle-dark' : ''}"
+      draggable="true"
+      data-drag-panel="${escapeHtmlText(panelId)}"
+      title="Drag &amp; Drop to move ${escapeHtmlText(panelLabel)} (or click to swap panel position)"
+      aria-label="Drag and drop ${escapeHtmlText(panelLabel)}"
+    >
+      <svg class="drag-grip-svg" width="12" height="14" viewBox="0 0 12 14" aria-hidden="true">
+        <circle cx="3.5" cy="3" r="1.35" fill="currentColor" />
+        <circle cx="8.5" cy="3" r="1.35" fill="currentColor" />
+        <circle cx="3.5" cy="7" r="1.35" fill="currentColor" />
+        <circle cx="8.5" cy="7" r="1.35" fill="currentColor" />
+        <circle cx="3.5" cy="11" r="1.35" fill="currentColor" />
+        <circle cx="8.5" cy="11" r="1.35" fill="currentColor" />
+      </svg>
+      <span class="drag-grip-arrow">⇄</span>
+    </button>
+  `;
+}

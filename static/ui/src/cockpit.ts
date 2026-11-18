@@ -25,7 +25,88 @@ import {
   renderScenarioPanel,
 } from './components/ScenarioPanel';
 import { renderTimelineScrubber } from './components/TimelineScrubber';
-import { escapeHtmlText } from './components/tooltip';
+import { DraggablePanelId, escapeHtmlText } from './components/tooltip';
+
+type ColumnSlotId = 'left-rail' | 'center-stage' | 'scenario';
+type CenterSlotId = 'dag' | 'scrubber';
+
+const DEFAULT_COLUMN_ORDER: ColumnSlotId[] = ['left-rail', 'center-stage', 'scenario'];
+const DEFAULT_CENTER_ORDER: CenterSlotId[] = ['dag', 'scrubber'];
+const LAYOUT_STORAGE_KEY = 'pwm_cockpit_layout_v1';
+
+interface SavedCockpitLayout {
+  columnOrder: ColumnSlotId[];
+  centerOrder: CenterSlotId[];
+}
+
+function loadSavedLayout(): SavedCockpitLayout {
+  try {
+    const raw = window.localStorage?.getItem(LAYOUT_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<SavedCockpitLayout>;
+      const validCols =
+        Array.isArray(parsed.columnOrder) &&
+        parsed.columnOrder.length === 3 &&
+        DEFAULT_COLUMN_ORDER.every((c) => parsed.columnOrder!.includes(c));
+      const validCenter =
+        Array.isArray(parsed.centerOrder) &&
+        parsed.centerOrder.length === 2 &&
+        DEFAULT_CENTER_ORDER.every((c) => parsed.centerOrder!.includes(c));
+      if (validCols && validCenter) {
+        return {
+          columnOrder: [...parsed.columnOrder!] as ColumnSlotId[],
+          centerOrder: [...parsed.centerOrder!] as CenterSlotId[],
+        };
+      }
+    }
+  } catch {
+    // Ignore localStorage access restrictions in sandboxed Jira iframes
+  }
+  return {
+    columnOrder: [...DEFAULT_COLUMN_ORDER],
+    centerOrder: [...DEFAULT_CENTER_ORDER],
+  };
+}
+
+function persistSavedLayout(columnOrder: ColumnSlotId[], centerOrder: CenterSlotId[]): void {
+  try {
+    window.localStorage?.setItem(
+      LAYOUT_STORAGE_KEY,
+      JSON.stringify({ columnOrder, centerOrder })
+    );
+  } catch {
+    // Ignore localStorage write errors in sandboxed iframes
+  }
+}
+
+function isCustomCockpitLayout(
+  columnOrder: ColumnSlotId[],
+  centerOrder: CenterSlotId[]
+): boolean {
+  return (
+    columnOrder.join(',') !== DEFAULT_COLUMN_ORDER.join(',') ||
+    centerOrder.join(',') !== DEFAULT_CENTER_ORDER.join(',')
+  );
+}
+
+function getGridColsModifierClass(order: ColumnSlotId[]): string {
+  switch (order.join('_')) {
+    case 'scenario_center-stage_left-rail':
+      return 'cols-right-center-left';
+    case 'left-rail_scenario_center-stage':
+      return 'cols-left-right-center';
+    case 'scenario_left-rail_center-stage':
+      return 'cols-right-left-center';
+    case 'center-stage_left-rail_scenario':
+      return 'cols-center-left-right';
+    case 'center-stage_scenario_left-rail':
+      return 'cols-center-right-left';
+    default:
+      return 'cols-left-center-right';
+  }
+}
+
+const initialLayout = loadSavedLayout();
 
 interface CockpitState {
   availableProjects: JiraProjectOption[];
@@ -42,6 +123,8 @@ interface CockpitState {
   pinnedNodeOverrides: Record<string, NodeInterventionOverride>;
   selectedAssignee: string;
   assigneeOverrides: Record<string, AssigneeInterventionOverride>;
+  columnOrder: ColumnSlotId[];
+  centerOrder: CenterSlotId[];
   selectedEpochIndex: number;
   scrubberDayOffset: number;
   activeRightTab: 'cascade' | 'bottlenecks' | 'governance' | 'rovo-mcp';
@@ -183,6 +266,8 @@ const state: CockpitState = {
   pinnedNodeOverrides: {},
   selectedAssignee: pickDefaultAssignee(initialGraph),
   assigneeOverrides: {},
+  columnOrder: initialLayout.columnOrder,
+  centerOrder: initialLayout.centerOrder,
   selectedEpochIndex: 2, // Today
   scrubberDayOffset: 0,
   activeRightTab: 'cascade',
@@ -357,6 +442,43 @@ function scrollDagToSelectedNode(smooth = true): void {
   }
 }
 
+function toColumnSlot(panelId: DraggablePanelId): ColumnSlotId {
+  if (panelId === 'dag' || panelId === 'scrubber') return 'center-stage';
+  return panelId;
+}
+
+function swapPanels(sourcePanel: DraggablePanelId, targetPanel: DraggablePanelId): void {
+  if (sourcePanel === targetPanel) return;
+  if (
+    (sourcePanel === 'dag' && targetPanel === 'scrubber') ||
+    (sourcePanel === 'scrubber' && targetPanel === 'dag')
+  ) {
+    state.centerOrder = [state.centerOrder[1], state.centerOrder[0]];
+    persistSavedLayout(state.columnOrder, state.centerOrder);
+    state.statusBanner =
+      'Swapped Issue Dependency Map and Timeline Scrubber positions (saved).';
+    renderCockpit();
+    return;
+  }
+
+  const srcCol = toColumnSlot(sourcePanel);
+  const dstCol = toColumnSlot(targetPanel);
+  if (srcCol === dstCol) return;
+
+  const nextCols = [...state.columnOrder];
+  const srcIdx = nextCols.indexOf(srcCol);
+  const dstIdx = nextCols.indexOf(dstCol);
+  if (srcIdx === -1 || dstIdx === -1) return;
+
+  nextCols[srcIdx] = dstCol;
+  nextCols[dstIdx] = srcCol;
+  state.columnOrder = nextCols;
+  persistSavedLayout(state.columnOrder, state.centerOrder);
+  state.statusBanner =
+    'Panel layout updated — drag any top-corner ⠿⇄ icon to move panels or click ⇄ Reset Layout.';
+  renderCockpit();
+}
+
 export function renderCockpit(
   activeSliderId?: 'delay-slider-input' | 'person-pto-slider-input' | 'time-machine-range'
 ): void {
@@ -371,6 +493,7 @@ export function renderCockpit(
   const activeAssignees = getActiveAssigneeOverrides();
   const hasAnyIntervention =
     Object.keys(mergedNodes).length > 0 || Object.keys(activeAssignees).length > 0;
+  const isCustomLayout = isCustomCockpitLayout(state.columnOrder, state.centerOrder);
 
   const headerProps = {
     availableProjects: state.availableProjects,
@@ -383,6 +506,7 @@ export function renderCockpit(
     addDeveloper: state.addDeveloper,
     decoupleBlockingEdges: state.decoupleBlockingEdges,
     hasAnyIntervention,
+    isCustomLayout,
     statusBanner: state.statusBanner,
   };
 
@@ -543,16 +667,27 @@ export function renderCockpit(
     return;
   }
 
+  const centerSlotMarkup: Record<CenterSlotId, string> = {
+    dag: `<div id="dag-mount" class="mount-contents">${dagHtml}</div>`,
+    scrubber: `<div id="scrubber-mount" class="mount-contents">${scrubberHtml}</div>`,
+  };
+  const centerStageHtml = `
+    <div class="center-stage-column">
+      ${state.centerOrder.map((slotId) => centerSlotMarkup[slotId]).join('')}
+    </div>
+  `;
+
+  const colSlotMarkup: Record<ColumnSlotId, string> = {
+    'left-rail': `<div id="left-rail-mount" class="mount-contents">${leftRailHtml}</div>`,
+    'center-stage': centerStageHtml,
+    scenario: `<div id="scenario-mount" class="mount-contents">${scenarioHtml}</div>`,
+  };
+
   root.innerHTML = `
     <div class="cockpit-shell">
       <div id="header-mount" class="mount-contents">${headerHtml}</div>
-      <section class="workspace-grid-3col">
-        <div id="left-rail-mount" class="mount-contents">${leftRailHtml}</div>
-        <div class="center-stage-column">
-          <div id="dag-mount" class="mount-contents">${dagHtml}</div>
-          <div id="scrubber-mount" class="mount-contents">${scrubberHtml}</div>
-        </div>
-        <div id="scenario-mount" class="mount-contents">${scenarioHtml}</div>
+      <section class="workspace-grid-3col ${getGridColsModifierClass(state.columnOrder)}">
+        ${state.columnOrder.map((colId) => colSlotMarkup[colId]).join('')}
       </section>
     </div>
   `;
@@ -1217,6 +1352,117 @@ function attachCockpitEventListeners(
       await invokeForgeResolver('resetScenario', { projectKey: state.graph.projectKey });
     });
   }
+
+  // 15. Reset Layout button (`⇄ Reset Layout`)
+  const btnResetLayout = document.getElementById('btn-reset-layout');
+  if (btnResetLayout) {
+    btnResetLayout.addEventListener('click', () => {
+      state.columnOrder = [...DEFAULT_COLUMN_ORDER];
+      state.centerOrder = [...DEFAULT_CENTER_ORDER];
+      persistSavedLayout(state.columnOrder, state.centerOrder);
+      state.statusBanner = 'Restored default 3-column cockpit layout.';
+      renderCockpit();
+    });
+  }
+
+  // 16. Drag & Drop Panel Arrangement (HTML5 Drag & Drop + 1-click quick swap fallback)
+  let activeDraggedPanel: DraggablePanelId | null = null;
+  let didDragDuringPress = false;
+  const shellEl = document.querySelector<HTMLElement>('.cockpit-shell');
+
+  document.querySelectorAll<HTMLButtonElement>('[data-drag-panel]').forEach((handle) => {
+    handle.addEventListener('dragstart', (event: DragEvent) => {
+      const panelId = handle.getAttribute('data-drag-panel') as DraggablePanelId | null;
+      if (!panelId) return;
+      activeDraggedPanel = panelId;
+      didDragDuringPress = true;
+
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', panelId);
+        const ownerZone = handle.closest<HTMLElement>('[data-drop-zone]');
+        if (ownerZone && typeof event.dataTransfer.setDragImage === 'function') {
+          event.dataTransfer.setDragImage(ownerZone, 40, 24);
+        }
+      }
+
+      handle.closest<HTMLElement>('[data-drop-zone]')?.classList.add('is-dragging-source');
+      shellEl?.classList.add('cockpit-dragging-active');
+    });
+
+    handle.addEventListener('dragend', () => {
+      activeDraggedPanel = null;
+      setTimeout(() => {
+        didDragDuringPress = false;
+      }, 60);
+      shellEl?.classList.remove('cockpit-dragging-active');
+      document
+        .querySelectorAll('.is-dragging-source, .is-drop-target-hover')
+        .forEach((el) => el.classList.remove('is-dragging-source', 'is-drop-target-hover'));
+    });
+
+    // Click fallback: quick-swap side columns or vertical center cards with 1 click
+    handle.addEventListener('click', (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (didDragDuringPress) return;
+      const panelId = handle.getAttribute('data-drag-panel') as DraggablePanelId | null;
+      if (!panelId) return;
+      if (panelId === 'left-rail') {
+        swapPanels('left-rail', 'scenario');
+      } else if (panelId === 'scenario') {
+        swapPanels('scenario', 'left-rail');
+      } else if (panelId === 'dag') {
+        swapPanels('dag', 'scrubber');
+      } else if (panelId === 'scrubber') {
+        swapPanels('scrubber', 'dag');
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>('[data-drop-zone]').forEach((zone) => {
+    zone.addEventListener('dragover', (event: DragEvent) => {
+      const targetPanel = zone.getAttribute('data-drop-zone') as DraggablePanelId | null;
+      const sourcePanel =
+        activeDraggedPanel ||
+        (event.dataTransfer?.getData('text/plain') as DraggablePanelId | '');
+      if (!targetPanel || !sourcePanel || sourcePanel === targetPanel) return;
+
+      const isVerticalCenterPair =
+        (sourcePanel === 'dag' && targetPanel === 'scrubber') ||
+        (sourcePanel === 'scrubber' && targetPanel === 'dag');
+      if (!isVerticalCenterPair && toColumnSlot(sourcePanel) === toColumnSlot(targetPanel)) {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      zone.classList.add('is-drop-target-hover');
+    });
+
+    zone.addEventListener('dragleave', (event: DragEvent) => {
+      const related = event.relatedTarget as Node | null;
+      if (!related || !zone.contains(related)) {
+        zone.classList.remove('is-drop-target-hover');
+      }
+    });
+
+    zone.addEventListener('drop', (event: DragEvent) => {
+      event.preventDefault();
+      zone.classList.remove('is-drop-target-hover');
+      const targetPanel = zone.getAttribute('data-drop-zone') as DraggablePanelId | null;
+      const sourcePanel =
+        activeDraggedPanel ||
+        (event.dataTransfer?.getData('text/plain') as DraggablePanelId | '');
+      activeDraggedPanel = null;
+      shellEl?.classList.remove('cockpit-dragging-active');
+      if (targetPanel && sourcePanel) {
+        swapPanels(sourcePanel, targetPanel);
+      }
+    });
+  });
 }
 
 // Global [ and ] keyboard stepping across issues in the Dependency Map (attached once)

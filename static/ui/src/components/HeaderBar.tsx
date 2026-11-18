@@ -19,6 +19,7 @@ import {
 import {
   escapeHtmlText,
   formatFriendlyDate,
+  renderDragHandleBadge,
   renderInfoTooltip,
 } from './tooltip';
 
@@ -39,6 +40,7 @@ export interface HeaderBarProps {
   addDeveloper: boolean;
   decoupleBlockingEdges: boolean;
   hasAnyIntervention?: boolean;
+  isCustomLayout?: boolean;
   statusBanner: string | null;
 }
 
@@ -154,6 +156,13 @@ export function renderTopAppBar(props: HeaderBarProps): string {
         <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path blocker issue">
           🎯 Focus Blocker (${escapeHtmlText(topBlockerKey)})
         </button>
+        ${
+          props.isCustomLayout
+            ? `<button class="btn" id="btn-reset-layout" title="Restore default panel positions">
+                 ⇄ Reset Layout
+               </button>`
+            : ''
+        }
         <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim" title="Reset What-If simulation back to baseline">
           Reset
         </button>
@@ -214,10 +223,13 @@ export function renderLeftStatusRail(props: HeaderBarProps): string {
   );
 
   return `
-    <aside class="left-status-rail">
+    <aside class="left-status-rail" data-drop-zone="left-rail">
       <div class="rail-header">
         <div class="rail-title-row">
-          <span class="rail-title">Project Status</span>
+          <div class="rail-title-left">
+            ${renderDragHandleBadge('left-rail', 'Project Status', true)}
+            <span class="rail-title">Project Status</span>
+          </div>
           <span class="rail-subtitle-badge">${escapeHtmlText(graph.projectKey)}</span>
         </div>
         <div class="rail-caption">${escapeHtmlText(graph.projectName)} · ${graph.nodes.length} Issues</div>

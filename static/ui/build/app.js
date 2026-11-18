@@ -2027,6 +2027,32 @@ function renderInfoTooltip(title, explanation, mathFormula) {
     </span>
   `;
 }
+/**
+ * Renders a prominent top-corner Drag & Drop grip badge (`⠿⇄`) so users immediately
+ * notice that cockpit panels can be dragged or clicked to swap layout positions.
+ */
+function renderDragHandleBadge(panelId, panelLabel, isDark = false) {
+    return `
+    <button
+      type="button"
+      class="panel-drag-handle ${isDark ? 'panel-drag-handle-dark' : ''}"
+      draggable="true"
+      data-drag-panel="${escapeHtmlText(panelId)}"
+      title="Drag &amp; Drop to move ${escapeHtmlText(panelLabel)} (or click to swap panel position)"
+      aria-label="Drag and drop ${escapeHtmlText(panelLabel)}"
+    >
+      <svg class="drag-grip-svg" width="12" height="14" viewBox="0 0 12 14" aria-hidden="true">
+        <circle cx="3.5" cy="3" r="1.35" fill="currentColor" />
+        <circle cx="8.5" cy="3" r="1.35" fill="currentColor" />
+        <circle cx="3.5" cy="7" r="1.35" fill="currentColor" />
+        <circle cx="8.5" cy="7" r="1.35" fill="currentColor" />
+        <circle cx="3.5" cy="11" r="1.35" fill="currentColor" />
+        <circle cx="8.5" cy="11" r="1.35" fill="currentColor" />
+      </svg>
+      <span class="drag-grip-arrow">⇄</span>
+    </button>
+  `;
+}
 
 
 // === Module: ui/components/HeaderBar ===
@@ -2125,6 +2151,11 @@ function renderTopAppBar(props) {
         <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path blocker issue">
           🎯 Focus Blocker (${escapeHtmlText(topBlockerKey)})
         </button>
+        ${props.isCustomLayout
+        ? `<button class="btn" id="btn-reset-layout" title="Restore default panel positions">
+                 ⇄ Reset Layout
+               </button>`
+        : ''}
         <button class="btn ${hasActiveIntervention ? 'btn-danger-outline' : ''}" id="btn-reset-sim" title="Reset What-If simulation back to baseline">
           Reset
         </button>
@@ -2169,10 +2200,13 @@ function renderLeftStatusRail(props) {
     const blockerCount = activeSim.criticalPathNodes.length;
     const blockerRatio = Math.min(1, Math.max(0.2, blockerCount / Math.max(1, graph.nodes.length)));
     return `
-    <aside class="left-status-rail">
+    <aside class="left-status-rail" data-drop-zone="left-rail">
       <div class="rail-header">
         <div class="rail-title-row">
-          <span class="rail-title">Project Status</span>
+          <div class="rail-title-left">
+            ${renderDragHandleBadge('left-rail', 'Project Status', true)}
+            <span class="rail-title">Project Status</span>
+          </div>
           <span class="rail-subtitle-badge">${escapeHtmlText(graph.projectKey)}</span>
         </div>
         <div class="rail-caption">${escapeHtmlText(graph.projectName)} · ${graph.nodes.length} Issues</div>
@@ -2492,11 +2526,12 @@ function renderTimelineScrubber(props) {
     const pmBufferTooltip = `Team Risk Buffer (+${pmBufferDays.toFixed(1)} days, Target Commit Date ${formatFriendlyDate(activeSim.p85Date)}): Extra schedule cushion managed by the Tech Lead / Project Manager for everyday sprint risks (code review wait times, QA bug fixes, minor scope changes). Raises on-time confidence from 50% to 85%.`;
     const execReserveTooltip = `Executive Contingency (+${execReserveDays.toFixed(1)} days, worst-case safe date ${formatFriendlyDate(activeSim.cvar95Date)}): Leadership reserve held for rare, severe disruptions (cross-team blocker cascades, architecture rework, or key-person bottlenecks) to protect the release in the worst 5% of scenarios.`;
     return `
-    <section class="time-machine-panel">
+    <section class="time-machine-panel" data-drop-zone="scrubber">
       <!-- Top Full-Width Section: Header, 6-Milestone Stepper & Scrubber Slider -->
       <div class="tm-top-full">
         <div class="tm-header">
           <div class="tm-title">
+            ${renderDragHandleBadge('scrubber', 'Timeline & Sprint Forecast Scrubber')}
             <span>Timeline &amp; Sprint Forecast Scrubber</span>
             ${renderInfoTooltip('Timeline & Sprint Forecast Scrubber', 'Click any of the 6 sprint milestones below or drag the timeline slider to preview which Jira issues are expected to be Done, In Progress, or At Risk on that date.', `Reference Date: ${graph.referenceDate} | Viewing Offset: ${scrubberDayOffset}d (${scrubbedDate})`)}
           </div>
@@ -3442,9 +3477,10 @@ function renderDagCanvas(props) {
     })
         .join('');
     return `
-    <div class="panel-card dag-panel-card">
+    <div class="panel-card dag-panel-card" data-drop-zone="dag">
       <div class="panel-header">
         <div class="panel-title">
+          ${renderDragHandleBadge('dag', 'Issue Dependency Map')}
           <span class="stage-heading-title">Issue Dependency Map (${escapeHtmlText(graph.projectName)})</span>
           ${renderInfoTooltip('Issue Dependency Map & Jira Team Swimlanes', 'Swimlanes reflect real Jira Teams configured on your issues (via the Jira Team field or team:<Name> labels). If your Jira project has no teams configured, all issues are shown inside a single unified "No Team Assigned" swimlane without inventing fake teams. ● Circle = Task / Epic | ⬢ Hexagon = Critical Path Blocker | ◆ Diamond = Stage Gate | ▬ Pill = Teamwork Graph Goal.', `Active Swimlanes (${activeTeams.length}): ${activeTeams.map((t) => t.name).join(' · ')}`)}
         </div>
@@ -4299,11 +4335,12 @@ function renderScenarioPanel(props) {
     </div>
   `;
     return `
-    <div class="right-column">
+    <div class="right-column" data-drop-zone="scenario">
       <!-- What-If Simulator Controls Card -->
       <div class="panel-card">
         <div class="panel-header">
           <div class="panel-title">
+            ${renderDragHandleBadge('scenario', 'What-If Scenario Simulator')}
             <span>What-If Scenario Simulator</span>
             ${renderInfoTooltip('What-If Scenario Simulator', 'Simulate schedule delays or recovery mitigations on single or multiple pinned Jira issues, or switch to By Person & Team to test absences and workload rebalancing.', `Active Interventions: ${totalStackedCount} | Selected: ${selectedNode.key}`)}
           </div>
@@ -4418,6 +4455,65 @@ function renderScenarioPanel(props) {
  * Uses Atlassian Forge's `window.__bridge.callBridge('invoke', ...)` to load real Jira projects
  * (e.g., `BloomPath Sprint (BLP)`, `Triton (TRI)`) and their live issues directly from Jira Cloud.
  */
+const DEFAULT_COLUMN_ORDER = ['left-rail', 'center-stage', 'scenario'];
+const DEFAULT_CENTER_ORDER = ['dag', 'scrubber'];
+const LAYOUT_STORAGE_KEY = 'pwm_cockpit_layout_v1';
+function loadSavedLayout() {
+    try {
+        const raw = window.localStorage?.getItem(LAYOUT_STORAGE_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            const validCols = Array.isArray(parsed.columnOrder) &&
+                parsed.columnOrder.length === 3 &&
+                DEFAULT_COLUMN_ORDER.every((c) => parsed.columnOrder.includes(c));
+            const validCenter = Array.isArray(parsed.centerOrder) &&
+                parsed.centerOrder.length === 2 &&
+                DEFAULT_CENTER_ORDER.every((c) => parsed.centerOrder.includes(c));
+            if (validCols && validCenter) {
+                return {
+                    columnOrder: [...parsed.columnOrder],
+                    centerOrder: [...parsed.centerOrder],
+                };
+            }
+        }
+    }
+    catch {
+        // Ignore localStorage access restrictions in sandboxed Jira iframes
+    }
+    return {
+        columnOrder: [...DEFAULT_COLUMN_ORDER],
+        centerOrder: [...DEFAULT_CENTER_ORDER],
+    };
+}
+function persistSavedLayout(columnOrder, centerOrder) {
+    try {
+        window.localStorage?.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ columnOrder, centerOrder }));
+    }
+    catch {
+        // Ignore localStorage write errors in sandboxed iframes
+    }
+}
+function isCustomCockpitLayout(columnOrder, centerOrder) {
+    return (columnOrder.join(',') !== DEFAULT_COLUMN_ORDER.join(',') ||
+        centerOrder.join(',') !== DEFAULT_CENTER_ORDER.join(','));
+}
+function getGridColsModifierClass(order) {
+    switch (order.join('_')) {
+        case 'scenario_center-stage_left-rail':
+            return 'cols-right-center-left';
+        case 'left-rail_scenario_center-stage':
+            return 'cols-left-right-center';
+        case 'scenario_left-rail_center-stage':
+            return 'cols-right-left-center';
+        case 'center-stage_left-rail_scenario':
+            return 'cols-center-left-right';
+        case 'center-stage_scenario_left-rail':
+            return 'cols-center-right-left';
+        default:
+            return 'cols-left-center-right';
+    }
+}
+const initialLayout = loadSavedLayout();
 /**
  * Invokes Atlassian Forge Custom UI resolver via `window.__bridge.callBridge('invoke', ...)`
  * (the native runtime channel used by `@forge/bridge` inside Jira Cloud iframes).
@@ -4533,6 +4629,8 @@ const state = {
     pinnedNodeOverrides: {},
     selectedAssignee: pickDefaultAssignee(initialGraph),
     assigneeOverrides: {},
+    columnOrder: initialLayout.columnOrder,
+    centerOrder: initialLayout.centerOrder,
     selectedEpochIndex: 2, // Today
     scrubberDayOffset: 0,
     activeRightTab: 'cascade',
@@ -4687,6 +4785,40 @@ function scrollDagToSelectedNode(smooth = true) {
         viewport.scrollLeft = targetLeft;
     }
 }
+function toColumnSlot(panelId) {
+    if (panelId === 'dag' || panelId === 'scrubber')
+        return 'center-stage';
+    return panelId;
+}
+function swapPanels(sourcePanel, targetPanel) {
+    if (sourcePanel === targetPanel)
+        return;
+    if ((sourcePanel === 'dag' && targetPanel === 'scrubber') ||
+        (sourcePanel === 'scrubber' && targetPanel === 'dag')) {
+        state.centerOrder = [state.centerOrder[1], state.centerOrder[0]];
+        persistSavedLayout(state.columnOrder, state.centerOrder);
+        state.statusBanner =
+            'Swapped Issue Dependency Map and Timeline Scrubber positions (saved).';
+        renderCockpit();
+        return;
+    }
+    const srcCol = toColumnSlot(sourcePanel);
+    const dstCol = toColumnSlot(targetPanel);
+    if (srcCol === dstCol)
+        return;
+    const nextCols = [...state.columnOrder];
+    const srcIdx = nextCols.indexOf(srcCol);
+    const dstIdx = nextCols.indexOf(dstCol);
+    if (srcIdx === -1 || dstIdx === -1)
+        return;
+    nextCols[srcIdx] = dstCol;
+    nextCols[dstIdx] = srcCol;
+    state.columnOrder = nextCols;
+    persistSavedLayout(state.columnOrder, state.centerOrder);
+    state.statusBanner =
+        'Panel layout updated — drag any top-corner ⠿⇄ icon to move panels or click ⇄ Reset Layout.';
+    renderCockpit();
+}
 function renderCockpit(activeSliderId) {
     const root = document.getElementById('app-root');
     if (!root)
@@ -4697,6 +4829,7 @@ function renderCockpit(activeSliderId) {
     const mergedNodes = getMergedNodeOverrides();
     const activeAssignees = getActiveAssigneeOverrides();
     const hasAnyIntervention = Object.keys(mergedNodes).length > 0 || Object.keys(activeAssignees).length > 0;
+    const isCustomLayout = isCustomCockpitLayout(state.columnOrder, state.centerOrder);
     const headerProps = {
         availableProjects: state.availableProjects,
         graph: state.graph,
@@ -4708,6 +4841,7 @@ function renderCockpit(activeSliderId) {
         addDeveloper: state.addDeveloper,
         decoupleBlockingEdges: state.decoupleBlockingEdges,
         hasAnyIntervention,
+        isCustomLayout,
         statusBanner: state.statusBanner,
     };
     const headerHtml = renderTopAppBar(headerProps);
@@ -4853,16 +4987,25 @@ function renderCockpit(activeSliderId) {
         attachCockpitEventListeners(activeSliderId);
         return;
     }
+    const centerSlotMarkup = {
+        dag: `<div id="dag-mount" class="mount-contents">${dagHtml}</div>`,
+        scrubber: `<div id="scrubber-mount" class="mount-contents">${scrubberHtml}</div>`,
+    };
+    const centerStageHtml = `
+    <div class="center-stage-column">
+      ${state.centerOrder.map((slotId) => centerSlotMarkup[slotId]).join('')}
+    </div>
+  `;
+    const colSlotMarkup = {
+        'left-rail': `<div id="left-rail-mount" class="mount-contents">${leftRailHtml}</div>`,
+        'center-stage': centerStageHtml,
+        scenario: `<div id="scenario-mount" class="mount-contents">${scenarioHtml}</div>`,
+    };
     root.innerHTML = `
     <div class="cockpit-shell">
       <div id="header-mount" class="mount-contents">${headerHtml}</div>
-      <section class="workspace-grid-3col">
-        <div id="left-rail-mount" class="mount-contents">${leftRailHtml}</div>
-        <div class="center-stage-column">
-          <div id="dag-mount" class="mount-contents">${dagHtml}</div>
-          <div id="scrubber-mount" class="mount-contents">${scrubberHtml}</div>
-        </div>
-        <div id="scenario-mount" class="mount-contents">${scenarioHtml}</div>
+      <section class="workspace-grid-3col ${getGridColsModifierClass(state.columnOrder)}">
+        ${state.columnOrder.map((colId) => colSlotMarkup[colId]).join('')}
       </section>
     </div>
   `;
@@ -5437,6 +5580,109 @@ function attachCockpitEventListeners(skipMountForSlider) {
             await invokeForgeResolver('resetScenario', { projectKey: state.graph.projectKey });
         });
     }
+    // 15. Reset Layout button (`⇄ Reset Layout`)
+    const btnResetLayout = document.getElementById('btn-reset-layout');
+    if (btnResetLayout) {
+        btnResetLayout.addEventListener('click', () => {
+            state.columnOrder = [...DEFAULT_COLUMN_ORDER];
+            state.centerOrder = [...DEFAULT_CENTER_ORDER];
+            persistSavedLayout(state.columnOrder, state.centerOrder);
+            state.statusBanner = 'Restored default 3-column cockpit layout.';
+            renderCockpit();
+        });
+    }
+    // 16. Drag & Drop Panel Arrangement (HTML5 Drag & Drop + 1-click quick swap fallback)
+    let activeDraggedPanel = null;
+    let didDragDuringPress = false;
+    const shellEl = document.querySelector('.cockpit-shell');
+    document.querySelectorAll('[data-drag-panel]').forEach((handle) => {
+        handle.addEventListener('dragstart', (event) => {
+            const panelId = handle.getAttribute('data-drag-panel');
+            if (!panelId)
+                return;
+            activeDraggedPanel = panelId;
+            didDragDuringPress = true;
+            if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', panelId);
+                const ownerZone = handle.closest('[data-drop-zone]');
+                if (ownerZone && typeof event.dataTransfer.setDragImage === 'function') {
+                    event.dataTransfer.setDragImage(ownerZone, 40, 24);
+                }
+            }
+            handle.closest('[data-drop-zone]')?.classList.add('is-dragging-source');
+            shellEl?.classList.add('cockpit-dragging-active');
+        });
+        handle.addEventListener('dragend', () => {
+            activeDraggedPanel = null;
+            setTimeout(() => {
+                didDragDuringPress = false;
+            }, 60);
+            shellEl?.classList.remove('cockpit-dragging-active');
+            document
+                .querySelectorAll('.is-dragging-source, .is-drop-target-hover')
+                .forEach((el) => el.classList.remove('is-dragging-source', 'is-drop-target-hover'));
+        });
+        // Click fallback: quick-swap side columns or vertical center cards with 1 click
+        handle.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (didDragDuringPress)
+                return;
+            const panelId = handle.getAttribute('data-drag-panel');
+            if (!panelId)
+                return;
+            if (panelId === 'left-rail') {
+                swapPanels('left-rail', 'scenario');
+            }
+            else if (panelId === 'scenario') {
+                swapPanels('scenario', 'left-rail');
+            }
+            else if (panelId === 'dag') {
+                swapPanels('dag', 'scrubber');
+            }
+            else if (panelId === 'scrubber') {
+                swapPanels('scrubber', 'dag');
+            }
+        });
+    });
+    document.querySelectorAll('[data-drop-zone]').forEach((zone) => {
+        zone.addEventListener('dragover', (event) => {
+            const targetPanel = zone.getAttribute('data-drop-zone');
+            const sourcePanel = activeDraggedPanel ||
+                event.dataTransfer?.getData('text/plain');
+            if (!targetPanel || !sourcePanel || sourcePanel === targetPanel)
+                return;
+            const isVerticalCenterPair = (sourcePanel === 'dag' && targetPanel === 'scrubber') ||
+                (sourcePanel === 'scrubber' && targetPanel === 'dag');
+            if (!isVerticalCenterPair && toColumnSlot(sourcePanel) === toColumnSlot(targetPanel)) {
+                return;
+            }
+            event.preventDefault();
+            if (event.dataTransfer) {
+                event.dataTransfer.dropEffect = 'move';
+            }
+            zone.classList.add('is-drop-target-hover');
+        });
+        zone.addEventListener('dragleave', (event) => {
+            const related = event.relatedTarget;
+            if (!related || !zone.contains(related)) {
+                zone.classList.remove('is-drop-target-hover');
+            }
+        });
+        zone.addEventListener('drop', (event) => {
+            event.preventDefault();
+            zone.classList.remove('is-drop-target-hover');
+            const targetPanel = zone.getAttribute('data-drop-zone');
+            const sourcePanel = activeDraggedPanel ||
+                event.dataTransfer?.getData('text/plain');
+            activeDraggedPanel = null;
+            shellEl?.classList.remove('cockpit-dragging-active');
+            if (targetPanel && sourcePanel) {
+                swapPanels(sourcePanel, targetPanel);
+            }
+        });
+    });
 }
 // Global [ and ] keyboard stepping across issues in the Dependency Map (attached once)
 document.addEventListener('keydown', (event) => {
