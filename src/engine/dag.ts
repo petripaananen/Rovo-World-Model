@@ -100,16 +100,21 @@ export function detectAndBreakCycles(
   nodes: CausalNode[],
   rawEdges: CausalEdge[]
 ): CycleResolutionResult {
-  const validKeys = new Set(nodes.map((n) => n.key));
+  const exactKeyMap = new Map<string, string>();
+  for (const node of nodes) {
+    exactKeyMap.set(node.key.trim().toUpperCase(), node.key);
+    exactKeyMap.set(node.id.trim().toUpperCase(), node.key);
+  }
   const cycleWarnings: string[] = [];
 
-  // 1. Normalize & deduplicate edges, dropping self-loops and dangling references
+  // 1. Normalize & deduplicate edges, dropping self-loops and cross-project / dangling references
+  //    (use exact key/id match rather than numeric suffix fallback so e.g. EXT-4 never aliases BLP-4).
   const edgeMap = new Map<string, CausalEdge>();
   for (const edge of rawEdges) {
-    const fromKey = resolveNodeKey(nodes, edge.from) ?? edge.from;
-    const toKey = resolveNodeKey(nodes, edge.to) ?? edge.to;
+    const fromKey = exactKeyMap.get(edge.from.trim().toUpperCase());
+    const toKey = exactKeyMap.get(edge.to.trim().toUpperCase());
 
-    if (!validKeys.has(fromKey) || !validKeys.has(toKey)) {
+    if (!fromKey || !toKey) {
       continue;
     }
 
@@ -493,8 +498,9 @@ export function computeDeterministicCriticalPath(
       LS.set(key, Math.max(0, projectDuration - dur));
       forcedLS.set(key, nodeGoalDeadline - dur);
     } else {
-      let minSuccStart = projectDuration;
-      let minForcedFinish = nodeGoalDeadline;
+      let minLatestStart = Math.max(0, projectDuration - dur);
+      let minLatestFinish = projectDuration;
+      let minForcedStart = nodeGoalDeadline - dur;
 
       for (const edge of succs) {
         ds.add(edge.to);
@@ -504,24 +510,47 @@ export function computeDeterministicCriticalPath(
             ds.add(item);
           }
         }
+        const pType = edge.precedenceType ?? 'FS';
         const lag = edge.lagDays ?? 0;
         const succLS = LS.get(edge.to) ?? projectDuration;
-        const effectiveConstraint =
-          edge.propagationWeight > 0 ? (succLS - lag) / edge.propagationWeight : succLS - lag;
-        const boundedConstraint = Math.min(projectDuration, effectiveConstraint);
-        if (boundedConstraint < minSuccStart) {
-          minSuccStart = boundedConstraint;
+        const succLF = LF.get(edge.to) ?? projectDuration;
+        const succForcedLS = forcedLS.get(edge.to) ?? targetDeadlineDays;
+        const succNodeDur = effectiveDuration(nodeMap.get(edge.to)!);
+        const succForcedLF = succForcedLS + succNodeDur;
+
+        let edgeMaxLS = minLatestStart;
+        let edgeForcedMaxLS = minForcedStart;
+
+        if (pType === 'SS') {
+          edgeMaxLS = Math.max(0, succLS - lag);
+          edgeForcedMaxLS = succForcedLS - lag;
+        } else if (pType === 'FF') {
+          const maxLF = Math.min(projectDuration, succLF - lag);
+          edgeMaxLS = Math.max(0, maxLF - dur);
+          edgeForcedMaxLS = succForcedLF - lag - dur;
+        } else if (pType === 'SF') {
+          edgeMaxLS = Math.max(0, succLF - lag);
+          edgeForcedMaxLS = succForcedLF - lag;
+        } else {
+          // Default FS (Finish-to-Start)
+          const effectiveConstraint =
+            edge.propagationWeight > 0 ? (succLS - lag) / edge.propagationWeight : succLS - lag;
+          const boundedConstraint = Math.min(projectDuration, effectiveConstraint);
+          edgeMaxLS = Math.max(0, boundedConstraint - dur);
+          edgeForcedMaxLS = succForcedLS - lag - dur;
         }
 
-        const succForcedLS = forcedLS.get(edge.to) ?? targetDeadlineDays;
-        const forcedConstraint = succForcedLS - lag;
-        if (forcedConstraint < minForcedFinish) {
-          minForcedFinish = forcedConstraint;
+        if (edgeMaxLS < minLatestStart) {
+          minLatestStart = edgeMaxLS;
+          minLatestFinish = Math.min(projectDuration, minLatestStart + dur);
+        }
+        if (edgeForcedMaxLS < minForcedStart) {
+          minForcedStart = edgeForcedMaxLS;
         }
       }
-      LF.set(key, minSuccStart);
-      LS.set(key, Math.max(0, minSuccStart - dur));
-      forcedLS.set(key, minForcedFinish - dur);
+      LS.set(key, minLatestStart);
+      LF.set(key, minLatestFinish);
+      forcedLS.set(key, minForcedStart);
     }
     downstreamSets.set(key, ds);
   }
@@ -801,24 +830,47 @@ export function buildDAGFromJiraIssues(
         inwardDesc.includes('block') ||
         inwardDesc.includes('depend');
 
+      const isReverseDependsOutward =
+        !outwardDesc.includes('block') &&
+        (outwardDesc.includes('depend') ||
+          (typeName.includes('depend') && !outwardDesc.includes('is depended on')));
+
       const weight = isHardBlock ? 1.0 : 0.65;
       const depLabel = isHardBlock ? 'Blocks' : 'Architectural Decision';
 
       if (link.outwardIssue?.key) {
-        rawEdges.push({
-          from: issue.key,
-          to: link.outwardIssue.key,
-          dependencyType: depLabel,
-          propagationWeight: weight,
-        });
+        if (isReverseDependsOutward) {
+          rawEdges.push({
+            from: link.outwardIssue.key,
+            to: issue.key,
+            dependencyType: 'Depends on',
+            propagationWeight: weight,
+          });
+        } else {
+          rawEdges.push({
+            from: issue.key,
+            to: link.outwardIssue.key,
+            dependencyType: depLabel,
+            propagationWeight: weight,
+          });
+        }
       }
       if (link.inwardIssue?.key) {
-        rawEdges.push({
-          from: link.inwardIssue.key,
-          to: issue.key,
-          dependencyType: 'Depends on',
-          propagationWeight: weight,
-        });
+        if (isReverseDependsOutward) {
+          rawEdges.push({
+            from: issue.key,
+            to: link.inwardIssue.key,
+            dependencyType: 'Depends on',
+            propagationWeight: weight,
+          });
+        } else {
+          rawEdges.push({
+            from: link.inwardIssue.key,
+            to: issue.key,
+            dependencyType: 'Depends on',
+            propagationWeight: weight,
+          });
+        }
       }
     }
   });

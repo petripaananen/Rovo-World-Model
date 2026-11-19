@@ -113,9 +113,22 @@ export async function simulateDelayImpact(
     `3. **Protect Critical Path Slack:** Prioritize ${result.criticalPathNodes.slice(0, 4).join(' → ')} during daily standups to prevent secondary compound tail risk.`,
   ];
 
+  const nodeOverrideKeys = Object.keys(payload.nodeOverrides ?? {});
+  const assigneeOverrideKeys = Object.keys(payload.assigneeOverrides ?? {});
+  const compoundClauses: string[] = [];
+  if (nodeOverrideKeys.length > 0) {
+    compoundClauses.push(`Issues [${nodeOverrideKeys.join(', ')}]`);
+  }
+  if (assigneeOverrideKeys.length > 0) {
+    compoundClauses.push(`People [${assigneeOverrideKeys.join(', ')}]`);
+  }
+
   const summaryMarkdown = [
     `### Counterfactual Simulation: \`do(${result.targetNodeKey} = ${formatSigned(result.deltaDays)})\``,
     `**Target Task:** ${result.targetNodeKey} — *${result.targetNodeSummary}*`,
+    ...(compoundClauses.length > 0
+      ? [`**Compound Overrides:** ${compoundClauses.join(' + ')}`]
+      : []),
     `**Simulation Engine:** 500-iteration Paired Twin-Network Monte Carlo (${result.executionTimeMs} ms)`,
     '',
     `#### Release Forecast Shift`,

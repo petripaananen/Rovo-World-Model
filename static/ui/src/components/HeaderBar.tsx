@@ -153,6 +153,13 @@ export function renderTopAppBar(props: HeaderBarProps): string {
         <button class="btn btn-primary" id="btn-sync-jira" title="Refresh live issues and dependency links from Jira">
           ↻ Sync Jira Project
         </button>
+        ${
+          graph.isSyntheticDemo || graph.nodes.length === 0
+            ? `<button class="btn" id="btn-create-jira-issues" title="Populate sample linked Jira issues into this project">
+                 + Add Sample Issues
+               </button>`
+            : ''
+        }
         <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path blocker issue">
           🎯 Focus Blocker (${escapeHtmlText(topBlockerKey)})
         </button>

@@ -383,7 +383,7 @@ export function runMonteCarloSimulation(
       node.assignee.toLowerCase() !== 'unassigned'
     ) {
       const effectiveAssignee = reassignedNodeKeys.has(node.key)
-        ? 'Reassigned (+Dev)'
+        ? `Reassigned (${node.key})`
         : node.assignee;
       if (serializedAssignees.has(effectiveAssignee)) {
         const list = assigneeActiveTasks.get(effectiveAssignee) ?? [];
@@ -1323,7 +1323,6 @@ export function runIntervention(
   });
 
   const blastInfo = getDownstreamBlastRadius(graph, resolvedKey);
-  const intervenedBlastSet = new Set(intervenedSim.blastRadiusNodes);
 
   // Calculate exact signed per-node counterfactual shifts
   const nodeDeltas: InterventionResult['nodeDeltas'] = [];
@@ -1335,8 +1334,10 @@ export function runIntervention(
     if (!baseStat || !intStat) continue;
 
     const shiftDays = Number((intStat.p85EndDay - baseStat.p85EndDay).toFixed(1));
-    const effectiveWeight =
-      blastInfo.effectiveWeights[key] ?? (intervenedBlastSet.has(key) ? 0.75 : 0);
+    const effectiveWeight = Math.max(
+      blastInfo.effectiveWeights[key] ?? 0,
+      intStat.effectivePropagationWeight ?? 0
+    );
 
     if (
       key !== resolvedKey &&

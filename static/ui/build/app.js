@@ -1,15 +1,6 @@
 (() => {
 "use strict";
-
-const MCP_TOOLS_MANIFEST = [
-  { name: 'pwm_simulate_intervention' },
-  { name: 'pwm_get_critical_path' },
-  { name: 'pwm_simulate_delay_impact' },
-  { name: 'pwm_analyze_critical_path' },
-  { name: 'pwm_seed_demo_scenario' },
-  { name: 'pwm_get_causal_graph' }
-];
-
+const MCP_TOOLS_MANIFEST = [{"name":"pwm_simulate_intervention"},{"name":"pwm_get_critical_path"},{"name":"pwm_simulate_delay_impact"},{"name":"pwm_analyze_critical_path"},{"name":"pwm_seed_demo_scenario"},{"name":"pwm_get_causal_graph"}];
 // === Module: engine/types ===
 /**
  * Project World Model (PWM) — Core Causal AI & Monte Carlo Simulation Types
@@ -77,14 +68,19 @@ function resolveNodeKey(nodes, identifier) {
  * Logs descriptive warnings so dirty Jira link data never crashes the engine.
  */
 function detectAndBreakCycles(nodes, rawEdges) {
-    const validKeys = new Set(nodes.map((n) => n.key));
+    const exactKeyMap = new Map();
+    for (const node of nodes) {
+        exactKeyMap.set(node.key.trim().toUpperCase(), node.key);
+        exactKeyMap.set(node.id.trim().toUpperCase(), node.key);
+    }
     const cycleWarnings = [];
-    // 1. Normalize & deduplicate edges, dropping self-loops and dangling references
+    // 1. Normalize & deduplicate edges, dropping self-loops and cross-project / dangling references
+    //    (use exact key/id match rather than numeric suffix fallback so e.g. EXT-4 never aliases BLP-4).
     const edgeMap = new Map();
     for (const edge of rawEdges) {
-        const fromKey = resolveNodeKey(nodes, edge.from) ?? edge.from;
-        const toKey = resolveNodeKey(nodes, edge.to) ?? edge.to;
-        if (!validKeys.has(fromKey) || !validKeys.has(toKey)) {
+        const fromKey = exactKeyMap.get(edge.from.trim().toUpperCase());
+        const toKey = exactKeyMap.get(edge.to.trim().toUpperCase());
+        if (!fromKey || !toKey) {
             continue;
         }
         if (fromKey === toKey) {
@@ -401,8 +397,9 @@ function computeDeterministicCriticalPath(graph, forcedTargetDays) {
             forcedLS.set(key, nodeGoalDeadline - dur);
         }
         else {
-            let minSuccStart = projectDuration;
-            let minForcedFinish = nodeGoalDeadline;
+            let minLatestStart = Math.max(0, projectDuration - dur);
+            let minLatestFinish = projectDuration;
+            let minForcedStart = nodeGoalDeadline - dur;
             for (const edge of succs) {
                 ds.add(edge.to);
                 const childDs = downstreamSets.get(edge.to);
@@ -411,22 +408,46 @@ function computeDeterministicCriticalPath(graph, forcedTargetDays) {
                         ds.add(item);
                     }
                 }
+                const pType = edge.precedenceType ?? 'FS';
                 const lag = edge.lagDays ?? 0;
                 const succLS = LS.get(edge.to) ?? projectDuration;
-                const effectiveConstraint = edge.propagationWeight > 0 ? (succLS - lag) / edge.propagationWeight : succLS - lag;
-                const boundedConstraint = Math.min(projectDuration, effectiveConstraint);
-                if (boundedConstraint < minSuccStart) {
-                    minSuccStart = boundedConstraint;
-                }
+                const succLF = LF.get(edge.to) ?? projectDuration;
                 const succForcedLS = forcedLS.get(edge.to) ?? targetDeadlineDays;
-                const forcedConstraint = succForcedLS - lag;
-                if (forcedConstraint < minForcedFinish) {
-                    minForcedFinish = forcedConstraint;
+                const succNodeDur = effectiveDuration(nodeMap.get(edge.to));
+                const succForcedLF = succForcedLS + succNodeDur;
+                let edgeMaxLS = minLatestStart;
+                let edgeForcedMaxLS = minForcedStart;
+                if (pType === 'SS') {
+                    edgeMaxLS = Math.max(0, succLS - lag);
+                    edgeForcedMaxLS = succForcedLS - lag;
+                }
+                else if (pType === 'FF') {
+                    const maxLF = Math.min(projectDuration, succLF - lag);
+                    edgeMaxLS = Math.max(0, maxLF - dur);
+                    edgeForcedMaxLS = succForcedLF - lag - dur;
+                }
+                else if (pType === 'SF') {
+                    edgeMaxLS = Math.max(0, succLF - lag);
+                    edgeForcedMaxLS = succForcedLF - lag;
+                }
+                else {
+                    // Default FS (Finish-to-Start)
+                    const effectiveConstraint = edge.propagationWeight > 0 ? (succLS - lag) / edge.propagationWeight : succLS - lag;
+                    const boundedConstraint = Math.min(projectDuration, effectiveConstraint);
+                    edgeMaxLS = Math.max(0, boundedConstraint - dur);
+                    edgeForcedMaxLS = succForcedLS - lag - dur;
+                }
+                if (edgeMaxLS < minLatestStart) {
+                    minLatestStart = edgeMaxLS;
+                    minLatestFinish = Math.min(projectDuration, minLatestStart + dur);
+                }
+                if (edgeForcedMaxLS < minForcedStart) {
+                    minForcedStart = edgeForcedMaxLS;
                 }
             }
-            LF.set(key, minSuccStart);
-            LS.set(key, Math.max(0, minSuccStart - dur));
-            forcedLS.set(key, minForcedFinish - dur);
+            LS.set(key, minLatestStart);
+            LF.set(key, minLatestFinish);
+            forcedLS.set(key, minForcedStart);
         }
         downstreamSets.set(key, ds);
     }
@@ -673,23 +694,46 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
                 outwardDesc.includes('block') ||
                 inwardDesc.includes('block') ||
                 inwardDesc.includes('depend');
+            const isReverseDependsOutward = !outwardDesc.includes('block') &&
+                (outwardDesc.includes('depend') ||
+                    (typeName.includes('depend') && !outwardDesc.includes('is depended on')));
             const weight = isHardBlock ? 1.0 : 0.65;
             const depLabel = isHardBlock ? 'Blocks' : 'Architectural Decision';
             if (link.outwardIssue?.key) {
-                rawEdges.push({
-                    from: issue.key,
-                    to: link.outwardIssue.key,
-                    dependencyType: depLabel,
-                    propagationWeight: weight,
-                });
+                if (isReverseDependsOutward) {
+                    rawEdges.push({
+                        from: link.outwardIssue.key,
+                        to: issue.key,
+                        dependencyType: 'Depends on',
+                        propagationWeight: weight,
+                    });
+                }
+                else {
+                    rawEdges.push({
+                        from: issue.key,
+                        to: link.outwardIssue.key,
+                        dependencyType: depLabel,
+                        propagationWeight: weight,
+                    });
+                }
             }
             if (link.inwardIssue?.key) {
-                rawEdges.push({
-                    from: link.inwardIssue.key,
-                    to: issue.key,
-                    dependencyType: 'Depends on',
-                    propagationWeight: weight,
-                });
+                if (isReverseDependsOutward) {
+                    rawEdges.push({
+                        from: issue.key,
+                        to: link.inwardIssue.key,
+                        dependencyType: 'Depends on',
+                        propagationWeight: weight,
+                    });
+                }
+                else {
+                    rawEdges.push({
+                        from: link.inwardIssue.key,
+                        to: issue.key,
+                        dependencyType: 'Depends on',
+                        propagationWeight: weight,
+                    });
+                }
             }
         }
     });
@@ -1098,7 +1142,7 @@ function runMonteCarloSimulation(graph, options = {}) {
             node.assignee &&
             node.assignee.toLowerCase() !== 'unassigned') {
             const effectiveAssignee = reassignedNodeKeys.has(node.key)
-                ? 'Reassigned (+Dev)'
+                ? `Reassigned (${node.key})`
                 : node.assignee;
             if (serializedAssignees.has(effectiveAssignee)) {
                 const list = assigneeActiveTasks.get(effectiveAssignee) ?? [];
@@ -1865,7 +1909,6 @@ function runIntervention(graph, targetNodeId, deltaDays, iterationsOrOptions = D
         },
     });
     const blastInfo = getDownstreamBlastRadius(graph, resolvedKey);
-    const intervenedBlastSet = new Set(intervenedSim.blastRadiusNodes);
     // Calculate exact signed per-node counterfactual shifts
     const nodeDeltas = [];
     let maxMagnitudeDownstreamShift = 0;
@@ -1875,7 +1918,7 @@ function runIntervention(graph, targetNodeId, deltaDays, iterationsOrOptions = D
         if (!baseStat || !intStat)
             continue;
         const shiftDays = Number((intStat.p85EndDay - baseStat.p85EndDay).toFixed(1));
-        const effectiveWeight = blastInfo.effectiveWeights[key] ?? (intervenedBlastSet.has(key) ? 0.75 : 0);
+        const effectiveWeight = Math.max(blastInfo.effectiveWeights[key] ?? 0, intStat.effectivePropagationWeight ?? 0);
         if (key !== resolvedKey &&
             Math.abs(shiftDays) > Math.abs(maxMagnitudeDownstreamShift)) {
             maxMagnitudeDownstreamShift = shiftDays;
@@ -1968,7 +2011,8 @@ function escapeHtmlText(str) {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 function formatFriendlyDate(isoDate, includeYear = false) {
     if (!isoDate || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate))
@@ -2148,6 +2192,11 @@ function renderTopAppBar(props) {
         <button class="btn btn-primary" id="btn-sync-jira" title="Refresh live issues and dependency links from Jira">
           ↻ Sync Jira Project
         </button>
+        ${graph.isSyntheticDemo || graph.nodes.length === 0
+        ? `<button class="btn" id="btn-create-jira-issues" title="Populate sample linked Jira issues into this project">
+                 + Add Sample Issues
+               </button>`
+        : ''}
         <button class="btn" id="btn-jump-bottleneck" title="Select the #1 critical path blocker issue">
           🎯 Focus Blocker (${escapeHtmlText(topBlockerKey)})
         </button>
@@ -3592,7 +3641,10 @@ function buildRovoMitigationPrompt(props) {
         scenarioClauses.push(`person "${person}" [${summarizeAssigneeOverride(aOv)}]`);
     }
     const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
-    const goal = graph.goals.find((g) => g.id === node.goalId) ?? graph.goals[0];
+    const goal = (node ? graph.goals.find((g) => g.id === node.goalId) : undefined) ?? graph.goals[0];
+    if (!node) {
+        return `@Rovo-World-Model Agent Project "${graph.projectName}" (${graph.projectKey}) currently has 0 issues. Populate sample linked Jira issues or add issues in Jira to run Monte Carlo dependency forecasting.`;
+    }
     if (scenarioClauses.length > 1) {
         return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), run a combined counterfactual simulation for: ${scenarioClauses.join(' + ')}. Projected Target Commit Date (85% safe) is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues affecting "${goal?.name ?? 'Sprint Delivery'}". Recommend a concrete mitigation plan.`;
     }
@@ -3778,6 +3830,13 @@ function renderTabBody(props) {
     `;
     }
     const selectedNode = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
+    if (!selectedNode) {
+        return `
+      <div class="empty-tab-notice">
+        No issues found in <strong>${escapeHtmlText(graph.projectName)}</strong>. Use <strong>+ Add Sample Issues</strong> in the header or create Jira issues to view AI recommendations.
+      </div>
+    `;
+    }
     const selectedStat = activeSim.nodeStats[selectedNode.key];
     const matchedBottleneck = activeSim.topBottlenecks.find((b) => b.key === selectedNode.key);
     const downstreamCount = matchedBottleneck?.downstreamCount ??
@@ -3891,6 +3950,26 @@ function renderGoalsCard(activeSim) {
 function renderScenarioPanel(props) {
     const { graph, baselineSim, activeSim, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, simulatorMode, pinnedNodeOverrides, selectedAssignee, assigneeOverrides, activeRightTab, copiedPromptNotice, } = props;
     const selectedNode = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
+    if (!selectedNode) {
+        return `
+      <div class="right-column" data-drop-zone="scenario">
+        <div class="panel-card">
+          <div class="panel-header">
+            <div class="panel-title">
+              ${renderDragHandleBadge('scenario', 'What-If Scenario Simulator')}
+              <span>What-If Scenario Simulator</span>
+            </div>
+            <span class="jira-lozenge jira-lozenge-todo">NO ISSUES</span>
+          </div>
+          <div class="intervention-box">
+            <div class="empty-tab-notice">
+              Project <strong>${escapeHtmlText(graph.projectName)}</strong> has 0 issues yet. Click <strong>+ Add Sample Issues</strong> in the top bar to populate linked Jira tasks and start running What-If simulations.
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    }
     const selectedStat = activeSim.nodeStats[selectedNode.key];
     const blockedByKeys = graph.edges
         .filter((e) => e.to === selectedNode.key)
@@ -4541,6 +4620,7 @@ async function invokeForgeResolver(functionKey, payload = {}) {
  * while the live `getGraphData` bridge call completes.
  */
 function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomPath Sprint') {
+    const todayIso = new Date().toISOString().slice(0, 10);
     const dag = buildDAGFromJiraIssues(projectKey, [
         {
             id: '10007',
@@ -4573,7 +4653,7 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
             id: 'GOAL-ALPHA',
             key: `${projectKey}-GOAL-1`,
             name: `${projectName} Sprint Delivery`,
-            targetDate: '2026-11-18',
+            targetDate: addCalendarDays(todayIso, 18),
             targetDayOffset: 18,
             ownerTeam: 'No Team Assigned',
             status: 'On Track',
@@ -4582,12 +4662,12 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
             id: 'GOAL-OMEGA',
             key: `${projectKey}-GOAL-2`,
             name: `${projectName} Release Milestone`,
-            targetDate: '2026-12-02',
+            targetDate: addCalendarDays(todayIso, 32),
             targetDayOffset: 32,
             ownerTeam: 'No Team Assigned',
             status: 'On Track',
         },
-    ], [], '2026-10-30');
+    ], [], todayIso);
     return {
         ...dag,
         projectName,
@@ -4752,20 +4832,9 @@ function recomputeSimulation() {
         state.activeSim = state.baselineSim;
     }
 }
-function triggerRemoteWhatIf() {
-    const mergedNodes = getMergedNodeOverrides();
-    const activeAssignees = getActiveAssigneeOverrides();
-    void invokeForgeResolver('runWhatIfSimulation', {
-        projectKey: state.graph.projectKey,
-        targetNodeId: state.selectedNodeKey,
-        deltaDays: state.delayDays,
-        addDeveloper: state.addDeveloper,
-        decoupleBlockingEdges: state.decoupleBlockingEdges,
-        trimScope: state.trimScope,
-        nodeOverrides: mergedNodes,
-        assigneeOverrides: activeAssignees,
-    });
-}
+// Shared Drag & Drop module state (prevents duplicate listener collisions across slider partial renders)
+let activeDraggedPanel = null;
+let didDragDuringPress = false;
 function scrollDagToSelectedNode(smooth = true) {
     const viewport = document.getElementById('dag-viewport-container');
     if (!viewport)
@@ -5093,7 +5162,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 switchSelectedIssue(nextKey);
                 state.simulatorMode = 'issue';
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
                 scrollDagToSelectedNode(true);
             }
@@ -5106,7 +5174,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 switchSelectedIssue(key, event.shiftKey);
                 state.simulatorMode = 'issue';
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             }
         });
@@ -5208,7 +5275,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 }
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             }
         });
@@ -5234,7 +5300,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 delete state.assigneeOverrides[name];
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             }
         });
@@ -5250,7 +5315,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
             state.trimScope = false;
             state.copiedPromptNotice = false;
             recomputeSimulation();
-            triggerRemoteWhatIf();
             renderCockpit();
         });
     }
@@ -5306,7 +5370,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 switchSelectedIssue(key);
                 state.simulatorMode = 'issue';
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
                 scrollDagToSelectedNode(true);
             }
@@ -5329,7 +5392,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
             }
             state.copiedPromptNotice = false;
             recomputeSimulation();
-            triggerRemoteWhatIf();
             renderCockpit();
         });
     }
@@ -5361,7 +5423,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
             delaySlider.addEventListener('change', () => {
                 syncCurrentNodeToPinIfPinned();
                 renderCockpit();
-                triggerRemoteWhatIf();
             });
         }
         // 3. Delay / Accelerate Preset Buttons
@@ -5371,7 +5432,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             });
         });
@@ -5383,7 +5443,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             });
         }
@@ -5395,7 +5454,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             });
         }
@@ -5407,7 +5465,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 syncCurrentNodeToPinIfPinned();
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             });
         }
@@ -5433,7 +5490,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
             });
             ptoSlider.addEventListener('change', () => {
                 renderCockpit();
-                triggerRemoteWhatIf();
             });
         }
         document.querySelectorAll('[data-preset-pto]').forEach((btn) => {
@@ -5442,7 +5498,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 pOv.unavailableDays = Number(btn.getAttribute('data-preset-pto') ?? 0);
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             });
         });
@@ -5453,7 +5508,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 pOv.reassignBottleneck = !pOv.reassignBottleneck;
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             });
         }
@@ -5464,7 +5518,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 pOv.serializeParallelWork = !pOv.serializeParallelWork;
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             });
         }
@@ -5475,7 +5528,6 @@ function attachCockpitEventListeners(skipMountForSlider) {
                 pOv.pairOnTopBlocker = !pOv.pairOnTopBlocker;
                 state.copiedPromptNotice = false;
                 recomputeSimulation();
-                triggerRemoteWhatIf();
                 renderCockpit();
             });
         }
@@ -5591,11 +5643,12 @@ function attachCockpitEventListeners(skipMountForSlider) {
             renderCockpit();
         });
     }
-    // 16. Drag & Drop Panel Arrangement (HTML5 Drag & Drop + 1-click quick swap fallback)
-    let activeDraggedPanel = null;
-    let didDragDuringPress = false;
+    // 16. Drag & Drop Panel Arrangement (guarded against duplicate binding during slider drags)
     const shellEl = document.querySelector('.cockpit-shell');
     document.querySelectorAll('[data-drag-panel]').forEach((handle) => {
+        if (handle.dataset.dndBound === '1')
+            return;
+        handle.dataset.dndBound = '1';
         handle.addEventListener('dragstart', (event) => {
             const panelId = handle.getAttribute('data-drag-panel');
             if (!panelId)
@@ -5647,6 +5700,9 @@ function attachCockpitEventListeners(skipMountForSlider) {
         });
     });
     document.querySelectorAll('[data-drop-zone]').forEach((zone) => {
+        if (zone.dataset.dndBound === '1')
+            return;
+        zone.dataset.dndBound = '1';
         zone.addEventListener('dragover', (event) => {
             const targetPanel = zone.getAttribute('data-drop-zone');
             const sourcePanel = activeDraggedPanel ||
@@ -5709,7 +5765,6 @@ document.addEventListener('keydown', (event) => {
     switchSelectedIssue(nextKey);
     state.simulatorMode = 'issue';
     recomputeSimulation();
-    triggerRemoteWhatIf();
     renderCockpit();
     scrollDagToSelectedNode(true);
 });

@@ -5,7 +5,7 @@
  * (e.g., `BloomPath Sprint (BLP)`, `Triton (TRI)`) and their live issues directly from Jira Cloud.
  */
 
-import { buildDAGFromJiraIssues } from '../../../src/engine/dag';
+import { addCalendarDays, buildDAGFromJiraIssues } from '../../../src/engine/dag';
 import { runIntervention, runMonteCarloSimulation } from '../../../src/engine/simulator';
 import {
   AssigneeInterventionOverride,
@@ -170,6 +170,7 @@ async function invokeForgeResolver<T>(
  * while the live `getGraphData` bridge call completes.
  */
 function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomPath Sprint'): CausalGraph {
+  const todayIso = new Date().toISOString().slice(0, 10);
   const dag = buildDAGFromJiraIssues(
     projectKey,
     [
@@ -205,7 +206,7 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
         id: 'GOAL-ALPHA',
         key: `${projectKey}-GOAL-1`,
         name: `${projectName} Sprint Delivery`,
-        targetDate: '2026-11-18',
+        targetDate: addCalendarDays(todayIso, 18),
         targetDayOffset: 18,
         ownerTeam: 'No Team Assigned',
         status: 'On Track',
@@ -214,14 +215,14 @@ function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomP
         id: 'GOAL-OMEGA',
         key: `${projectKey}-GOAL-2`,
         name: `${projectName} Release Milestone`,
-        targetDate: '2026-12-02',
+        targetDate: addCalendarDays(todayIso, 32),
         targetDayOffset: 32,
         ownerTeam: 'No Team Assigned',
         status: 'On Track',
       },
     ],
     [],
-    '2026-10-30'
+    todayIso
   );
 
   return {
@@ -408,20 +409,9 @@ function recomputeSimulation(): void {
   }
 }
 
-function triggerRemoteWhatIf(): void {
-  const mergedNodes = getMergedNodeOverrides();
-  const activeAssignees = getActiveAssigneeOverrides();
-  void invokeForgeResolver('runWhatIfSimulation', {
-    projectKey: state.graph.projectKey,
-    targetNodeId: state.selectedNodeKey,
-    deltaDays: state.delayDays,
-    addDeveloper: state.addDeveloper,
-    decoupleBlockingEdges: state.decoupleBlockingEdges,
-    trimScope: state.trimScope,
-    nodeOverrides: mergedNodes,
-    assigneeOverrides: activeAssignees,
-  });
-}
+// Shared Drag & Drop module state (prevents duplicate listener collisions across slider partial renders)
+let activeDraggedPanel: DraggablePanelId | null = null;
+let didDragDuringPress = false;
 
 function scrollDagToSelectedNode(smooth = true): void {
   const viewport = document.getElementById('dag-viewport-container');
@@ -798,7 +788,6 @@ function attachCockpitEventListeners(
         switchSelectedIssue(nextKey);
         state.simulatorMode = 'issue';
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
         scrollDagToSelectedNode(true);
       }
@@ -812,7 +801,6 @@ function attachCockpitEventListeners(
         switchSelectedIssue(key, event.shiftKey);
         state.simulatorMode = 'issue';
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       }
     });
@@ -947,7 +935,6 @@ function attachCockpitEventListeners(
         }
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       }
     });
@@ -974,7 +961,6 @@ function attachCockpitEventListeners(
         delete state.assigneeOverrides[name];
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       }
     });
@@ -991,7 +977,6 @@ function attachCockpitEventListeners(
       state.trimScope = false;
       state.copiedPromptNotice = false;
       recomputeSimulation();
-      triggerRemoteWhatIf();
       renderCockpit();
     });
   }
@@ -1049,7 +1034,6 @@ function attachCockpitEventListeners(
         switchSelectedIssue(key);
         state.simulatorMode = 'issue';
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
         scrollDagToSelectedNode(true);
       }
@@ -1072,7 +1056,6 @@ function attachCockpitEventListeners(
       }
       state.copiedPromptNotice = false;
       recomputeSimulation();
-      triggerRemoteWhatIf();
       renderCockpit();
     });
   }
@@ -1110,7 +1093,6 @@ function attachCockpitEventListeners(
       delaySlider.addEventListener('change', () => {
         syncCurrentNodeToPinIfPinned();
         renderCockpit();
-        triggerRemoteWhatIf();
       });
     }
 
@@ -1121,7 +1103,6 @@ function attachCockpitEventListeners(
         syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       });
     });
@@ -1134,7 +1115,6 @@ function attachCockpitEventListeners(
         syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       });
     }
@@ -1147,7 +1127,6 @@ function attachCockpitEventListeners(
         syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       });
     }
@@ -1160,7 +1139,6 @@ function attachCockpitEventListeners(
         syncCurrentNodeToPinIfPinned();
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       });
     }
@@ -1190,7 +1168,6 @@ function attachCockpitEventListeners(
       });
       ptoSlider.addEventListener('change', () => {
         renderCockpit();
-        triggerRemoteWhatIf();
       });
     }
 
@@ -1200,7 +1177,6 @@ function attachCockpitEventListeners(
         pOv.unavailableDays = Number(btn.getAttribute('data-preset-pto') ?? 0);
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       });
     });
@@ -1212,7 +1188,6 @@ function attachCockpitEventListeners(
         pOv.reassignBottleneck = !pOv.reassignBottleneck;
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       });
     }
@@ -1224,7 +1199,6 @@ function attachCockpitEventListeners(
         pOv.serializeParallelWork = !pOv.serializeParallelWork;
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       });
     }
@@ -1236,7 +1210,6 @@ function attachCockpitEventListeners(
         pOv.pairOnTopBlocker = !pOv.pairOnTopBlocker;
         state.copiedPromptNotice = false;
         recomputeSimulation();
-        triggerRemoteWhatIf();
         renderCockpit();
       });
     }
@@ -1365,12 +1338,13 @@ function attachCockpitEventListeners(
     });
   }
 
-  // 16. Drag & Drop Panel Arrangement (HTML5 Drag & Drop + 1-click quick swap fallback)
-  let activeDraggedPanel: DraggablePanelId | null = null;
-  let didDragDuringPress = false;
+  // 16. Drag & Drop Panel Arrangement (guarded against duplicate binding during slider drags)
   const shellEl = document.querySelector<HTMLElement>('.cockpit-shell');
 
   document.querySelectorAll<HTMLButtonElement>('[data-drag-panel]').forEach((handle) => {
+    if (handle.dataset.dndBound === '1') return;
+    handle.dataset.dndBound = '1';
+
     handle.addEventListener('dragstart', (event: DragEvent) => {
       const panelId = handle.getAttribute('data-drag-panel') as DraggablePanelId | null;
       if (!panelId) return;
@@ -1421,6 +1395,9 @@ function attachCockpitEventListeners(
   });
 
   document.querySelectorAll<HTMLElement>('[data-drop-zone]').forEach((zone) => {
+    if (zone.dataset.dndBound === '1') return;
+    zone.dataset.dndBound = '1';
+
     zone.addEventListener('dragover', (event: DragEvent) => {
       const targetPanel = zone.getAttribute('data-drop-zone') as DraggablePanelId | null;
       const sourcePanel =
@@ -1491,7 +1468,6 @@ document.addEventListener('keydown', (event: KeyboardEvent) => {
   switchSelectedIssue(nextKey);
   state.simulatorMode = 'issue';
   recomputeSimulation();
-  triggerRemoteWhatIf();
   renderCockpit();
   scrollDagToSelectedNode(true);
 });

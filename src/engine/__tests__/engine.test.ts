@@ -758,4 +758,148 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
       `Expected person workload mitigation P85 (${personRebalanced.p85Days}d) < unmitigated absence (${personAway.p85Days}d)`
     );
   });
+
+  it('ignores external cross-project Jira links instead of matching by numeric suffix in detectAndBreakCycles', () => {
+    const graph = buildDAGFromJiraIssues('BLP', [
+      {
+        id: '9001',
+        key: 'BLP-1',
+        fields: {
+          summary: 'Core Auth',
+          status: { name: 'In Progress' },
+          issuelinks: [
+            {
+              type: { name: 'Blocks', outward: 'blocks' },
+              outwardIssue: { key: 'BLP-2' },
+            },
+            {
+              type: { name: 'Blocks', outward: 'blocks' },
+              outwardIssue: { key: 'OPS-3' },
+            },
+          ],
+        },
+      },
+      {
+        id: '9002',
+        key: 'BLP-2',
+        fields: {
+          summary: 'Billing',
+          status: { name: 'To Do' },
+        },
+      },
+      {
+        id: '9003',
+        key: 'BLP-3',
+        fields: {
+          summary: 'Independent UI Cleanup',
+          status: { name: 'To Do' },
+        },
+      },
+    ]);
+
+    assert.equal(graph.edges.length, 1);
+    assert.equal(graph.edges[0].from, 'BLP-1');
+    assert.equal(graph.edges[0].to, 'BLP-2');
+    assert.equal(
+      graph.edges.some((e) => e.to === 'BLP-3'),
+      false,
+      'External link OPS-3 must not fabricate a ghost edge to BLP-3'
+    );
+  });
+
+  it('orients Jira Depends-on outward links causally (prerequisite -> dependent)', () => {
+    const graph = buildDAGFromJiraIssues('DEP', [
+      {
+        id: '9101',
+        key: 'DEP-1',
+        fields: {
+          summary: 'UI Integration (depends on API)',
+          status: { name: 'To Do' },
+          issuelinks: [
+            {
+              type: { name: 'Depends', outward: 'depends on', inward: 'is depended on by' },
+              outwardIssue: { key: 'DEP-2' },
+            },
+          ],
+        },
+      },
+      {
+        id: '9102',
+        key: 'DEP-2',
+        fields: {
+          summary: 'Backend API Contract',
+          status: { name: 'In Progress' },
+        },
+      },
+    ]);
+
+    assert.equal(graph.edges.length, 1);
+    assert.equal(graph.edges[0].from, 'DEP-2');
+    assert.equal(graph.edges[0].to, 'DEP-1');
+    assert.deepEqual(graph.topologicalOrder, ['DEP-2', 'DEP-1']);
+  });
+
+  it('forwards compound nodeOverrides and assigneeOverrides through MCP pwm_simulate_intervention', async () => {
+    const mcpRes = await mcpWebtriggerHandler({
+      method: 'POST',
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 99,
+        method: 'tools/call',
+        params: {
+          name: 'pwm_simulate_intervention',
+          arguments: {
+            issueKey: 'CHRON-104',
+            delayDays: 5,
+            nodeOverrides: {
+              'CHRON-105': { deltaDays: 6 },
+            },
+            assigneeOverrides: {
+              'Marcus Chen': {
+                assignee: 'Marcus Chen',
+                unavailableDays: 4,
+                reassignBottleneck: true,
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    assert.equal(mcpRes.statusCode, 200);
+    const parsed = JSON.parse(mcpRes.body);
+    const sc = parsed.result.structuredContent;
+    assert.ok(sc.summaryMarkdown.includes('Compound Overrides'));
+    assert.ok(sc.summaryMarkdown.includes('CHRON-105'));
+    assert.ok(sc.summaryMarkdown.includes('Marcus Chen'));
+    assert.ok(sc.p85ShiftDays > 0);
+  });
+
+  it('keeps reassigned bottlenecks isolated per issue so multiple reassignments never falsely collide as overloaded', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const assignees = Array.from(
+      new Set(
+        graph.nodes
+          .filter((n) => n.status.toLowerCase() !== 'done' && n.assignee)
+          .map((n) => n.assignee)
+      )
+    );
+    assert.ok(assignees.length >= 2);
+
+    const sim = runIntervention(graph, graph.nodes[0].key, 0, {
+      iterations: 300,
+      assigneeOverrides: {
+        [assignees[0]]: { assignee: assignees[0], reassignBottleneck: true },
+        [assignees[1]]: { assignee: assignees[1], reassignBottleneck: true },
+      },
+    });
+
+    const overloadedNames =
+      sim.deliveryGovernance?.overallocatedAssignees.map((a) => a.assignee) ?? [];
+    assert.equal(
+      overloadedNames.some((name) => name.startsWith('Reassigned')),
+      false,
+      `Did not expect synthetic Reassigned buckets to collide as overloaded: ${overloadedNames.join(', ')}`
+    );
+  });
 });

@@ -107,7 +107,11 @@ export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   }
 
   const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
-  const goal = graph.goals.find((g) => g.id === node.goalId) ?? graph.goals[0];
+  const goal = (node ? graph.goals.find((g) => g.id === node.goalId) : undefined) ?? graph.goals[0];
+
+  if (!node) {
+    return `@Rovo-World-Model Agent Project "${graph.projectName}" (${graph.projectKey}) currently has 0 issues. Populate sample linked Jira issues or add issues in Jira to run Monte Carlo dependency forecasting.`;
+  }
 
   if (scenarioClauses.length > 1) {
     return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), run a combined counterfactual simulation for: ${scenarioClauses.join(' + ')}. Projected Target Commit Date (85% safe) is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues affecting "${goal?.name ?? 'Sprint Delivery'}". Recommend a concrete mitigation plan.`;
@@ -335,6 +339,13 @@ function renderTabBody(props: ScenarioPanelProps): string {
 
   const selectedNode =
     graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
+  if (!selectedNode) {
+    return `
+      <div class="empty-tab-notice">
+        No issues found in <strong>${escapeHtmlText(graph.projectName)}</strong>. Use <strong>+ Add Sample Issues</strong> in the header or create Jira issues to view AI recommendations.
+      </div>
+    `;
+  }
   const selectedStat = activeSim.nodeStats[selectedNode.key];
   const matchedBottleneck = activeSim.topBottlenecks.find(
     (b) => b.key === selectedNode.key
@@ -480,6 +491,26 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
 
   const selectedNode =
     graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
+  if (!selectedNode) {
+    return `
+      <div class="right-column" data-drop-zone="scenario">
+        <div class="panel-card">
+          <div class="panel-header">
+            <div class="panel-title">
+              ${renderDragHandleBadge('scenario', 'What-If Scenario Simulator')}
+              <span>What-If Scenario Simulator</span>
+            </div>
+            <span class="jira-lozenge jira-lozenge-todo">NO ISSUES</span>
+          </div>
+          <div class="intervention-box">
+            <div class="empty-tab-notice">
+              Project <strong>${escapeHtmlText(graph.projectName)}</strong> has 0 issues yet. Click <strong>+ Add Sample Issues</strong> in the top bar to populate linked Jira tasks and start running What-If simulations.
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
   const selectedStat = activeSim.nodeStats[selectedNode.key];
   const blockedByKeys = graph.edges
     .filter((e) => e.to === selectedNode.key)

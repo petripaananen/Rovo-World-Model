@@ -8,6 +8,10 @@
  */
 
 import {
+  AssigneeInterventionOverride,
+  NodeInterventionOverride,
+} from '../engine/types';
+import {
   analyzeCriticalPath,
   seedDemoScenario,
   simulateDelayImpact,
@@ -18,7 +22,12 @@ export interface ForgeWebtriggerRequest {
   method?: string;
   body?: string;
   queryParameters?: Record<string, string[]>;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | string[]>;
+}
+
+function asPlainRecord<T>(val: unknown): Record<string, T> | undefined {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return undefined;
+  return val as Record<string, T>;
 }
 
 export interface ForgeWebtriggerResponse {
@@ -260,6 +269,10 @@ export async function mcpWebtriggerHandler(
           addDeveloper: Boolean(args.addDeveloper),
           decoupleBlockingEdges: Boolean(args.decoupleBlockingEdges),
           trimScope: Boolean(args.trimScope),
+          nodeOverrides: asPlainRecord<NodeInterventionOverride>(args.nodeOverrides),
+          assigneeOverrides: asPlainRecord<AssigneeInterventionOverride>(
+            args.assigneeOverrides
+          ),
           projectKey: args.projectKey ? String(args.projectKey) : undefined,
         });
       } else if (
@@ -274,10 +287,13 @@ export async function mcpWebtriggerHandler(
         toolName === 'pwm_seed_demo_scenario' ||
         toolName === 'seed-demo-scenario'
       ) {
-        const confirmWriteHeader =
+        const rawConfirmHeader =
           req.headers?.['x-pwm-confirm-write'] ??
           req.headers?.['X-PWM-Confirm-Write'] ??
           '';
+        const confirmWriteHeader = Array.isArray(rawConfirmHeader)
+          ? rawConfirmHeader[0] ?? ''
+          : rawConfirmHeader;
         const allowPopulateJira =
           Boolean(args.populateJiraIssues) &&
           String(confirmWriteHeader).toLowerCase() === 'true';

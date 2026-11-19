@@ -58,16 +58,24 @@ for (const mod of modulesToBundle) {
   transpiledChunks.push(`// === Module: ${mod.id} ===\n${transpiled.outputText}`);
 }
 
-const mcpManifestInline = `
-const MCP_TOOLS_MANIFEST = [
-  { name: 'pwm_simulate_intervention' },
-  { name: 'pwm_get_critical_path' },
-  { name: 'pwm_simulate_delay_impact' },
-  { name: 'pwm_analyze_critical_path' },
-  { name: 'pwm_seed_demo_scenario' },
-  { name: 'pwm_get_causal_graph' }
-];
-`;
+// Dynamically read tool names from src/mcp/server.ts so Custom UI never drifts from backend MCP manifest
+const mcpServerSource = fs.readFileSync(path.join(repoRoot, 'src/mcp/server.ts'), 'utf8');
+const extractedToolNames = Array.from(
+  mcpServerSource.matchAll(/name:\s*'(pwm_[a-z0-9_]+)'/g),
+  (m) => ({ name: m[1] })
+);
+const mcpManifestList =
+  extractedToolNames.length > 0
+    ? extractedToolNames
+    : [
+        { name: 'pwm_simulate_intervention' },
+        { name: 'pwm_get_critical_path' },
+        { name: 'pwm_simulate_delay_impact' },
+        { name: 'pwm_analyze_critical_path' },
+        { name: 'pwm_seed_demo_scenario' },
+        { name: 'pwm_get_causal_graph' },
+      ];
+const mcpManifestInline = `const MCP_TOOLS_MANIFEST = ${JSON.stringify(mcpManifestList)};`;
 
 const bundleJs = `(() => {\n"use strict";\n${mcpManifestInline}\n${transpiledChunks.join('\n\n')}\n})();\n`;
 

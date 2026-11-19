@@ -53,6 +53,7 @@ export interface LoadGraphOptions {
   projectKey?: string;
   forceDemo?: boolean;
   referenceDate?: string;
+  cloudId?: string;
 }
 
 /**
@@ -133,12 +134,14 @@ export async function fetchAvailableJiraProjects(): Promise<JiraProjectSummary[]
 export async function fetchProjectCausalGraph(
   options: LoadGraphOptions = {}
 ): Promise<CausalGraph> {
-  const referenceDate = options.referenceDate || CHRONOS_DEFAULT_REFERENCE_DATE;
+  const demoReferenceDate = options.referenceDate || CHRONOS_DEFAULT_REFERENCE_DATE;
+  const liveReferenceDate =
+    options.referenceDate || new Date().toISOString().slice(0, 10);
 
   if (options.forceDemo) {
     return getChronosSyntheticGraph(
       (options.projectKey || 'CHRON').trim().toUpperCase(),
-      referenceDate
+      demoReferenceDate
     );
   }
 
@@ -158,23 +161,26 @@ export async function fetchProjectCausalGraph(
       }
     }
 
-    const projectMeta = availableProjects.find((p) => p.key === projectKey);
-    const projectName = projectMeta ? projectMeta.name : `${projectKey} Project`;
+    const safeProjectKey = /^[A-Z][A-Z0-9_]*$/.test(projectKey)
+      ? projectKey
+      : 'BLP';
+    const projectMeta = availableProjects.find((p) => p.key === safeProjectKey);
+    const projectName = projectMeta ? projectMeta.name : `${safeProjectKey} Project`;
 
     const fields =
       'summary,status,issuelinks,assignee,timetracking,duedate,issuetype,timeoriginalestimate,timeestimate,customfield_10016,customfield_10001,components,labels,parent,subtasks';
 
-    // Query Jira REST v3 search endpoint for the project
+    // Prefer Jira Cloud's current `/rest/api/3/search/jql` endpoint with quoted project key,
+    // falling back to legacy `/rest/api/3/search` only if needed.
     let response = await requestJiraWithUserFallback(
       forgeApi,
-      route`/rest/api/3/search?jql=project=${projectKey} ORDER BY created ASC&fields=${fields}&maxResults=100`
+      route`/rest/api/3/search/jql?jql=project="${safeProjectKey}" ORDER BY created ASC&fields=${fields}&maxResults=100`
     );
 
-    // Fallback to /rest/api/3/search/jql if needed
     if (!response.ok) {
       response = await requestJiraWithUserFallback(
         forgeApi,
-        route`/rest/api/3/search/jql?jql=project=${projectKey} ORDER BY created ASC&fields=${fields}&maxResults=100`
+        route`/rest/api/3/search?jql=project="${safeProjectKey}" ORDER BY created ASC&fields=${fields}&maxResults=100`
       );
     }
 
@@ -186,11 +192,18 @@ export async function fetchProjectCausalGraph(
       if (issues.length >= 1) {
         const { goals, teams } = await fetchTeamworkGraphMetadata(
           forgeApi,
-          projectKey,
+          safeProjectKey,
           projectName,
-          referenceDate
+          liveReferenceDate,
+          options.cloudId
         );
-        const dag = buildDAGFromJiraIssues(projectKey, issues, goals, teams, referenceDate);
+        const dag = buildDAGFromJiraIssues(
+          safeProjectKey,
+          issues,
+          goals,
+          teams,
+          liveReferenceDate
+        );
         return {
           ...dag,
           projectName,
@@ -206,7 +219,7 @@ export async function fetchProjectCausalGraph(
 
   return getChronosSyntheticGraph(
     (options.projectKey || 'CHRON').trim().toUpperCase(),
-    referenceDate
+    demoReferenceDate
   );
 }
 
@@ -219,19 +232,32 @@ export const loadProjectWorldModelGraph = fetchProjectCausalGraph;
  * Queries Atlassian Teamwork Graph via GraphQL (`api.asApp().requestGraph`) for
  * Townsquare Goals and Atlassian Teams, falling back cleanly to project-aligned TWG metadata.
  */
+function computeDayOffsetFromDates(referenceDate: string, targetDate: string, fallbackDays: number): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) return fallbackDays;
+  const refMs = Date.parse(`${referenceDate.slice(0, 10)}T00:00:00.000Z`);
+  const tgtMs = Date.parse(`${targetDate.slice(0, 10)}T00:00:00.000Z`);
+  if (!Number.isFinite(refMs) || !Number.isFinite(tgtMs)) return fallbackDays;
+  return Math.max(1, Math.round((tgtMs - refMs) / 86400000));
+}
+
 async function fetchTeamworkGraphMetadata(
   forgeApi: typeof import('@forge/api'),
   projectKey: string,
   projectName: string,
-  referenceDate: string
+  referenceDate: string,
+  cloudId?: string
 ): Promise<{ goals: TeamworkGoal[]; teams: TeamMetadata[] }> {
+  const chronosDefaults = buildChronosGoals(referenceDate);
+  const sprintOffset = chronosDefaults[0]?.targetDayOffset ?? 24;
+  const releaseOffset = chronosDefaults[1]?.targetDayOffset ?? 43;
+
   const defaultGoals: TeamworkGoal[] = [
     {
       id: 'GOAL-ALPHA',
       key: `${projectKey}-GOAL-1`,
       name: `${projectName} Sprint Delivery`,
-      targetDate: buildChronosGoals(referenceDate)[0].targetDate,
-      targetDayOffset: 14,
+      targetDate: addCalendarDays(referenceDate, sprintOffset),
+      targetDayOffset: sprintOffset,
       ownerTeam: `${projectName} Engineering`,
       status: 'On Track',
     },
@@ -239,8 +265,8 @@ async function fetchTeamworkGraphMetadata(
       id: 'GOAL-OMEGA',
       key: `${projectKey}-GOAL-2`,
       name: `${projectName} Release Milestone`,
-      targetDate: buildChronosGoals(referenceDate)[1].targetDate,
-      targetDayOffset: 28,
+      targetDate: addCalendarDays(referenceDate, releaseOffset),
+      targetDayOffset: releaseOffset,
       ownerTeam: 'Platform & Delivery',
       status: 'On Track',
     },
@@ -281,9 +307,9 @@ async function fetchTeamworkGraphMetadata(
     };
 
     const appClient = api.asApp();
-    if (typeof appClient.requestGraph === 'function') {
+    if (typeof appClient.requestGraph === 'function' && cloudId && cloudId !== 'current') {
       const res = await appClient.requestGraph(TWG_GOALS_AND_TEAMS_GRAPHQL_QUERY, {
-        cloudId: 'current',
+        cloudId,
         projectKey,
       });
       if (res.ok) {
@@ -314,12 +340,18 @@ async function fetchTeamworkGraphMetadata(
           const gId = colMap.get('g.id');
           const gName = colMap.get('g.name');
           if (gId && gName && !parsedGoals.has(gId)) {
-            const offset = idx === 0 ? 18 : 32;
+            const fallbackOffset = idx === 0 ? sprintOffset : releaseOffset;
+            const rawTargetDate = colMap.get('g.targetDate') || '';
+            const offset = computeDayOffsetFromDates(
+              referenceDate,
+              rawTargetDate,
+              fallbackOffset
+            );
             parsedGoals.set(gId, {
               id: gId,
               key: gId,
               name: gName,
-              targetDate: colMap.get('g.targetDate') || addCalendarDays(referenceDate, offset),
+              targetDate: rawTargetDate || addCalendarDays(referenceDate, offset),
               targetDayOffset: offset,
               ownerTeam: defaultTeams[idx % defaultTeams.length].name,
               status: 'On Track',

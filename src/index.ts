@@ -42,6 +42,11 @@ function extractProjectKey(req: unknown, payloadProjectKey?: string): string | u
   return ctx?.extension?.project?.key;
 }
 
+function extractCloudId(req: unknown): string | undefined {
+  const ctx = (req as { context?: { cloudId?: string } })?.context;
+  return ctx?.cloudId && ctx.cloudId.trim().length > 0 ? ctx.cloudId.trim() : undefined;
+}
+
 /**
  * 1. `getGraphData` / `getInitialWorldModel` — Loads available Jira projects, the active project's
  *    `CausalGraph`, and baseline 500-iteration Monte Carlo simulation.
@@ -52,10 +57,12 @@ async function handleGetGraphData(req: { payload?: unknown; context?: unknown })
     forceDemo?: boolean;
   };
   const projectKey = extractProjectKey(req, payload.projectKey);
+  const cloudId = extractCloudId(req);
   const availableProjects = await fetchAvailableJiraProjects();
 
   const graph = await fetchProjectCausalGraph({
     projectKey,
+    cloudId,
     forceDemo: payload.forceDemo,
   });
 
@@ -89,9 +96,11 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
     forceDemo?: boolean;
   };
   const projectKey = extractProjectKey(req, payload.projectKey);
+  const cloudId = extractCloudId(req);
 
   const graph = await fetchProjectCausalGraph({
     projectKey,
+    cloudId,
     forceDemo: payload.forceDemo,
   });
 
@@ -177,8 +186,9 @@ resolver.define('seedDemoScenario', handleLoadDemoScenario);
 resolver.define('createRealJiraIssues', async (req) => {
   const payload = (req?.payload ?? {}) as { projectKey?: string };
   const projectKey = extractProjectKey(req, payload.projectKey) || 'BLP';
+  const cloudId = extractCloudId(req);
   const seedReport = await seedJiraProject(projectKey);
-  const liveGraph = await fetchProjectCausalGraph({ projectKey });
+  const liveGraph = await fetchProjectCausalGraph({ projectKey, cloudId });
   const baselineSimulation = runMonteCarloSimulation(liveGraph, { iterations: 500 });
   return {
     seedReport,
@@ -193,8 +203,10 @@ resolver.define('createRealJiraIssues', async (req) => {
 resolver.define('resetScenario', async (req) => {
   const payload = (req?.payload ?? {}) as { projectKey?: string; forceDemo?: boolean };
   const projectKey = extractProjectKey(req, payload.projectKey);
+  const cloudId = extractCloudId(req);
   const graph = await fetchProjectCausalGraph({
     projectKey,
+    cloudId,
     forceDemo: payload.forceDemo,
   });
   const baselineSimulation = runMonteCarloSimulation(graph, { iterations: 500 });
@@ -216,6 +228,8 @@ resolver.define('invokeRovoOrMcpAction', async (req) => {
     addDeveloper?: boolean;
     decoupleBlockingEdges?: boolean;
     trimScope?: boolean;
+    nodeOverrides?: Record<string, NodeInterventionOverride>;
+    assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
     projectKey?: string;
     populateJiraIssues?: boolean;
   };
@@ -227,6 +241,8 @@ resolver.define('invokeRovoOrMcpAction', async (req) => {
       addDeveloper: payload.addDeveloper,
       decoupleBlockingEdges: payload.decoupleBlockingEdges,
       trimScope: payload.trimScope,
+      nodeOverrides: payload.nodeOverrides,
+      assigneeOverrides: payload.assigneeOverrides,
       projectKey: payload.projectKey,
     });
   }
