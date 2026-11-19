@@ -1,43 +1,43 @@
-# Rovo Agent Test Prompts — Rovo-World-Model Agent (`rovo-world-model-agent`)
+# Rovo Agent Test Prompts — `Rovo-World-Model Agent` (`rovo-world-model-agent`)
 
-Use these 5 natural language prompts inside **Jira Rovo Chat** (`@Rovo-World-Model Agent`) during live demos, user testing, or the Codegeist 2026 judging walkthrough:
-
----
-
-### Prompt 1: Counterfactual Delay Simulation on High-Level Goal
-> *"Simulate what happens to our Q4 Global Launch goal if CORE-104 is delayed by 10 days."*
-
-- **Triggered Rovo Action:** `simulate-delay-impact` (`issueKey: "CORE-104"`, `delayDays: 10`)
-- **What it demonstrates:** Resolves `CORE-104` / `CHRON-104` (*Distributed State Snapshot & WAL Sync Protocol*), runs 500 paired Twin-Network Common Random Numbers (CRN) Monte Carlo iterations in `< 15ms`, and reports exact shifts across **Likely Finish (50% odds)**, **Target Commit Date (85% safe)**, and **Safe Buffer Date (95% cutoff)**, downstream blast-radius tasks across *Core Engine*, *Cloud Infra*, and *Client UI*, and the impact on **Q4 Global Launch** and **Zero-Downtime Migration** goals.
+Use these 5 natural language prompts inside **Jira Rovo Chat** (`@Rovo-World-Model Agent`) on any live Jira project—or on the automatic Project Chronos snapshot if your test project has 0 issues—during live demos or Codegeist 2026 judging:
 
 ---
 
-### Prompt 2: Critical Path & Downstream Blast Radius Ranking
-> *"Which 3 issues on our critical path have the highest causal blast radius right now?"*
+### Prompt 1: Counterfactual Delay Simulation & Goal Risk
+> *"Simulate what happens to our release goal if our top bottleneck issue slips by 8 days."*
 
-- **Triggered Rovo Action:** `analyze-critical-path`
-- **What it demonstrates:** Performs cycle-safe topological sorting and forward/backward pass float analysis to return the **Top 3 Bottleneck Nodes ranked by Downstream Ripple Weight** (`CHRON-104`, `CHRON-108`, `CHRON-109`), including criticality index (%), schedule leverage, Engineering Earned Value (`CPI`, `SPI`, `EAC`), and mitigation recommendations.
-
----
-
-### Prompt 3: Target-Date Confidence & Recovery Mitigation Strategy
-> *"If we want to protect our November 30 Target Commit Date (85% safe), should we assign an extra developer, decouple a blocking dependency, or trim non-essential scope on CORE-104?"*
-
-- **Triggered Rovo Action:** `analyze-critical-path` + `simulate-delay-impact`
-- **What it demonstrates:** Compares the three core recovery levers—**Brooks's Law resource swarming** (`addDeveloper`), **interface decoupling** (`decoupleBlockingEdges`), and **MVP scope triage** (`trimScope`)—and identifies `CHRON-104 -> CHRON-109` between *Core Engine* and *Cloud Infra* as the highest-leverage bottleneck.
+- **Triggered Rovo Action & Skill:** `simulate-delay-impact` (`delayDays: 8`, resolving the active project's top bottleneck or named Jira issue) + `causal-recovery-advisor`
+- **What it demonstrates:** Runs 500 paired Twin-Network Common Random Numbers (CRN) Monte Carlo iterations and reports exact shifts across **Likely Finish (50% odds)**, **Target Commit Date (85% safe)**, and **Safe Buffer Date (95% cutoff)**, downstream blast-radius Jira keys, and **Teamwork Graph Goal** status transitions (`On Track` / `At Risk` / `Off Track`).
 
 ---
 
-### Prompt 4: One-Command Demo Seeding & Cross-Team Bottleneck Analysis
-> *"Seed the Project Chronos demo scenario and analyze cross-team bottlenecks between Core Engine and Cloud Infra."*
+### Prompt 2: Recovery Mitigation Comparison (Brooks's Law vs. Decoupling vs. MVP Trim)
+> *"If our top blocker slips by 8 days, compare adding +1 developer, decoupling blocking dependencies, and trimming non-essential scope to protect our Target Commit Date (85% safe)."*
 
-- **Triggered Rovo Action:** `seed-demo-scenario` + `analyze-critical-path`
-- **What it demonstrates:** Initializes the 18-node **Project Chronos: Next-Gen Platform Launch** causal graph (`isSyntheticDemo: true`) in Forge storage and analyzes the cross-team handoffs between *Core Engine* (`CHRON-101..106`), *Cloud Infra* (`CHRON-107..112`), and *Client UI* (`CHRON-113..118`).
+- **Triggered Rovo Action & Skill:** `simulate-delay-impact` (`delayDays: 8` with `addDeveloper: true`, `decoupleBlockingEdges: true`, `trimScope: true`) + `causal-recovery-advisor`
+- **What it demonstrates:** Compares the three recovery levers—**Brooks's Law** resource swarming (`addDeveloper`), API/interface decoupling (`decoupleBlockingEdges`), and **MVP scope triage** (`trimScope`)—in a side-by-side confidence date table.
 
 ---
 
-### Prompt 5: Executive Sprint Review Risk & Schedule Buffer Summary
-> *"Generate an executive risk summary for our sprint review showing our Core Work Estimate, Team Risk Buffer, Executive Contingency, and Goal status."*
+### Prompt 3: Person Capacity, Unavailability & Compound Scenario Simulation
+> *"What happens if Petri Paananen is unavailable for 5 days? Also test reassigning their parallel bottleneck and serializing concurrent work."*
 
-- **Triggered Rovo Action:** `analyze-critical-path`
-- **What it demonstrates:** Synthesizes **Likely Finish (50% odds)**, **Target Commit Date (85% safe)**, and **Safe Buffer Date (95% cutoff)** alongside the 3-tier buffer breakdown (*Core Work Estimate*, *Team Risk Buffer*, *Executive Contingency*), **Teamwork Graph Goal** status (**Zero-Downtime Migration** & **Q4 Global Launch**), Earned Value health (`CPI`/`SPI`), and prioritized de-risking actions.
+- **Triggered Rovo Action & Skill:** `simulate-delay-impact` (`assigneeName`, `unavailableDays: 5`, `personMitigation: "reassign,serialize"`) + `causal-recovery-advisor`
+- **What it demonstrates:** Exercises assignee-level capacity simulation across live Jira issues, exposing concurrent WIP overload and showing days recovered when rebalancing or serializing parallel work. Also supports multi-issue compound overrides via `compoundOverridesJson`.
+
+---
+
+### Prompt 4: Executive Sprint Review Critical Path & Earned Value Brief
+> *"Analyze our critical path, Engineering Earned Value (CPI/SPI/EAC), 3-tier schedule buffers, and top 3 delivery bottlenecks."*
+
+- **Triggered Rovo Action & Skill:** `analyze-critical-path` + `critical-path-executive-brief`
+- **What it demonstrates:** Performs cycle-safe topological sorting and Monte Carlo float analysis to rank the **Top 3 Bottlenecks by Downstream Ripple Weight**, break down **Core Work Estimate / Team Risk Buffer / Executive Contingency**, report **CPI / SPI / EAC**, and inspect **Teamwork Graph Goals**.
+
+---
+
+### Prompt 5: Empty Project Onboarding — Populate Linked Sample Jira Issues
+> *"Populate sample linked Jira issues into this project so we can explore multi-team causal dependencies."*
+
+- **Triggered Rovo Action:** `seed-demo-scenario` (`populateJiraIssues: true`)
+- **What it demonstrates:** Creates realistic linked multi-team sample Jira issues directly inside an empty live Jira Cloud project via the Jira REST API (or falls back to the 18-node Project Chronos synthetic causal snapshot if live creation is skipped).

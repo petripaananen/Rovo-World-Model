@@ -17,7 +17,10 @@ import {
   topologicalSort,
 } from '../index';
 import { getChronosSyntheticGraph, seedJiraProject } from '../../twg/syntheticSeeder';
-import { fetchProjectCausalGraph } from '../../twg/graphFetcher';
+import {
+  fetchProjectCausalGraph,
+  parseTeamworkGraphEdges,
+} from '../../twg/graphFetcher';
 import {
   analyzeCriticalPath,
   seedDemoScenario,
@@ -26,6 +29,7 @@ import {
 import { mcpWebtriggerHandler } from '../../mcp/server';
 import type { RawJiraIssue } from '../types';
 import { computeFinishOddsOnDay } from '../../../static/ui/src/components/TimelineScrubber';
+import { buildRovoMitigationPrompt } from '../../../static/ui/src/components/ScenarioPanel';
 
 describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () => {
   it('constructs the 18-node Project Chronos: Next-Gen Platform Launch DAG across Core Engine, Cloud Infra, Client UI and 2 Goals', () => {
@@ -901,5 +905,260 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
       false,
       `Did not expect synthetic Reassigned buckets to collide as overloaded: ${overloadedNames.join(', ')}`
     );
+  });
+
+  it('supports flat Rovo action inputs (assigneeName, unavailableDays, personMitigation, compoundOverridesJson)', async () => {
+    const res = await simulateDelayImpact({
+      projectKey: 'CHRON',
+      issueKey: 'CHRON-104',
+      delayDays: 4,
+      assigneeName: 'marcus chen',
+      unavailableDays: 6,
+      personMitigation: 'reassign,serialize',
+      compoundOverridesJson: JSON.stringify({
+        'CHRON-105': { deltaDays: 6, trimScope: false },
+      }),
+    });
+
+    assert.equal(res.targetNodeKey, 'CHRON-104');
+    assert.ok(res.p85ShiftDays > 0, `Expected positive P85 shift, got ${res.p85ShiftDays}`);
+    assert.ok(res.summaryMarkdown.includes('Compound Overrides'));
+    assert.ok(res.summaryMarkdown.includes('CHRON-105'));
+    assert.ok(res.summaryMarkdown.includes('Marcus Chen'));
+  });
+
+  it('defaults delayDays to 0 and resolves dynamic target when issueKey and delayDays are omitted with mitigations or assigneeName', async () => {
+    const devRes = await simulateDelayImpact({
+      projectKey: 'CHRON',
+      addDeveloper: true,
+    });
+    assert.equal(devRes.delayDays, 0);
+    assert.ok(devRes.targetNodeKey.startsWith('CHRON-'));
+    assert.ok(devRes.summaryMarkdown.includes('+1 Developer'));
+
+    const chronGraph = getChronosSyntheticGraph('CHRON');
+    const sampleAssigneeNode = chronGraph.nodes.find(
+      (n) => n.status.toLowerCase() !== 'done' && n.assignee
+    );
+    assert.ok(sampleAssigneeNode);
+
+    const personRes = await simulateDelayImpact({
+      projectKey: 'CHRON',
+      assigneeName: sampleAssigneeNode.assignee.toLowerCase(),
+      unavailableDays: 5,
+    });
+    assert.equal(personRes.delayDays, 0);
+    assert.ok(personRes.summaryMarkdown.includes(`People [${sampleAssigneeNode.assignee}]`));
+  });
+
+  it('accepts payload.context.cloudId and handler context.cloudId cleanly in Rovo actions', async () => {
+    const simWithPayloadCtx = await simulateDelayImpact({
+      projectKey: 'CHRON',
+      issueKey: 'CHRON-104',
+      delayDays: 3,
+      context: { cloudId: 'test-cloud-id-123' },
+    });
+    assert.equal(simWithPayloadCtx.action, 'simulate-delay-impact');
+
+    const cpWithHandlerCtx = await analyzeCriticalPath(
+      { projectKey: 'CHRON' },
+      { cloudId: 'test-cloud-id-456' }
+    );
+    assert.equal(cpWithHandlerCtx.action, 'analyze-critical-path');
+    assert.ok(cpWithHandlerCtx.criticalPathNodes.length > 0);
+  });
+
+  it('maintains manifest.yml, rovo:skill, rovo:mcp, webtrigger, icon, and least-privilege scope contracts', () => {
+    const repoRoot = path.resolve(__dirname, '../../..');
+    const manifestPath = path.join(repoRoot, 'manifest.yml');
+    const manifestText = fs.readFileSync(manifestPath, 'utf8');
+
+    assert.equal(manifestText.includes('$do$'), false, 'manifest.yml must not contain raw $do$ LaTeX');
+    assert.equal(manifestText.includes('$\\Delta$'), false, 'manifest.yml must not contain raw $\\Delta$ LaTeX');
+    assert.ok(manifestText.includes('rovo:agent:'));
+    assert.ok(manifestText.includes('rovo:skill:'));
+    assert.ok(manifestText.includes('rovo:mcp:'));
+    assert.ok(manifestText.includes('webtrigger:'));
+    assert.ok(manifestText.includes('mcp-world-model-endpoint'));
+    assert.ok(manifestText.includes('icon: resource:agent-icons;rovo-world-model-agent.svg'));
+
+    const iconPath = path.join(repoRoot, 'static/icons/rovo-world-model-agent.svg');
+    assert.ok(fs.existsSync(iconPath), 'Expected agent SVG icon at static/icons/rovo-world-model-agent.svg');
+
+    const skillExpectations = [
+      { dir: 'causal-recovery-advisor', tool: 'simulate-delay-impact' },
+      { dir: 'critical-path-executive-brief', tool: 'analyze-critical-path' },
+    ];
+    for (const s of skillExpectations) {
+      const skillMd = fs.readFileSync(path.join(repoRoot, 'skills', s.dir, 'SKILL.md'), 'utf8');
+      assert.ok(skillMd.includes(`name: ${s.dir}`));
+      assert.ok(skillMd.includes(`allowed-tools: ${s.tool}`));
+      assert.ok(skillMd.includes(s.tool));
+      assert.equal(skillMd.includes('$do$'), false);
+    }
+
+    for (const scope of ['read:jira-work', 'write:jira-work', 'read:jira-user', 'storage:app']) {
+      assert.ok(manifestText.includes(`- ${scope}`), `Missing expected scope: ${scope}`);
+    }
+  });
+
+  it('keeps MCP tools/list inputSchema aligned with optional Rovo parameters and live-project defaults', async () => {
+    const listRes = await mcpWebtriggerHandler({
+      method: 'POST',
+      body: JSON.stringify({ jsonrpc: '2.0', id: 101, method: 'tools/list' }),
+    });
+    assert.equal(listRes.statusCode, 200);
+    const listBody = JSON.parse(listRes.body) as {
+      result: {
+        tools: Array<{
+          name: string;
+          inputSchema: {
+            properties?: Record<string, { description?: string }>;
+            required?: string[];
+          };
+        }>;
+      };
+    };
+
+    const simTools = listBody.result.tools.filter(
+      (t) =>
+        t.name === 'pwm_simulate_intervention' || t.name === 'pwm_simulate_delay_impact'
+    );
+    assert.equal(simTools.length, 2);
+
+    for (const tool of simTools) {
+      assert.equal(tool.inputSchema.required, undefined);
+      const propKeys = Object.keys(tool.inputSchema.properties ?? {});
+      for (const expectedField of [
+        'assigneeName',
+        'unavailableDays',
+        'personMitigation',
+        'compoundOverridesJson',
+        'cloudId',
+      ]) {
+        assert.ok(
+          propKeys.includes(expectedField),
+          `Expected ${expectedField} in ${tool.name} inputSchema`
+        );
+      }
+    }
+
+    assert.equal(
+      listRes.body.includes('(defaults to CHRON)'),
+      false,
+      'MCP tools/list descriptions should reference live Jira defaults rather than (defaults to CHRON)'
+    );
+  });
+
+  it('excludes zeroed inactive assigneeOverrides from buildRovoMitigationPrompt while keeping active person overrides', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const sim = runMonteCarloSimulation(graph, { iterations: 100 });
+
+    const promptWithZeroedPerson = buildRovoMitigationPrompt({
+      graph,
+      baselineSim: sim,
+      activeSim: sim,
+      intervention: null,
+      selectedNodeKey: 'CHRON-104',
+      delayDays: 5,
+      addDeveloper: false,
+      decoupleBlockingEdges: false,
+      trimScope: false,
+      simulatorMode: 'person',
+      pinnedNodeOverrides: {},
+      selectedAssignee: 'Marcus Chen',
+      assigneeOverrides: {
+        'Marcus Chen': {
+          assignee: 'Marcus Chen',
+          unavailableDays: 0,
+          reassignBottleneck: false,
+          serializeParallelWork: false,
+          pairOnTopBlocker: false,
+        },
+      },
+      activeRightTab: 'cascade',
+      copiedPromptNotice: false,
+    });
+
+    assert.equal(
+      promptWithZeroedPerson.includes('person "Marcus Chen"'),
+      false,
+      'Zeroed inactive person override must not appear in Rovo prompt'
+    );
+
+    const promptWithActivePerson = buildRovoMitigationPrompt({
+      graph,
+      baselineSim: sim,
+      activeSim: sim,
+      intervention: null,
+      selectedNodeKey: 'CHRON-104',
+      delayDays: 0,
+      addDeveloper: false,
+      decoupleBlockingEdges: false,
+      trimScope: false,
+      simulatorMode: 'person',
+      pinnedNodeOverrides: {},
+      selectedAssignee: 'Marcus Chen',
+      assigneeOverrides: {
+        'Marcus Chen': {
+          assignee: 'Marcus Chen',
+          unavailableDays: 5,
+          reassignBottleneck: true,
+        },
+      },
+      activeRightTab: 'cascade',
+      copiedPromptNotice: false,
+    });
+
+    assert.ok(
+      promptWithActivePerson.includes('person "Marcus Chen" [+5d Away · Reassign]')
+    );
+  });
+
+  it('parses full Teamwork Graph Cypher columns (goals, status normalization, issueGoalMap, and Confluence ADRs)', () => {
+    const parsed = parseTeamworkGraphEdges(
+      [
+        {
+          node: {
+            columns: [
+              { key: 'i.key', value: 'blp-1' },
+              { key: 'g.id', value: 'GOAL-1' },
+              { key: 'g.name', value: 'Q4 Reliability Launch' },
+              { key: 'g.targetDate', value: '2026-12-15' },
+              { key: 'g.status', value: 'AT_RISK' },
+              { key: 'c.id', value: '998877' },
+              { key: 'c.title', value: 'ADR-014 Event Bus Architecture' },
+            ],
+          },
+        },
+        {
+          node: {
+            columns: [
+              { key: 'i.key', value: 'BLP-2' },
+              { key: 'g.id', value: 'GOAL-2' },
+              { key: 'g.name', value: 'Zero-Downtime Rollout' },
+              { key: 'g.targetDate', value: '2026-12-28' },
+              { key: 'g.status', value: 'OFF_TRACK' },
+            ],
+          },
+        },
+      ],
+      {
+        referenceDate: '2026-11-19',
+        sprintOffset: 24,
+        releaseOffset: 43,
+      }
+    );
+
+    assert.equal(parsed.goals.length, 2);
+    assert.equal(parsed.goals[0].status, 'At Risk');
+    assert.equal(parsed.goals[1].status, 'Off Track');
+    assert.equal(parsed.issueGoalMap['BLP-1'], 'GOAL-1');
+    assert.equal(parsed.issueGoalMap['BLP-2'], 'GOAL-2');
+    assert.deepEqual(parsed.issueConfluenceMap['BLP-1'], {
+      id: '998877',
+      title: 'ADR-014 Event Bus Architecture',
+      spaceKey: 'TWG',
+    });
   });
 });

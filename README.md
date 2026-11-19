@@ -4,21 +4,21 @@
 
 - **Primary Category:** Apps for Software Teams
 - **Bonus Categories Targeted:**
-  1. **Best Agents — Rovo / Assignable Agents** (`rovo:agent` + 3 `action` tools)
-  2. **Best App with Atlassian MCP** (`mcp-world-model-endpoint` JSON-RPC 2.0 Webtrigger)
-  3. **Best Apps with Teamwork Graph Integration** (Goals + Teams + Jira Issue Links + Confluence ADRs)
-  4. **Best Marketplace Published App** (Zero external server dependencies; 100% native Atlassian Forge `nodejs22.x`)
+  1. **Best Agents — Rovo / Assignable Agents** (`rovo:agent`, 2 reusable `rovo:skill` playbooks, and 3 `action` tools)
+  2. **Best App with Atlassian MCP** (Forge `rovo:mcp` server + JSON-RPC 2.0 `webtrigger` `mcp-world-model-endpoint`)
+  3. **Best Apps with Teamwork Graph Integration** (Townsquare Goals & Confluence ADRs via `requestGraph` + Jira Teams & Issue Links)
+  4. **Best Marketplace Published App** (Zero external server dependencies; 100% native Atlassian Forge `nodejs22.x`, least-privilege scopes)
 
 ---
 
 ## 1. Inspiration & Problem
 
 Modern software delivery fails at the boundaries between teams. Traditional Jira boards and standard LLM text summaries are **correlational and static**—they can summarize what happened yesterday, but they cannot answer **counterfactual ($do$-calculus) questions** such as:
-- *"What happens to our release goal if `CHRON-104` / `KAN-3` slips by 10 days?"*
+- *"What happens to our release goal if our top bottleneck issue slips by 8 days?"*
 - *"Which 3 cross-team blockers on our critical path have the highest downstream blast radius right now?"*
-- *"If we assign an extra developer (accounting for Brooks's Law ramp-up drag), decouple a blocking dependency, or trim non-essential scope (MVP), can we recover our **Target Commit Date (85% safe)**?"*
+- *"If a key engineer is out for 5 days, should we reassign a parallel bottleneck, serialize work, decouple an interface dependency, or trim non-essential scope (MVP) to protect our **Target Commit Date (85% safe)**?"*
 
-To ship with confidence, engineering leaders need a **Causal Project World Model (PWM)**—a live structural causal model (DAG) coupled with a paired **Twin-Network Monte Carlo simulator** that translates complex schedule probability distributions into clear delivery commitments (*Likely Finish (50% odds)*, *Target Commit Date (85% safe)*, *Safe Buffer Date (95% cutoff)*) and a transparent **3-Tier Schedule Buffer Breakdown** (*Core Work Estimate*, *Team Risk Buffer*, *Executive Contingency*).
+To ship with confidence, engineering teams need a **Causal Project World Model (PWM)**—a live structural causal model (DAG) coupled with a paired **Twin-Network Monte Carlo simulator** that translates complex schedule distributions into clear delivery commitments (*Likely Finish (50% odds)*, *Target Commit Date (85% safe)*, *Safe Buffer Date (95% cutoff)*) and a transparent **3-Tier Schedule Buffer Breakdown** (*Core Work Estimate*, *Team Risk Buffer*, *Executive Contingency*).
 
 ---
 
@@ -28,26 +28,28 @@ To ship with confidence, engineering leaders need a **Causal Project World Model
 
 1. **Causal DAG & Paired Monte Carlo Engine (`src/engine/`):**
    - Constructs a cycle-safe Directed Acyclic Graph (DAG) from live Jira issues and `issuelinks`, supporting all 4 precedence types (`FS`, `SS`, `FF`, `SF`) + lead/lag days, 3-point PERT Beta estimation, and discrete Bernoulli risk shocks.
-   - Uses three-color DFS to automatically detect and break circular dependencies in messy Jira data without crashing.
-   - Runs **500-iteration Common Random Numbers (CRN) Twin-Network Monte Carlo simulations** in `< 15ms`, alongside **Brooks's Law** communication/ramp-up physics ($N = n(n-1)/2$) and **Hierarchical Engineering Earned Value (`CPI`, `SPI`, `EAC`)**.
+   - Uses three-color DFS to automatically detect and break circular dependencies in live Jira data without crashing.
+   - Runs **500-iteration Common Random Numbers (CRN) Twin-Network Monte Carlo simulations** in `< 15ms`, alongside **Brooks's Law** communication/ramp-up physics, person-level WIP contention modeling, and **Hierarchical Engineering Earned Value (`CPI`, `SPI`, `EAC`)**.
 
-2. **3-Column Custom UI Cockpit (`static/ui/`):**
-   - **Top App Bar:** Live Jira Project Switcher (`#jira-project-select`), simulation telemetry pill (`500 runs · X ms`), `↻ Sync Jira Project`, `🎯 Focus Blocker (<key>)`, and `Reset`.
-   - **Left Executive Command Rail:** 4 high-contrast SVG arch gauges (*On-Time Probability*, *Forecast Spread / Schedule Slip*, *Blocker Float*, *Target Commit*) + hierarchical **Jira Teamwork Graph Goals** tree.
+2. **Customizable Drag & Drop Custom UI Cockpit (`static/ui/`):**
+   - **Top App Bar:** Live Jira Project Switcher (`#jira-project-select`), simulation telemetry pill (`500 runs · X ms`), `↻ Sync Jira Project`, conditional **`+ Add Sample Issues`** (shown automatically when inspecting an empty or synthetic project), `🎯 Focus Blocker (<key>)`, `⇄ Reset Layout`, and `Reset`.
+   - **Drag & Drop Panel Arrangement:** Each primary panel (**Project Status**, **Issue Dependency Map**, **Timeline & Sprint Forecast Scrubber**, and **What-If Scenario Simulator**) features a top-corner drag handle (`data-drag-panel`) to reorder panels with persisted layout state.
+   - **Left Executive Command Rail:** 4 high-contrast SVG arch gauges (*On-Time Probability*, *Forecast Spread / Schedule Slip*, *Blocker Float*, *Target Commit*) + hierarchical **Jira Teamwork Graph Goals** status.
    - **Center Stage — 4-Shape Pre-Attentive Issue Dependency Map & Timeline Scrubber:**
-     - Real Jira Team swimlanes (via the Jira `Team` field or `team:<Name>` labels, or a unified `No Team Assigned` swimlane when no teams are configured), **`● Circle`** (Task / Epic with Sub-task completion ring), **`⬢ Hexagon`** (Critical Path Blocker), **`◆ Diamond`** (Stage Gate / ADR), and **`▬ Stadium Pill`** (Teamwork Graph Goal).
-     - Interactive **Quick-Jump Issue Selector** (`#dag-issue-jump-select`), `[` and `]` keyboard stepping, and hover cards displaying explicit **`Blocked by:`** and **`Blocks:`** lineage.
-     - **Timeline & Sprint Forecast Scrubber:** 6 sprint milestone buttons (`Sprint -2`, `Sprint -1`, `Today (Current)`, `Likely Finish`, `Target Commit Date`, `Safe Buffer Date`), continuous date slider with live **`XX% FINISH ODDS`** target-date confidence badge, **3-Tier Schedule Buffer Breakdown**, and **Delivery Confidence Distribution** histogram.
-   - **Right Column — What-If Scenario Simulator & Inspector Tabs:**
-     - Selected Issue card showing Sub-tasks / Epic Progress, Uncertainty, Criticality %, and `Blocked by` / `Blocks` lineage.
-     - **1. Schedule Change (`-5d` to `+30d`)** slider + presets and **2. Recovery Mitigations** triad: **`+ Assign Extra Developer`** (with Brooks's Law ramp-up calibration), **`✂ Decouple Dependency`**, and **`📦 Trim Scope (MVP)`**.
-     - **Projected Release Impact** comparison bars (*Likely Finish (50% odds)*, *Target Commit Date (85% safe)*, *Safe Buffer Date (95% cutoff)*), **`✨ Ask @Rovo-World-Model Agent`** button, and 4 inspector tabs (`Impacted`, `Blockers`, `Delivery Health`, `AI Action Plan`).
+     - Real Jira Team swimlanes (via Jira `Team` field or `team:` labels), **`● Circle`** (Task / Epic with Sub-task completion ring), **`⬢ Hexagon`** (Critical Path Blocker), **`◆ Diamond`** (Stage Gate / ADR), and **`▬ Stadium Pill`** (Teamwork Graph Goal).
+     - Interactive **Quick-Jump Issue Selector**, `[` / `]` keyboard stepping, and hover cards displaying explicit **`Blocked by:`** and **`Blocks:`** lineage.
+     - **Timeline & Sprint Forecast Scrubber:** 6 sprint milestone buttons, continuous date slider with live finish-odds badge, **3-Tier Schedule Buffer Breakdown**, and **Delivery Confidence Distribution** histogram.
+   - **Right Column — Dual-Mode Multi-Task & Person What-If Simulator:**
+     - Switch seamlessly between **`📋 By Issue`** (with multi-issue pinning via `📌 Pin` and stacked compound overrides) and **`👤 By Person & Team`** (unavailability `-3d to +15d` plus `⇄ Reassign Bottleneck`, `🧹 Serialize Parallel Work`, and `🤝 Pair on Top Blocker`).
+     - **1. Schedule Change (`-5d` to `+30d`)** and **2. Recovery Mitigations** (`+ Assign Extra Developer`, `✂ Decouple Dependency`, `📦 Trim Scope (MVP)`).
+     - **Projected Release Impact** comparison bars, **`✨ Ask @Rovo-World-Model Agent`** prompt builder, and 4 inspector tabs (`Impacted`, `Blockers`, `Delivery Health`, `AI Action Plan`).
 
-3. **Rovo-World-Model Agent (`src/rovo/actions.ts`):**
-   - Conversational co-pilot (`rovo-world-model-agent`) equipped with three reusable `action` tools: `simulate-delay-impact`, `analyze-critical-path`, and `seed-demo-scenario`.
+3. **Rovo-World-Model Agent, Actions & Reusable Skills (`manifest.yml`, `skills/`, `src/rovo/actions.ts`):**
+   - Conversational co-pilot (`rovo-world-model-agent` with custom SVG icon) equipped with 3 `action` tools (`simulate-delay-impact`, `analyze-critical-path`, `seed-demo-scenario`) and 2 reusable `rovo:skill` modules (`causal-recovery-advisor`, `critical-path-executive-brief`) that other Rovo Studio agents can reuse.
 
-4. **Atlassian MCP Server (`src/mcp/server.ts`):**
-   - JSON-RPC 2.0 webtrigger endpoint (`mcp-world-model-endpoint`) exposing `pwm_simulate_intervention`, `pwm_get_critical_path`, `pwm_simulate_delay_impact`, `pwm_analyze_critical_path`, `pwm_seed_demo_scenario`, and `pwm_get_causal_graph`.
+4. **Dual Atlassian MCP Server (`rovo:mcp` + Webtrigger JSON-RPC 2.0 in `src/mcp/server.ts`):**
+   - Official Forge `rovo:mcp` module (`rovo-world-model-mcp`) exposing `simulate-delay-impact`, `analyze-critical-path`, and `seed-demo-scenario` to Rovo Studio and connected MCP clients.
+   - Dedicated Forge `webtrigger` JSON-RPC 2.0 server (`mcp-world-model-endpoint`) exposing `pwm_simulate_intervention`, `pwm_get_critical_path`, `pwm_simulate_delay_impact`, `pwm_analyze_critical_path`, `pwm_seed_demo_scenario`, and `pwm_get_causal_graph` (with `X-PWM-Confirm-Write: true` safety guard for Jira writes).
 
 ---
 
@@ -58,25 +60,26 @@ To ship with confidence, engineering leaders need a **Causal Project World Model
 │                   Atlassian Cloud & Teamwork Graph (TWG)                   │
 │         Jira Issues (Blocks / Depends on)  •  Teams  •  TWG Goals          │
 └───────────────────┬────────────────────────────────────┬───────────────────┘
-                    │ Jira REST v3 & TWG context         │ < 5 issues auto-fallback
+                    │ Jira REST v3 & TWG GraphQL         │ 0-issue fallback / seeder
                     ▼                                    ▼
 ┌────────────────────────────────────────┐  ┌────────────────────────────────┐
-│   Live Extractor (`src/twg/graphFetcher`)│  │  Zero-Config DemoFallback       │
-│  • Three-Color DFS Cycle Auto-Breaker  │  │  "Project Chronos" (18 Nodes,  │
-│  • Deterministic Kahn Topological Sort │  │   Core Engine / Cloud Infra /  │
-└───────────────────┬────────────────────┘  │   Client UI • 2 TWG Goals)     │
-                    └───────────────────┬───┴────────────────────────────────┘
+│   Live Extractor (`src/twg/graphFetcher`)│  │  Zero-Config Fallback & Seeder │
+│  • Three-Color DFS Cycle Auto-Breaker  │  │  "Project Chronos" (18 Nodes)  │
+│  • Deterministic Kahn Topological Sort │  │  +1-Click Add Sample Issues    │
+└───────────────────┬────────────────────┘  └────────────┬───────────────────┘
+                    └───────────────────┬────────────────┘
                                         ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
 │     Causal Monte Carlo & do-Calculus Engine (`src/engine/simulator.ts`)    │
 │  • 500-Iteration Twin-Network Common Random Numbers (CRN) (< 15ms)         │
-│  • Levers: Slip/Accel (-5d..+30d), +1 Dev (Brooks), Decouple, Trim Scope   │
+│  • Levers: Issue Shifts, +1 Dev (Brooks), Decouple, Trim MVP, Person WIP   │
 │  • Outputs: 50%/85%/95% Confidence, 3-Tier Buffers, EVM, Goal Risk         │
 └─────────┬─────────────────────────────┬────────────────────────────┬───────┘
           ▼                             ▼                            ▼
 ┌──────────────────────┐   ┌─────────────────────────┐   ┌───────────────────┐
-│  Custom UI Cockpit   │   │  Rovo Agent & Actions   │   │  MCP JSON-RPC 2.0 │
-│  (`jira:projectPage`)│   │  (`rovo:agent`/`action`)│   │  Forge Webtrigger │
+│  Custom UI Cockpit   │   │  Rovo Agent + Skills    │   │  MCP Server       │
+│  (`jira:projectPage`)│   │  (`rovo:agent`/`skill`) │   │  (`rovo:mcp` +    │
+│  Drag & Drop Panels  │   │  + 3 `action` Modules   │   │   JSON-RPC 2.0)   │
 └──────────────────────┘   └─────────────────────────┘   └───────────────────┘
 ```
 
@@ -84,13 +87,13 @@ To ship with confidence, engineering leaders need a **Causal Project World Model
 
 ## 4. Judge Quick-Start Instructions (< 2 Minutes)
 
-1. **Open any Jira Project** and click **Rovo-World-Model** in the left project sidebar (or switch live projects from the top-left **Spaces** dropdown and click **`↻ Sync Jira Project`**).
-2. **Zero-Config Ready:** Live Jira issues, assignees, story points/time estimates, sub-task progress, and dependency links are loaded automatically. If a test Jira project has fewer than 5 issues, **Project Chronos** loads automatically so judges can immediately explore a multi-team causal graph.
+1. **Open any Jira Project** and click **Rovo-World-Model** in the left project sidebar (or switch projects from the header dropdown and click **`↻ Sync Jira Project`**).
+2. **Zero-Config Ready:** Live Jira issues, sub-tasks, assignees, estimates, and dependency links are loaded automatically. If a test Jira project has 0 issues, click **`+ Add Sample Issues`** in the header to create linked sample Jira tickets directly in that project (while an 18-node Project Chronos snapshot renders immediately in the meantime).
 3. **Locate & Inspect Blockers:**
-   - Click **`🎯 Focus Blocker`** in the top bar, pick any issue from the **Quick-Jump Issue Selector** (`#dag-issue-jump-select`), or press **`[` / `]`** on your keyboard to step through the Dependency Map.
-   - Hover any node to inspect its **Projected Finish**, **Deadline Float**, **`Blocked by:`**, and **`Blocks:`** lineage.
+   - Click **`🎯 Focus Blocker`** in the top bar, pick an issue from the **Quick-Jump Issue Selector**, or press **`[` / `]`** to step through the Dependency Map.
+   - Reorder any cockpit panel using the drag grip handle in its upper corner (click **`⇄ Reset Layout`** to restore defaults).
 4. **Test Counterfactual Scenarios & Mitigations:**
-   - Drag the **`1. Schedule Change (-5d to +30d)`** slider to inject a hypothetical slip and watch red causal ripples propagate to downstream tickets and **Jira Teamwork Graph Goals**.
-   - Toggle **`+ Assign Extra Developer`**, **`✂ Decouple Dependency`**, or **`📦 Trim Scope (MVP)`** in **`2. Recovery Mitigations`** to measure recovered days across *Likely Finish (50%)*, *Target Commit Date (85%)*, and *Safe Buffer Date (95%)*.
-5. **Scrub Future Finish Odds:** Drag the **Timeline & Sprint Forecast Scrubber** across past sprints and future dates to view dynamic issue status counts (`DONE`, `IN PROGRESS`, `AT RISK`, `TO DO`) alongside the live **`XX% FINISH ODDS`** badge and **Delivery Confidence Distribution**.
-6. **Test Rovo Chat:** Click **`✨ Ask @Rovo-World-Model Agent`** (or see [`ROVO_TEST_PROMPTS.md`](file:///c:/Users/petri/.gemini/antigravity/Rovo-world-model/ROVO_TEST_PROMPTS.md)) and paste into Jira Rovo Chat with `@Rovo-World-Model Agent`.
+   - Switch between **`📋 By Issue`** (pin multiple issues with `📌 Pin` for compound scenarios) and **`👤 By Person & Team`** in **What-If Scenario Simulator**.
+   - Adjust **Schedule Change** or toggle **`+ Assign Extra Developer`**, **`✂ Decouple Dependency`**, and **`📦 Trim Scope (MVP)`** to compare impacts on *Likely Finish (50%)*, *Target Commit Date (85%)*, and *Safe Buffer Date (95%)*.
+5. **Scrub Future Finish Odds:** Drag the **Timeline & Sprint Forecast Scrubber** across sprint milestones and dates to inspect dynamic issue counts and **Delivery Confidence Distribution**.
+6. **Test Rovo Chat:** Click **`✨ Ask @Rovo-World-Model Agent`** (or use [`ROVO_TEST_PROMPTS.md`](file:///c:/Users/petri/.gemini/antigravity/Rovo-world-model/ROVO_TEST_PROMPTS.md)) inside Jira Rovo Chat with `@Rovo-World-Model Agent`.

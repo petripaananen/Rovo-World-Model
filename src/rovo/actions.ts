@@ -10,12 +10,17 @@
 import { runIntervention, runMonteCarloSimulation } from '../engine/simulator';
 import {
   AssigneeInterventionOverride,
+  CausalGraph,
   NodeInterventionOverride,
 } from '../engine/types';
 import { fetchProjectCausalGraph } from '../twg/graphFetcher';
 import { seedProjectChronosScenario } from '../twg/syntheticSeeder';
 
 export interface RovoActionContext {
+  cloudId?: string;
+  installContext?: string;
+  accountId?: string;
+  issueKey?: string;
   jira?: {
     projectKey?: string;
     issueKey?: string;
@@ -28,14 +33,23 @@ export interface RovoSimulateDelayPayload {
   addDeveloper?: boolean;
   decoupleBlockingEdges?: boolean;
   trimScope?: boolean;
+  assigneeName?: string;
+  unavailableDays?: number | string;
+  personMitigation?: string;
+  reassignBottleneck?: boolean;
+  serializeParallelWork?: boolean;
+  pairOnTopBlocker?: boolean;
+  compoundOverridesJson?: string;
   nodeOverrides?: Record<string, NodeInterventionOverride>;
   assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
   projectKey?: string;
+  cloudId?: string;
   context?: RovoActionContext;
 }
 
 export interface RovoAnalyzeCriticalPathPayload {
   projectKey?: string;
+  cloudId?: string;
   context?: RovoActionContext;
 }
 
@@ -45,9 +59,111 @@ export interface RovoSeedDemoPayload {
   context?: RovoActionContext;
 }
 
+function extractActionCloudId(
+  payload: { cloudId?: string; context?: RovoActionContext },
+  context?: RovoActionContext
+): string | undefined {
+  const candidates = [payload.cloudId, payload.context?.cloudId, context?.cloudId];
+  for (const raw of candidates) {
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (trimmed.length > 0 && trimmed !== 'current') {
+        return trimmed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function resolveCanonicalAssigneeName(
+  graph: CausalGraph,
+  rawAssignee: string
+): string {
+  const target = rawAssignee.trim().toLowerCase();
+  if (!target) return rawAssignee.trim();
+
+  const exact = graph.nodes.find(
+    (n) => n.assignee && n.assignee.trim().toLowerCase() === target
+  );
+  if (exact?.assignee) return exact.assignee;
+
+  const partial = graph.nodes.find(
+    (n) => n.assignee && n.assignee.trim().toLowerCase().includes(target)
+  );
+  if (partial?.assignee) return partial.assignee;
+
+  return rawAssignee.trim();
+}
+
+function resolveDefaultTargetIssueKey(
+  graph: CausalGraph,
+  assigneeName?: string
+): string {
+  if (assigneeName) {
+    const lower = assigneeName.trim().toLowerCase();
+    const matchingNodes = graph.nodes.filter(
+      (n) => n.assignee && n.assignee.trim().toLowerCase() === lower
+    );
+    const nonDoneSorted = matchingNodes
+      .filter((n) => n.status.toLowerCase() !== 'done')
+      .sort((a, b) => b.baseEstimateDays - a.baseEstimateDays);
+    if (nonDoneSorted[0]?.key) return nonDoneSorted[0].key;
+    if (matchingNodes[0]?.key) return matchingNodes[0].key;
+  }
+
+  if (graph.nodes.length > 0) {
+    const baseline = runMonteCarloSimulation(graph, { iterations: 100 });
+    if (baseline.topBottlenecks[0]?.key) {
+      return baseline.topBottlenecks[0].key;
+    }
+  }
+
+  return (
+    graph.topologicalOrder[0] ||
+    graph.nodes[0]?.key ||
+    `${graph.projectKey}-1`
+  );
+}
+
+function parseCompoundOverridesJson(
+  rawJson?: string
+): Record<string, NodeInterventionOverride> {
+  if (typeof rawJson !== 'string' || rawJson.trim().length === 0) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(rawJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    const clean: Record<string, NodeInterventionOverride> = {};
+    for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+      const cleanKey = key.trim();
+      if (!cleanKey || !val || typeof val !== 'object' || Array.isArray(val)) continue;
+      const obj = val as Record<string, unknown>;
+      const rawDelta = obj.deltaDays;
+      const numDelta =
+        rawDelta !== undefined && rawDelta !== '' ? Number(rawDelta) : 0;
+      const deltaDays = Math.max(
+        -5,
+        Math.min(90, Number.isFinite(numDelta) ? numDelta : 0)
+      );
+      clean[cleanKey] = {
+        deltaDays,
+        addDeveloper: Boolean(obj.addDeveloper),
+        decoupleBlockingEdges: Boolean(obj.decoupleBlockingEdges),
+        trimScope: Boolean(obj.trimScope),
+      };
+    }
+    return clean;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Rovo Action 1: `simulateDelayImpact(payload, context)`
- * Extracts `issueKey` and `delayDays`, runs `runIntervention(graph, issueKey, delayDays)`,
+ * Extracts issue/person/compound counterfactual parameters, runs `runIntervention`,
  * and returns a structured, markdown-formatted causal report showing P50/P85/P95 date shifts,
  * blast radius issues, affected Goals, and concrete mitigation recommendations.
  */
@@ -59,25 +175,80 @@ export async function simulateDelayImpact(
     payload.projectKey ||
     payload.context?.jira?.projectKey ||
     context?.jira?.projectKey;
+  const cloudId = extractActionCloudId(payload, context);
 
-  const graph = await fetchProjectCausalGraph({ projectKey });
+  const graph = await fetchProjectCausalGraph({ projectKey, cloudId });
+
+  const rawAssignee =
+    typeof payload.assigneeName === 'string' ? payload.assigneeName.trim() : '';
+  const canonicalAssignee = rawAssignee
+    ? resolveCanonicalAssigneeName(graph, rawAssignee)
+    : '';
+
+  const parsedCompound = parseCompoundOverridesJson(payload.compoundOverridesJson);
+  const effectiveNodeOverrides: Record<string, NodeInterventionOverride> = {
+    ...parsedCompound,
+    ...(payload.nodeOverrides ?? {}),
+  };
+
+  const effectiveAssigneeOverrides: Record<string, AssigneeInterventionOverride> = {
+    ...(payload.assigneeOverrides ?? {}),
+  };
+
+  if (canonicalAssignee) {
+    const mitigationTokens =
+      typeof payload.personMitigation === 'string'
+        ? payload.personMitigation.toLowerCase()
+        : '';
+    const rawUnavail = payload.unavailableDays;
+    const parsedUnavail =
+      rawUnavail !== undefined && rawUnavail !== '' ? Number(rawUnavail) : 0;
+    const unavailableDays = Math.max(
+      -5,
+      Math.min(30, Number.isFinite(parsedUnavail) ? parsedUnavail : 0)
+    );
+    effectiveAssigneeOverrides[canonicalAssignee] = {
+      assignee: canonicalAssignee,
+      unavailableDays,
+      reassignBottleneck:
+        Boolean(payload.reassignBottleneck) || mitigationTokens.includes('reassign'),
+      serializeParallelWork:
+        Boolean(payload.serializeParallelWork) || mitigationTokens.includes('serialize'),
+      pairOnTopBlocker:
+        Boolean(payload.pairOnTopBlocker) || mitigationTokens.includes('pair'),
+    };
+  }
 
   const issueKey =
-    payload.issueKey ||
+    (typeof payload.issueKey === 'string' && payload.issueKey.trim()) ||
+    payload.context?.issueKey ||
     payload.context?.jira?.issueKey ||
+    context?.issueKey ||
     context?.jira?.issueKey ||
-    graph.nodes.find((n) => n.key.endsWith('-104'))?.key ||
-    graph.topologicalOrder[0] ||
-    graph.nodes[0]?.key ||
-    `${graph.projectKey}-1`;
+    resolveDefaultTargetIssueKey(graph, canonicalAssignee || undefined);
 
-  const parsedDelay =
-    payload.delayDays !== undefined && payload.delayDays !== ''
-      ? Number(payload.delayDays)
-      : NaN;
+  const hasMitigationOrCompound =
+    Boolean(payload.addDeveloper) ||
+    Boolean(payload.decoupleBlockingEdges) ||
+    Boolean(payload.trimScope) ||
+    Object.keys(effectiveNodeOverrides).length > 0 ||
+    Object.keys(effectiveAssigneeOverrides).length > 0;
+
+  const hasExplicitDelay =
+    payload.delayDays !== undefined && payload.delayDays !== '';
+  const parsedDelay = hasExplicitDelay ? Number(payload.delayDays) : NaN;
   const delayDays = Math.max(
     -5,
-    Math.min(90, Number.isFinite(parsedDelay) ? parsedDelay : 7)
+    Math.min(
+      90,
+      hasExplicitDelay
+        ? Number.isFinite(parsedDelay)
+          ? parsedDelay
+          : 7
+        : hasMitigationOrCompound
+          ? 0
+          : 7
+    )
   );
 
   const result = runIntervention(graph, issueKey, delayDays, {
@@ -85,8 +256,14 @@ export async function simulateDelayImpact(
     addDeveloper: payload.addDeveloper,
     decoupleBlockingEdges: payload.decoupleBlockingEdges,
     trimScope: payload.trimScope,
-    nodeOverrides: payload.nodeOverrides,
-    assigneeOverrides: payload.assigneeOverrides,
+    nodeOverrides:
+      Object.keys(effectiveNodeOverrides).length > 0
+        ? effectiveNodeOverrides
+        : undefined,
+    assigneeOverrides:
+      Object.keys(effectiveAssigneeOverrides).length > 0
+        ? effectiveAssigneeOverrides
+        : undefined,
   });
 
   const formatSigned = (n: number) => (n >= 0 ? `+${n}d` : `${n}d`);
@@ -113,8 +290,13 @@ export async function simulateDelayImpact(
     `3. **Protect Critical Path Slack:** Prioritize ${result.criticalPathNodes.slice(0, 4).join(' → ')} during daily standups to prevent secondary compound tail risk.`,
   ];
 
-  const nodeOverrideKeys = Object.keys(payload.nodeOverrides ?? {});
-  const assigneeOverrideKeys = Object.keys(payload.assigneeOverrides ?? {});
+  const activeMitigations: string[] = [];
+  if (payload.addDeveloper) activeMitigations.push('+1 Developer (Brooks Law adjusted)');
+  if (payload.decoupleBlockingEdges) activeMitigations.push('Decouple Blocking Edges');
+  if (payload.trimScope) activeMitigations.push('Trim Scope (MVP)');
+
+  const nodeOverrideKeys = Object.keys(effectiveNodeOverrides);
+  const assigneeOverrideKeys = Object.keys(effectiveAssigneeOverrides);
   const compoundClauses: string[] = [];
   if (nodeOverrideKeys.length > 0) {
     compoundClauses.push(`Issues [${nodeOverrideKeys.join(', ')}]`);
@@ -126,6 +308,9 @@ export async function simulateDelayImpact(
   const summaryMarkdown = [
     `### Counterfactual Simulation: \`do(${result.targetNodeKey} = ${formatSigned(result.deltaDays)})\``,
     `**Target Task:** ${result.targetNodeKey} — *${result.targetNodeSummary}*`,
+    ...(activeMitigations.length > 0
+      ? [`**Active Mitigations:** ${activeMitigations.join(' · ')}`]
+      : []),
     ...(compoundClauses.length > 0
       ? [`**Compound Overrides:** ${compoundClauses.join(' + ')}`]
       : []),
@@ -189,8 +374,9 @@ export async function analyzeCriticalPath(
     payload.projectKey ||
     payload.context?.jira?.projectKey ||
     context?.jira?.projectKey;
+  const cloudId = extractActionCloudId(payload, context);
 
-  const graph = await fetchProjectCausalGraph({ projectKey });
+  const graph = await fetchProjectCausalGraph({ projectKey, cloudId });
   const sim = runMonteCarloSimulation(graph, { iterations: 500 });
 
   // Sort specifically to highlight the top 3 bottleneck nodes with highest downstream ripple weight & risk

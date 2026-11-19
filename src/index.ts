@@ -228,11 +228,20 @@ resolver.define('invokeRovoOrMcpAction', async (req) => {
     addDeveloper?: boolean;
     decoupleBlockingEdges?: boolean;
     trimScope?: boolean;
+    assigneeName?: string;
+    unavailableDays?: number | string;
+    personMitigation?: string;
+    reassignBottleneck?: boolean;
+    serializeParallelWork?: boolean;
+    pairOnTopBlocker?: boolean;
+    compoundOverridesJson?: string;
     nodeOverrides?: Record<string, NodeInterventionOverride>;
     assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
     projectKey?: string;
     populateJiraIssues?: boolean;
   };
+
+  const cloudId = extractCloudId(req);
 
   if (payload.actionKey === 'simulate-delay-impact') {
     return simulateDelayImpact({
@@ -241,14 +250,23 @@ resolver.define('invokeRovoOrMcpAction', async (req) => {
       addDeveloper: payload.addDeveloper,
       decoupleBlockingEdges: payload.decoupleBlockingEdges,
       trimScope: payload.trimScope,
+      assigneeName: payload.assigneeName,
+      unavailableDays: payload.unavailableDays,
+      personMitigation: payload.personMitigation,
+      reassignBottleneck: payload.reassignBottleneck,
+      serializeParallelWork: payload.serializeParallelWork,
+      pairOnTopBlocker: payload.pairOnTopBlocker,
+      compoundOverridesJson: payload.compoundOverridesJson,
       nodeOverrides: payload.nodeOverrides,
       assigneeOverrides: payload.assigneeOverrides,
       projectKey: payload.projectKey,
+      cloudId,
     });
   }
   if (payload.actionKey === 'analyze-critical-path') {
     return analyzeCriticalPath({
       projectKey: payload.projectKey,
+      cloudId,
     });
   }
   if (payload.actionKey === 'seed-demo-scenario') {

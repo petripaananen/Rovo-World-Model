@@ -64,6 +64,15 @@ function summarizeAssigneeOverride(aOv: AssigneeInterventionOverride): string {
   return parts.join(' · ') || 'Active';
 }
 
+function isAssigneeOverrideActive(aOv: AssigneeInterventionOverride): boolean {
+  return (
+    Number(aOv.unavailableDays ?? 0) !== 0 ||
+    Boolean(aOv.reassignBottleneck) ||
+    Boolean(aOv.serializeParallelWork) ||
+    Boolean(aOv.pairOnTopBlocker)
+  );
+}
+
 export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   const {
     graph,
@@ -102,7 +111,10 @@ export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
     );
   }
 
-  for (const [person, aOv] of Object.entries(assigneeOverrides)) {
+  const activeAssigneeEntries = Object.entries(assigneeOverrides).filter(
+    ([, aOv]) => isAssigneeOverrideActive(aOv)
+  );
+  for (const [person, aOv] of activeAssigneeEntries) {
     scenarioClauses.push(`person "${person}" [${summarizeAssigneeOverride(aOv)}]`);
   }
 
@@ -127,7 +139,7 @@ export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   if (trimScope) modifiers.push('trimming non-essential scope to ship an MVP');
   const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
 
-  if (scenarioClauses.length === 1 && Object.keys(assigneeOverrides).length === 1) {
+  if (scenarioClauses.length === 1 && activeAssigneeEntries.length === 1) {
     return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate workload impact for ${scenarioClauses[0]} towards our "${goal?.name ?? 'Sprint Delivery'}" goal. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
   }
 
@@ -540,15 +552,9 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
   const pinRank = isCurrentPinned
     ? pinnedEntries.findIndex(([k]) => k === selectedNode.key) + 1
     : 0;
-  const activePersonEntries = Object.entries(assigneeOverrides).filter(([, aOv]) => {
-    const u = Number(aOv.unavailableDays ?? 0);
-    return (
-      u !== 0 ||
-      Boolean(aOv.reassignBottleneck) ||
-      Boolean(aOv.serializeParallelWork) ||
-      Boolean(aOv.pairOnTopBlocker)
-    );
-  });
+  const activePersonEntries = Object.entries(assigneeOverrides).filter(([, aOv]) =>
+    isAssigneeOverrideActive(aOv)
+  );
 
   const hasCurrentNodeMod =
     delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;

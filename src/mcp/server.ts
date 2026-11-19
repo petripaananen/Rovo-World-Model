@@ -36,52 +36,98 @@ export interface ForgeWebtriggerResponse {
   body: string;
 }
 
+const PROJECT_KEY_DESCRIPTION =
+  'Optional Jira project key (defaults to active live Jira project, or Project Chronos fallback when empty/offline)';
+
+const SIMULATE_INTERVENTION_INPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    issueKey: {
+      type: 'string',
+      description:
+        'Optional Jira issue key to intervene on (defaults to top critical-path bottleneck or assignee blocker)',
+    },
+    delayDays: {
+      type: 'number',
+      description:
+        'Signed counterfactual shift in days (-5 to +60; defaults to 0 when mitigations/overrides are set, else 7)',
+    },
+    addDeveloper: {
+      type: 'boolean',
+      description: 'Simulate adding a developer (+1 resource swarm)',
+    },
+    decoupleBlockingEdges: {
+      type: 'boolean',
+      description: 'Simulate decoupling hard blocking outgoing edges',
+    },
+    trimScope: {
+      type: 'boolean',
+      description:
+        'Simulate trimming or deferring non-essential sub-tasks to the next cycle (-35% duration, -45% uncertainty)',
+    },
+    assigneeName: {
+      type: 'string',
+      description:
+        'Optional Jira assignee display name for person-level capacity or absence simulation',
+    },
+    unavailableDays: {
+      type: 'number',
+      description:
+        'Signed unavailability or PTO shift in days (-3 to +15) across the assignee active issues',
+    },
+    personMitigation: {
+      type: 'string',
+      description:
+        'Comma-separated person mitigations (reassign, serialize, pair) for assigneeName',
+    },
+    reassignBottleneck: {
+      type: 'boolean',
+      description:
+        'Offload assignee parallel bottleneck issue to eliminate concurrent WIP contention',
+    },
+    serializeParallelWork: {
+      type: 'boolean',
+      description:
+        'Serialize assignee concurrent tasks to eliminate context-switching variance',
+    },
+    pairOnTopBlocker: {
+      type: 'boolean',
+      description:
+        'Pair an extra developer on assignee highest-impact critical blocker issue',
+    },
+    compoundOverridesJson: {
+      type: 'string',
+      description:
+        'Optional JSON string mapping additional issue keys to { deltaDays, addDeveloper, decoupleBlockingEdges, trimScope }',
+    },
+    nodeOverrides: {
+      type: 'object',
+      description:
+        'Optional map of additional issue keys to { deltaDays, addDeveloper, decoupleBlockingEdges, trimScope } for compound multi-task What-If simulation',
+    },
+    assigneeOverrides: {
+      type: 'object',
+      description:
+        'Optional map of assignee display names to { assignee, unavailableDays, reassignBottleneck, serializeParallelWork, pairOnTopBlocker } for person-level capacity simulation',
+    },
+    projectKey: {
+      type: 'string',
+      description: PROJECT_KEY_DESCRIPTION,
+    },
+    cloudId: {
+      type: 'string',
+      description:
+        'Optional Atlassian Cloud site ID for Teamwork Graph GraphQL queries',
+    },
+  },
+};
+
 export const MCP_TOOLS_MANIFEST = [
   {
     name: 'pwm_simulate_intervention',
     description:
-      'Runs a 500-iteration Pearl do-calculus counterfactual Monte Carlo simulation do(issueKey = deltaDays) on the Project World Model DAG.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        issueKey: {
-          type: 'string',
-          description: 'Jira issue key to intervene on (e.g., CHRON-104 or CORE-104)',
-        },
-        delayDays: {
-          type: 'number',
-          description: 'Signed counterfactual shift in days (-5 to +60)',
-        },
-        addDeveloper: {
-          type: 'boolean',
-          description: 'Simulate adding a developer (+1 resource swarm)',
-        },
-        decoupleBlockingEdges: {
-          type: 'boolean',
-          description: 'Simulate decoupling hard blocking outgoing edges',
-        },
-        trimScope: {
-          type: 'boolean',
-          description:
-            'Simulate trimming or deferring non-essential sub-tasks to the next cycle (-35% duration, -45% uncertainty)',
-        },
-        nodeOverrides: {
-          type: 'object',
-          description:
-            'Optional map of additional issue keys to { deltaDays, addDeveloper, decoupleBlockingEdges, trimScope } for compound multi-task What-If simulation',
-        },
-        assigneeOverrides: {
-          type: 'object',
-          description:
-            'Optional map of assignee display names to { assignee, unavailableDays, reassignBottleneck, serializeParallelWork, pairOnTopBlocker } for person-level capacity simulation',
-        },
-        projectKey: {
-          type: 'string',
-          description: 'Optional Jira project key (defaults to CHRON)',
-        },
-      },
-      required: ['issueKey', 'delayDays'],
-    },
+      'Runs a 500-iteration Pearl do-calculus counterfactual Monte Carlo simulation do(issueKey = deltaDays) on the Project World Model DAG supporting recovery mitigations, person capacity, and compound overrides.',
+    inputSchema: SIMULATE_INTERVENTION_INPUT_SCHEMA,
   },
   {
     name: 'pwm_get_critical_path',
@@ -92,7 +138,12 @@ export const MCP_TOOLS_MANIFEST = [
       properties: {
         projectKey: {
           type: 'string',
-          description: 'Optional Jira project key (defaults to CHRON)',
+          description: PROJECT_KEY_DESCRIPTION,
+        },
+        cloudId: {
+          type: 'string',
+          description:
+            'Optional Atlassian Cloud site ID for Teamwork Graph GraphQL queries',
         },
       },
     },
@@ -100,16 +151,8 @@ export const MCP_TOOLS_MANIFEST = [
   {
     name: 'pwm_simulate_delay_impact',
     description:
-      'Alias for pwm_simulate_intervention — runs counterfactual simulation for issueKey and delayDays.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        issueKey: { type: 'string' },
-        delayDays: { type: 'number' },
-        projectKey: { type: 'string' },
-      },
-      required: ['issueKey', 'delayDays'],
-    },
+      'Alias for pwm_simulate_intervention — runs counterfactual simulation supporting issue shifts, mitigations, person capacity, and compound overrides.',
+    inputSchema: SIMULATE_INTERVENTION_INPUT_SCHEMA,
   },
   {
     name: 'pwm_analyze_critical_path',
@@ -118,7 +161,15 @@ export const MCP_TOOLS_MANIFEST = [
     inputSchema: {
       type: 'object',
       properties: {
-        projectKey: { type: 'string' },
+        projectKey: {
+          type: 'string',
+          description: PROJECT_KEY_DESCRIPTION,
+        },
+        cloudId: {
+          type: 'string',
+          description:
+            'Optional Atlassian Cloud site ID for Teamwork Graph GraphQL queries',
+        },
       },
     },
   },
@@ -129,7 +180,10 @@ export const MCP_TOOLS_MANIFEST = [
     inputSchema: {
       type: 'object',
       properties: {
-        projectKey: { type: 'string' },
+        projectKey: {
+          type: 'string',
+          description: PROJECT_KEY_DESCRIPTION,
+        },
         populateJiraIssues: { type: 'boolean' },
       },
     },
@@ -141,7 +195,15 @@ export const MCP_TOOLS_MANIFEST = [
     inputSchema: {
       type: 'object',
       properties: {
-        projectKey: { type: 'string' },
+        projectKey: {
+          type: 'string',
+          description: PROJECT_KEY_DESCRIPTION,
+        },
+        cloudId: {
+          type: 'string',
+          description:
+            'Optional Atlassian Cloud site ID for Teamwork Graph GraphQL queries',
+        },
       },
     },
   },
@@ -160,12 +222,28 @@ function buildJsonResponse(statusCode: number, payload: unknown): ForgeWebtrigge
   };
 }
 
+function extractWebtriggerCloudId(
+  context?: { cloudId?: string; installContext?: string },
+  explicitCloudId?: unknown
+): string | undefined {
+  for (const raw of [explicitCloudId, context?.cloudId]) {
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (trimmed.length > 0 && trimmed !== 'current') {
+        return trimmed;
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * Forge `webtrigger` handler (`mcp-world-model-endpoint`).
  * Supports MCP JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`) and GET discovery.
  */
 export async function mcpWebtriggerHandler(
-  req: ForgeWebtriggerRequest
+  req: ForgeWebtriggerRequest,
+  context?: { cloudId?: string; installContext?: string }
 ): Promise<ForgeWebtriggerResponse> {
   if (req.method === 'OPTIONS') {
     return buildJsonResponse(200, { ok: true });
@@ -175,6 +253,10 @@ export async function mcpWebtriggerHandler(
     if (!req.body || req.method === 'GET') {
       const toolParam = req.queryParameters?.tool?.[0];
       const projectKey = req.queryParameters?.projectKey?.[0];
+      const queryCloudId = extractWebtriggerCloudId(
+        context,
+        req.queryParameters?.cloudId?.[0]
+      );
 
       if (
         toolParam === 'pwm_simulate_intervention' ||
@@ -184,7 +266,12 @@ export async function mcpWebtriggerHandler(
         const rawDelay = req.queryParameters?.delayDays?.[0];
         const delayDays =
           rawDelay !== undefined && rawDelay !== '' ? Number(rawDelay) : 8;
-        const sim = await simulateDelayImpact({ issueKey, delayDays, projectKey });
+        const sim = await simulateDelayImpact({
+          issueKey,
+          delayDays,
+          projectKey,
+          cloudId: queryCloudId,
+        });
         return buildJsonResponse(200, sim);
       }
 
@@ -192,7 +279,10 @@ export async function mcpWebtriggerHandler(
         toolParam === 'pwm_get_critical_path' ||
         toolParam === 'pwm_analyze_critical_path'
       ) {
-        const analysis = await analyzeCriticalPath({ projectKey });
+        const analysis = await analyzeCriticalPath({
+          projectKey,
+          cloudId: queryCloudId,
+        });
         return buildJsonResponse(200, analysis);
       }
 
@@ -253,6 +343,7 @@ export async function mcpWebtriggerHandler(
         (parsed.params?.arguments as Record<string, unknown> | undefined) ??
         parsed.arguments ??
         {};
+      const callCloudId = extractWebtriggerCloudId(context, args.cloudId);
 
       let toolOutput: unknown;
       if (
@@ -261,19 +352,39 @@ export async function mcpWebtriggerHandler(
         toolName === 'simulate-delay-impact'
       ) {
         const rawDelay = args.delayDays;
-        const parsedDelay =
-          rawDelay !== undefined && rawDelay !== '' ? Number(rawDelay) : 7;
+        const delayDays =
+          rawDelay !== undefined && rawDelay !== ''
+            ? Number(rawDelay)
+            : undefined;
         toolOutput = await simulateDelayImpact({
           issueKey: args.issueKey ? String(args.issueKey) : undefined,
-          delayDays: Number.isFinite(parsedDelay) ? parsedDelay : 7,
+          delayDays:
+            delayDays !== undefined && Number.isFinite(delayDays)
+              ? delayDays
+              : undefined,
           addDeveloper: Boolean(args.addDeveloper),
           decoupleBlockingEdges: Boolean(args.decoupleBlockingEdges),
           trimScope: Boolean(args.trimScope),
+          assigneeName: args.assigneeName ? String(args.assigneeName) : undefined,
+          unavailableDays:
+            args.unavailableDays !== undefined && args.unavailableDays !== ''
+              ? Number(args.unavailableDays)
+              : undefined,
+          personMitigation: args.personMitigation
+            ? String(args.personMitigation)
+            : undefined,
+          reassignBottleneck: Boolean(args.reassignBottleneck),
+          serializeParallelWork: Boolean(args.serializeParallelWork),
+          pairOnTopBlocker: Boolean(args.pairOnTopBlocker),
+          compoundOverridesJson: args.compoundOverridesJson
+            ? String(args.compoundOverridesJson)
+            : undefined,
           nodeOverrides: asPlainRecord<NodeInterventionOverride>(args.nodeOverrides),
           assigneeOverrides: asPlainRecord<AssigneeInterventionOverride>(
             args.assigneeOverrides
           ),
           projectKey: args.projectKey ? String(args.projectKey) : undefined,
+          cloudId: callCloudId,
         });
       } else if (
         toolName === 'pwm_get_critical_path' ||
@@ -282,6 +393,7 @@ export async function mcpWebtriggerHandler(
       ) {
         toolOutput = await analyzeCriticalPath({
           projectKey: args.projectKey ? String(args.projectKey) : undefined,
+          cloudId: callCloudId,
         });
       } else if (
         toolName === 'pwm_seed_demo_scenario' ||
@@ -305,6 +417,7 @@ export async function mcpWebtriggerHandler(
       } else if (toolName === 'pwm_get_causal_graph') {
         toolOutput = await fetchProjectCausalGraph({
           projectKey: args.projectKey ? String(args.projectKey) : undefined,
+          cloudId: callCloudId,
         });
       } else {
         return buildJsonResponse(400, {

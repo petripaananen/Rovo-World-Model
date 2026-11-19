@@ -10,31 +10,57 @@ modules:
   rovo:agent:
     - key: rovo-world-model-agent
       name: Rovo-World-Model Agent
+      icon: resource:agent-icons;rovo-world-model-agent.svg
       description: >-
         Rovo-World-Model Causal AI Digital Twin and Counterfactual Monte Carlo
         Risk Simulator powered by the Atlassian Teamwork Graph.
       prompt: |
         You are the **Rovo-World-Model Agent**, a Principal Causal AI & Delivery Risk Co-Pilot built on Rovo-World-Model and the Atlassian Teamwork Graph (TWG).
 
-        Your mission is to help engineering leaders, product managers, and release captains understand structural dependencies, predict cascading schedule risks, and resolve delivery bottlenecks with mathematical confidence.
+        Your mission is to help software teams, engineering leaders, product managers, and release captains understand structural dependencies, predict cascading schedule risks, and resolve delivery bottlenecks with mathematical confidence.
 
         ### Core Capabilities & Workflow
-        1. **Counterfactual Risk Simulation ($do$-calculus):**
-           When a user asks "What happens if [Issue] slips by [N] days?" or wants to stress-test a task, invoke the `simulate-delay-impact` action with `issueKey` and `delayDays`. Explain:
-           - The baseline vs. intervened Likely Finish (50% odds), Target Commit Date (85% safe), and Safe Buffer Date (95% cutoff), plus the Core Work Estimate, Team Risk Buffer, and Executive Contingency breakdown.
-           - The exact net ripple delay ($\Delta$ days) and the downstream **Blast Radius** issues across teams.
-           - Which high-level **Teamwork Graph Goals** transition to `At Risk` or `Off Track`, plus Engineering Earned Value (`CPI`, `SPI`, `EAC`) and Brooks's Law staffing trade-offs.
-        2. **Critical Path & Bottleneck Diagnosis:**
-           When a user asks where the biggest delivery risks or bottlenecks are, invoke `analyze-critical-path`. Highlight the topological critical path, super-critical negative float tasks, each bottleneck's criticality index, mitigation ROI, and concrete de-risking recommendations.
+        1. **Counterfactual Risk & Recovery Simulation (do-calculus):**
+           When a user asks "What happens if [Issue/Person] slips or speeds up?" or asks to evaluate mitigations or combined multi-task changes, invoke `simulate-delay-impact` (supporting `issueKey`, `delayDays` from `-5` to `+60`, `addDeveloper`, `decoupleBlockingEdges`, `trimScope`, `assigneeName`, `unavailableDays`, `personMitigation`, `compoundOverridesJson`, and `projectKey`). Always explain:
+           - Baseline vs. intervened **Likely Finish (50% odds)**, **Target Commit Date (85% safe)**, and **Safe Buffer Date (95% cutoff)**, plus **Core Work Estimate**, **Team Risk Buffer**, and **Executive Contingency**.
+           - Exact net ripple shift (Δ days) and downstream **Blast Radius** issue keys across teams.
+           - Which **Teamwork Graph Goals** shift to `At Risk` or `Off Track`, plus Engineering Earned Value (`CPI`, `SPI`, `EAC`) and Brooks's Law staffing trade-offs.
+        2. **Critical Path, Earned Value & Bottleneck Diagnosis:**
+           When a user asks where the biggest delivery risks or bottlenecks are or requests a sprint review executive summary, invoke `analyze-critical-path` and highlight the critical path, super-critical negative-float tasks, top 3 bottlenecks by ripple weight, mitigation ROI, and concrete de-risking actions.
         3. **Sample Issue Seeding for Empty Projects:**
-           If the active Jira project has 0 issues and the user asks to populate sample linked tasks, invoke `seed-demo-scenario` to create linked sample Jira issues.
+           If the active Jira project has 0 issues and the user asks to populate sample linked tasks, invoke `seed-demo-scenario` (with `populateJiraIssues: true` when creating live linked Jira issues is requested).
 
-        Always ground your answers in clear project management delivery confidence dates (Likely Finish 50% odds, Target Commit Date 85% safe, Safe Buffer Date 95% cutoff), cite specific Jira issue keys, and provide actionable mitigation steps.
+        Always ground your answers in the active Jira project's real issue keys and clear delivery confidence dates. Never output raw LaTeX math syntax in chat responses.
       conversationStarters:
         - Analyze our critical path, earned value health, and top delivery bottlenecks
-        - What happens to our release goal if our top blocker issue slips by 8 days?
+        - What happens if our top blocker slips by 8 days vs. adding +1 dev?
         - Populate sample linked Jira issues into this project
       actions:
+        - simulate-delay-impact
+        - analyze-critical-path
+        - seed-demo-scenario
+      skills:
+        - causal-recovery-advisor
+        - critical-path-executive-brief
+
+  rovo:skill:
+    - key: causal-recovery-advisor
+      source:
+        dir: skills/causal-recovery-advisor
+      dependencies:
+        tools:
+          - simulate-delay-impact
+    - key: critical-path-executive-brief
+      source:
+        dir: skills/critical-path-executive-brief
+      dependencies:
+        tools:
+          - analyze-critical-path
+
+  rovo:mcp:
+    - key: rovo-world-model-mcp
+      name: Rovo-World-Model MCP
+      tools:
         - simulate-delay-impact
         - analyze-critical-path
         - seed-demo-scenario
@@ -45,26 +71,60 @@ modules:
       function: rovo-simulate-delay-fn
       actionVerb: GET
       description: >-
-        Applies a Pearl do-calculus intervention do(Issue = +delayDays) on the
-        Project World Model DAG, runs a 500-iteration Monte Carlo simulation,
-        and returns the cascading impact on release dates, downstream tasks, and
-        Teamwork Graph goals.
+        Runs a 500-iteration Pearl do-calculus Monte Carlo simulation on the
+        Project World Model DAG supporting issue shifts (-5 to +60 days),
+        recovery mitigations, person capacity changes, and compound overrides.
       inputs:
         issueKey:
           title: Jira Issue Key
           type: string
-          required: true
-          description: The Jira issue key to delay (e.g., CHRON-104 or CHRON-102).
+          required: false
+          description: Target Jira issue key (optional; defaults to top bottleneck or assignee blocker).
         delayDays:
-          title: Delay Days
+          title: Schedule Change Days
           type: integer
-          required: true
-          description: Number of counterfactual delay days to inject (+1 to +60).
+          required: false
+          description: Signed schedule shift in days (-5 acceleration to +60 delay; defaults to 0 when mitigations are set, else 7).
+        addDeveloper:
+          title: Assign Extra Developer
+          type: boolean
+          required: false
+          description: Simulate adding +1 engineer to the target issue (adjusted for Brooks Law ramp-up drag).
+        decoupleBlockingEdges:
+          title: Decouple Blocking Edges
+          type: boolean
+          required: false
+          description: Simulate introducing an API/interface mock contract to reduce outgoing blocking weights to 0.25.
+        trimScope:
+          title: Trim Scope (MVP)
+          type: boolean
+          required: false
+          description: Simulate deferring non-essential sub-tasks to ship an MVP (-35% duration, -45% uncertainty).
+        assigneeName:
+          title: Assignee Display Name
+          type: string
+          required: false
+          description: Optional Jira assignee display name for person-level capacity or absence simulation.
+        unavailableDays:
+          title: Assignee Unavailable Days
+          type: integer
+          required: false
+          description: Signed unavailability or PTO shift in days (-3 to +15) across the assignee's active issues.
+        personMitigation:
+          title: Person Workload Mitigations
+          type: string
+          required: false
+          description: Comma-separated person mitigations (reassign, serialize, pair) for assigneeName.
+        compoundOverridesJson:
+          title: Compound Overrides JSON
+          type: string
+          required: false
+          description: Optional JSON object mapping extra issue keys to { deltaDays, addDeveloper, decoupleBlockingEdges, trimScope }.
         projectKey:
           title: Project Key
           type: string
           required: false
-          description: Optional Jira project key (defaults to active project or CHRON).
+          description: Optional Jira project key (defaults to active Jira project).
 
     - key: analyze-critical-path
       name: Analyze Topological Critical Path & Bottlenecks
@@ -79,28 +139,27 @@ modules:
           title: Project Key
           type: string
           required: false
-          description: Optional Jira project key (defaults to active project or CHRON).
+          description: Optional Jira project key (defaults to active Jira project).
 
     - key: seed-demo-scenario
-      name: Seed Project Chronos Demo Scenario
+      name: Seed Sample Linked Scenario
       function: rovo-seed-demo-fn
       actionVerb: CREATE
       description: >-
-        Loads the 18-node Project Chronos multi-team causal dependency graph
-        across 3 teams and 2 Teamwork Graph goals, and optionally creates linked
-        Jira issues in the target project.
+        Populates sample linked multi-team Jira issues in empty live projects
+        (or loads the 18-node synthetic causal snapshot across 3 teams and 2
+        Teamwork Graph goals).
       inputs:
         projectKey:
           title: Project Key
           type: string
           required: false
-          description: Optional Jira project key in which to seed or store the demo graph.
+          description: Optional Jira project key in which to populate sample linked issues or demo graph.
         populateJiraIssues:
           title: Populate Linked Jira Issues
           type: boolean
           required: false
-          description: Whether to attempt creating live linked Jira issues via Jira REST
-            API.
+          description: Set true to create real linked Jira issues via Jira REST API.
 
   webtrigger:
     - key: mcp-world-model-endpoint
@@ -123,6 +182,8 @@ modules:
 resources:
   - key: custom-ui-cockpit
     path: static/ui/build
+  - key: agent-icons
+    path: static/icons
 
 app:
   id: ari:cloud:ecosystem::app/fee6c1b4-044f-4298-be43-9a2bf3e7fa06

@@ -190,13 +190,14 @@ export async function fetchProjectCausalGraph(
 
       // Always return the real Jira project issues when at least 1 issue exists in the project
       if (issues.length >= 1) {
-        const { goals, teams } = await fetchTeamworkGraphMetadata(
-          forgeApi,
-          safeProjectKey,
-          projectName,
-          liveReferenceDate,
-          options.cloudId
-        );
+        const { goals, teams, issueGoalMap, issueConfluenceMap } =
+          await fetchTeamworkGraphMetadata(
+            forgeApi,
+            safeProjectKey,
+            projectName,
+            liveReferenceDate,
+            options.cloudId
+          );
         const dag = buildDAGFromJiraIssues(
           safeProjectKey,
           issues,
@@ -204,8 +205,29 @@ export async function fetchProjectCausalGraph(
           teams,
           liveReferenceDate
         );
+
+        const validGoalIds = new Set(dag.goals.map((g) => g.id));
+        const enrichedNodes = dag.nodes.map((node) => {
+          const upperKey = node.key.toUpperCase();
+          const mappedGoalId = issueGoalMap[upperKey];
+          const mappedConfluence = issueConfluenceMap[upperKey];
+          if (!mappedGoalId && !mappedConfluence) {
+            return node;
+          }
+          return {
+            ...node,
+            ...(mappedGoalId && validGoalIds.has(mappedGoalId)
+              ? { goalId: mappedGoalId }
+              : {}),
+            ...(mappedConfluence && !node.confluenceDecision
+              ? { confluenceDecision: mappedConfluence }
+              : {}),
+          };
+        });
+
         return {
           ...dag,
+          nodes: enrichedNodes,
           projectName,
           isSyntheticDemo: false,
         };
@@ -240,13 +262,122 @@ function computeDayOffsetFromDates(referenceDate: string, targetDate: string, fa
   return Math.max(1, Math.round((tgtMs - refMs) / 86400000));
 }
 
+export interface TwgGraphEdgeRow {
+  node?: {
+    columns?: Array<{ key?: string; value?: string }>;
+  };
+}
+
+export interface ParsedTwgMetadata {
+  goals: TeamworkGoal[];
+  issueGoalMap: Record<string, string>;
+  issueConfluenceMap: Record<string, { id: string; title: string; spaceKey: string }>;
+}
+
+function normalizeTwgGoalStatus(raw?: string): TeamworkGoal['status'] {
+  const s = (raw ?? '').trim().toLowerCase();
+  if (s.includes('off') || s.includes('behind') || s.includes('red')) {
+    return 'Off Track';
+  }
+  if (s.includes('risk') || s.includes('amber') || s.includes('yellow') || s.includes('warn')) {
+    return 'At Risk';
+  }
+  return 'On Track';
+}
+
+/**
+ * Parses Atlassian Teamwork Graph Cypher rows (`i.key`, `g.id`, `g.name`, `g.targetDate`, `g.status`,
+ * `c.id`, `c.title`) into structured Townsquare goals, issue-to-goal mappings, and Confluence ADRs.
+ */
+export function parseTeamworkGraphEdges(
+  rawEdges: TwgGraphEdgeRow[],
+  options: {
+    referenceDate: string;
+    sprintOffset?: number;
+    releaseOffset?: number;
+    defaultTeams?: TeamMetadata[];
+  }
+): ParsedTwgMetadata {
+  const sprintOffset = options.sprintOffset ?? 24;
+  const releaseOffset = options.releaseOffset ?? 43;
+  const parsedGoals = new Map<string, TeamworkGoal>();
+  const issueGoalMap: Record<string, string> = {};
+  const issueConfluenceMap: Record<
+    string,
+    { id: string; title: string; spaceKey: string }
+  > = {};
+
+  for (const edge of rawEdges) {
+    const cols = edge?.node?.columns ?? [];
+    const colMap = new Map<string, string>();
+    for (const c of cols) {
+      if (c.key && c.value) colMap.set(c.key, c.value);
+    }
+
+    const iKeyRaw = colMap.get('i.key')?.trim();
+    const issueKey = iKeyRaw ? iKeyRaw.toUpperCase() : undefined;
+    const gId = colMap.get('g.id')?.trim();
+    const gName = colMap.get('g.name')?.trim();
+
+    if (gId && gName && !parsedGoals.has(gId)) {
+      const goalIdx = parsedGoals.size;
+      const fallbackOffset = goalIdx === 0 ? sprintOffset : releaseOffset;
+      const rawTargetDate = colMap.get('g.targetDate')?.trim() || '';
+      const offset = computeDayOffsetFromDates(
+        options.referenceDate,
+        rawTargetDate,
+        fallbackOffset
+      );
+      const ownerTeam =
+        options.defaultTeams && options.defaultTeams.length > 0
+          ? options.defaultTeams[goalIdx % options.defaultTeams.length].name
+          : 'Platform & Delivery';
+
+      parsedGoals.set(gId, {
+        id: gId,
+        key: gId,
+        name: gName,
+        targetDate: rawTargetDate || addCalendarDays(options.referenceDate, offset),
+        targetDayOffset: offset,
+        ownerTeam,
+        status: normalizeTwgGoalStatus(colMap.get('g.status')),
+      });
+    }
+
+    if (issueKey && gId) {
+      issueGoalMap[issueKey] = gId;
+    }
+
+    const cId = colMap.get('c.id')?.trim();
+    const cTitle = colMap.get('c.title')?.trim();
+    if (issueKey && cId && cTitle) {
+      issueConfluenceMap[issueKey] = {
+        id: cId,
+        title: cTitle,
+        spaceKey: 'TWG',
+      };
+    }
+  }
+
+  return {
+    goals: Array.from(parsedGoals.values()),
+    issueGoalMap,
+    issueConfluenceMap,
+  };
+}
+
 async function fetchTeamworkGraphMetadata(
   forgeApi: typeof import('@forge/api'),
   projectKey: string,
   projectName: string,
   referenceDate: string,
   cloudId?: string
-): Promise<{ goals: TeamworkGoal[]; teams: TeamMetadata[] }> {
+): Promise<{
+  goals: TeamworkGoal[];
+  teams: TeamMetadata[];
+  issueGoalMap: Record<string, string>;
+  issueConfluenceMap: Record<string, { id: string; title: string; spaceKey: string }>;
+}> {
   const chronosDefaults = buildChronosGoals(referenceDate);
   const sprintOffset = chronosDefaults[0]?.targetDayOffset ?? 24;
   const releaseOffset = chronosDefaults[1]?.targetDayOffset ?? 43;
@@ -317,11 +448,7 @@ async function fetchTeamworkGraphMetadata(
           data?: {
             graphStore?: {
               projectGoalsAndDecisions?: {
-                edges?: Array<{
-                  node?: {
-                    columns?: Array<{ key?: string; value?: string }>;
-                  };
-                }>;
+                edges?: TwgGraphEdgeRow[];
               };
             };
           };
@@ -329,40 +456,19 @@ async function fetchTeamworkGraphMetadata(
 
         const rawEdges =
           graphData?.data?.graphStore?.projectGoalsAndDecisions?.edges ?? [];
-        const parsedGoals = new Map<string, TeamworkGoal>();
-
-        rawEdges.forEach((edge, idx) => {
-          const cols = edge?.node?.columns ?? [];
-          const colMap = new Map<string, string>();
-          for (const c of cols) {
-            if (c.key && c.value) colMap.set(c.key, c.value);
-          }
-          const gId = colMap.get('g.id');
-          const gName = colMap.get('g.name');
-          if (gId && gName && !parsedGoals.has(gId)) {
-            const fallbackOffset = idx === 0 ? sprintOffset : releaseOffset;
-            const rawTargetDate = colMap.get('g.targetDate') || '';
-            const offset = computeDayOffsetFromDates(
-              referenceDate,
-              rawTargetDate,
-              fallbackOffset
-            );
-            parsedGoals.set(gId, {
-              id: gId,
-              key: gId,
-              name: gName,
-              targetDate: rawTargetDate || addCalendarDays(referenceDate, offset),
-              targetDayOffset: offset,
-              ownerTeam: defaultTeams[idx % defaultTeams.length].name,
-              status: 'On Track',
-            });
-          }
+        const parsed = parseTeamworkGraphEdges(rawEdges, {
+          referenceDate,
+          sprintOffset,
+          releaseOffset,
+          defaultTeams,
         });
 
-        if (parsedGoals.size > 0) {
+        if (parsed.goals.length > 0) {
           return {
-            goals: Array.from(parsedGoals.values()),
+            goals: parsed.goals,
             teams: [],
+            issueGoalMap: parsed.issueGoalMap,
+            issueConfluenceMap: parsed.issueConfluenceMap,
           };
         }
       }
@@ -371,5 +477,10 @@ async function fetchTeamworkGraphMetadata(
     // Fallback to project-aligned TWG Goals & dynamic issue-derived Teams
   }
 
-  return { goals: defaultGoals, teams: [] };
+  return {
+    goals: defaultGoals,
+    teams: [],
+    issueGoalMap: {},
+    issueConfluenceMap: {},
+  };
 }

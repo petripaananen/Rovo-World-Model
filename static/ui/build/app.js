@@ -3616,6 +3616,12 @@ function summarizeAssigneeOverride(aOv) {
         parts.push('Pair');
     return parts.join(' · ') || 'Active';
 }
+function isAssigneeOverrideActive(aOv) {
+    return (Number(aOv.unavailableDays ?? 0) !== 0 ||
+        Boolean(aOv.reassignBottleneck) ||
+        Boolean(aOv.serializeParallelWork) ||
+        Boolean(aOv.pairOnTopBlocker));
+}
 function buildRovoMitigationPrompt(props) {
     const { graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, pinnedNodeOverrides, assigneeOverrides, activeSim, } = props;
     const scenarioClauses = [];
@@ -3637,7 +3643,8 @@ function buildRovoMitigationPrompt(props) {
         const n = graph.nodes.find((item) => item.key === k);
         scenarioClauses.push(`issue ${k}${n ? ` ("${n.summary}")` : ''} [${summarizeNodeOverride(ov)}]`);
     }
-    for (const [person, aOv] of Object.entries(assigneeOverrides)) {
+    const activeAssigneeEntries = Object.entries(assigneeOverrides).filter(([, aOv]) => isAssigneeOverrideActive(aOv));
+    for (const [person, aOv] of activeAssigneeEntries) {
         scenarioClauses.push(`person "${person}" [${summarizeAssigneeOverride(aOv)}]`);
     }
     const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
@@ -3659,7 +3666,7 @@ function buildRovoMitigationPrompt(props) {
     if (trimScope)
         modifiers.push('trimming non-essential scope to ship an MVP');
     const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
-    if (scenarioClauses.length === 1 && Object.keys(assigneeOverrides).length === 1) {
+    if (scenarioClauses.length === 1 && activeAssigneeEntries.length === 1) {
         return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate workload impact for ${scenarioClauses[0]} towards our "${goal?.name ?? 'Sprint Delivery'}" goal. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
     }
     return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate what happens to our "${goal?.name ?? 'Sprint Delivery'}" goal if issue ${node.key} ("${node.summary}") is ${shiftStr}${modSuffix}. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
@@ -3990,13 +3997,7 @@ function renderScenarioPanel(props) {
     const pinRank = isCurrentPinned
         ? pinnedEntries.findIndex(([k]) => k === selectedNode.key) + 1
         : 0;
-    const activePersonEntries = Object.entries(assigneeOverrides).filter(([, aOv]) => {
-        const u = Number(aOv.unavailableDays ?? 0);
-        return (u !== 0 ||
-            Boolean(aOv.reassignBottleneck) ||
-            Boolean(aOv.serializeParallelWork) ||
-            Boolean(aOv.pairOnTopBlocker));
-    });
+    const activePersonEntries = Object.entries(assigneeOverrides).filter(([, aOv]) => isAssigneeOverrideActive(aOv));
     const hasCurrentNodeMod = delayDays !== 0 || addDeveloper || decoupleBlockingEdges || trimScope;
     const totalStackedCount = pinnedEntries.length +
         (!isCurrentPinned && hasCurrentNodeMod ? 1 : 0) +
