@@ -1224,4 +1224,48 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
     );
     assert.match(cssText, /\.workspace-grid-3col\s*\{[^}]*align-items:\s*start;/s);
   });
+
+  it('keeps README.md free of local file links, raw $do$ LaTeX, broken relative links, and misaligned ASCII diagram boxes', () => {
+    const repoRoot = path.resolve(__dirname, '../../..');
+    const readmeText = fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
+
+    assert.equal(
+      readmeText.includes('file:///'),
+      false,
+      'README.md must use relative links instead of file:/// URIs'
+    );
+    assert.equal(
+      /[cC]:[\\/]+Users[\\/]/.test(readmeText),
+      false,
+      'README.md must not leak local machine user paths'
+    );
+    assert.equal(
+      readmeText.includes('$do$'),
+      false,
+      'README.md must use portable *do*-calculus rather than raw $do$ LaTeX'
+    );
+
+    const relLinks = Array.from(readmeText.matchAll(/\]\((\.[^)#?\s]+)\)/g), (m) => m[1]);
+    assert.ok(relLinks.length >= 10, `Expected relative repo links in README.md, found ${relLinks.length}`);
+    for (const relTarget of relLinks) {
+      const resolved = path.resolve(repoRoot, relTarget);
+      assert.ok(
+        fs.existsSync(resolved),
+        `Broken relative README.md link target: ${relTarget} (resolved: ${resolved})`
+      );
+    }
+
+    const asciiMatch = readmeText.match(/```text\r?\n([\s\S]*?)```/);
+    assert.ok(asciiMatch, 'Expected fenced ```text architecture diagram in README.md');
+    const diagramBlock = asciiMatch[1];
+    assert.equal(diagramBlock.includes('`'), false, 'ASCII architecture diagram must not contain literal backticks');
+
+    const borderedLines = diagramBlock
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('└'));
+    assert.ok(borderedLines.length > 0);
+    for (const line of borderedLines) {
+      assert.equal(line.length, 78, `Misaligned ASCII diagram row (len=${line.length}): ${line}`);
+    }
+  });
 });
