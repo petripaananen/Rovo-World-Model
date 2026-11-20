@@ -29,7 +29,10 @@ import {
 import { mcpWebtriggerHandler } from '../../mcp/server';
 import type { RawJiraIssue } from '../types';
 import { computeFinishOddsOnDay } from '../../../static/ui/src/components/TimelineScrubber';
-import { buildRovoMitigationPrompt } from '../../../static/ui/src/components/ScenarioPanel';
+import {
+  buildRovoMitigationPrompt,
+  renderScenarioPanel,
+} from '../../../static/ui/src/components/ScenarioPanel';
 
 describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () => {
   it('constructs the 18-node Project Chronos: Next-Gen Platform Launch DAG across Core Engine, Cloud Infra, Client UI and 2 Goals', () => {
@@ -1160,5 +1163,65 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
       title: 'ADR-014 Event Bus Architecture',
       spaceKey: 'TWG',
     });
+  });
+
+  it('renders What-If Scenario Simulator inspector tabs inside a single unified panel-card with flow layout CSS (no internal/body scrollbars)', () => {
+    const graph = getChronosSyntheticGraph('CHRON');
+    const sim = runMonteCarloSimulation(graph, { iterations: 100 });
+    const html = renderScenarioPanel({
+      graph,
+      baselineSim: sim,
+      activeSim: sim,
+      intervention: null,
+      selectedNodeKey: 'CHRON-104',
+      delayDays: 0,
+      addDeveloper: false,
+      decoupleBlockingEdges: false,
+      trimScope: false,
+      simulatorMode: 'issue',
+      pinnedNodeOverrides: {},
+      selectedAssignee: 'Marcus Chen',
+      assigneeOverrides: {},
+      activeRightTab: 'bottlenecks',
+      copiedPromptNotice: false,
+    });
+
+    const panelCardMatches = html.match(/<div class="panel-card">/g) ?? [];
+    assert.equal(
+      panelCardMatches.length,
+      1,
+      `Expected a single unified .panel-card in What-If Scenario Simulator, found ${panelCardMatches.length}`
+    );
+    assert.ok(html.includes('<div class="scenario-inspector-section">'));
+    assert.ok(html.includes('<div class="tab-bar">'));
+    assert.ok(html.includes('<div class="tab-body">'));
+    assert.ok(html.includes('impact-bar-legend'));
+    assert.ok(html.includes('Baseline'));
+    assert.ok(html.includes('Faster'));
+    assert.ok(html.includes('Delayed'));
+    assert.ok(html.includes('Top grey bar = Baseline'));
+
+    const stylesPath = path.resolve(__dirname, '../../../static/ui/build/styles.css');
+    const cssText = fs.readFileSync(stylesPath, 'utf8');
+    assert.ok(cssText.includes('.scenario-inspector-section'));
+    assert.equal(
+      cssText.includes('max-height: 250px'),
+      false,
+      'tab-body must not clamp height at 250px'
+    );
+    assert.match(
+      cssText,
+      /\.tab-body\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/s
+    );
+    assert.match(
+      cssText,
+      /body\s*\{[^}]*min-height:\s*0;[^}]*overflow-x:\s*clip;[^}]*overflow-y:\s*visible;/s
+    );
+    assert.equal(
+      /body\s*\{[^}]*min-height:\s*100vh;/s.test(cssText),
+      false,
+      'body must not lock min-height: 100vh in Forge iframe'
+    );
+    assert.match(cssText, /\.workspace-grid-3col\s*\{[^}]*align-items:\s*start;/s);
   });
 });

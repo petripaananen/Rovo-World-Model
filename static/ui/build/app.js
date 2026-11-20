@@ -3673,15 +3673,16 @@ function buildRovoMitigationPrompt(props) {
 }
 function renderTabBody(props) {
     const { activeRightTab, activeSim, intervention, graph, selectedNodeKey, delayDays, addDeveloper, decoupleBlockingEdges, trimScope, pinnedNodeOverrides, assigneeOverrides, } = props;
+    const hasActivePersonOverride = Object.values(assigneeOverrides).some((aOv) => isAssigneeOverrideActive(aOv));
     const hasActiveIntervention = delayDays !== 0 ||
         addDeveloper ||
         decoupleBlockingEdges ||
         trimScope ||
         Object.keys(pinnedNodeOverrides).length > 0 ||
-        Object.keys(assigneeOverrides).length > 0;
+        hasActivePersonOverride;
     if (activeRightTab === 'cascade') {
         const deltas = intervention?.nodeDeltas.filter((d) => (Object.keys(pinnedNodeOverrides).length > 1 ||
-            Object.keys(assigneeOverrides).length > 0 ||
+            hasActivePersonOverride ||
             d.key !== selectedNodeKey) &&
             Math.abs(d.shiftDays) > 0) ?? [];
         if (!hasActiveIntervention || deltas.length === 0) {
@@ -4454,7 +4455,7 @@ function renderScenarioPanel(props) {
           <div class="comparison-bars-card">
             <div class="comparison-card-header">
               <span>Projected Release Impact</span>
-              ${renderInfoTooltip('Baseline vs. Simulated Forecast', `Compares your baseline schedule against the simulated What-If change across 500 paired runs. Worst-case 5% blocker scenario finishes around ${formatFriendlyDate(activeSim.cvar95Date, true)}.`, `Release Shift: ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | Worst-Case Date: ${activeSim.cvar95Date}`)}
+              ${renderInfoTooltip('Baseline vs. Simulated Forecast', `Compares your baseline schedule (top grey bar) against the simulated What-If schedule (bottom bar: blue = unchanged, green = faster, red = delayed) across 500 paired runs. Worst-case 5% blocker scenario finishes around ${formatFriendlyDate(activeSim.cvar95Date, true)}.`, `Release Shift: ${(activeSim.p85Days - baselineSim.p85Days).toFixed(1)}d | Worst-Case Date: ${activeSim.cvar95Date}`)}
             </div>
 
             <div class="mc-bell-curve-wrap" title="500-Run Monte Carlo Release Probability Curve (Likely Finish / Target Commit Date / Safe Buffer Date)">
@@ -4468,6 +4469,19 @@ function renderScenarioPanel(props) {
               </svg>
             </div>
 
+            <div class="impact-bar-legend" title="Each row compares the original Baseline (top grey bar) against the simulated What-If schedule (bottom colored bar).">
+              <span class="impact-legend-item">
+                <span class="impact-swatch swatch-baseline"></span>
+                Baseline
+              </span>
+              <span class="impact-legend-item">
+                Simulated:
+                <span class="impact-swatch swatch-same"></span> Same
+                <span class="impact-swatch swatch-faster"></span> Faster
+                <span class="impact-swatch swatch-delayed"></span> Delayed
+              </span>
+            </div>
+
             ${forecastRows
         .map((row) => {
         const diff = Number((row.intDays - row.baseDays).toFixed(1));
@@ -4477,8 +4491,9 @@ function renderScenarioPanel(props) {
             : diff < 0
                 ? `<span class="text-success">(${diff}d)</span>`
                 : `<span class="text-muted">(0d)</span>`;
+        const barTooltip = `${row.tooltip} Top grey bar = Baseline (${formatFriendlyDate(row.baseDate)}). Bottom bar = Simulated (${formatFriendlyDate(row.intDate)}, ${diff > 0 ? `+${diff}d Delayed (Red)` : diff < 0 ? `${diff}d Faster (Green)` : '0d Same as Baseline (Blue)'}).`;
         return `
-                  <div class="dist-compare-group" title="${escapeHtmlText(row.tooltip)}">
+                  <div class="dist-compare-group" title="${escapeHtmlText(barTooltip)}">
                     <div class="dist-compare-label">
                       <strong>${escapeHtmlText(row.label)}</strong>
                       <span>
@@ -4501,26 +4516,26 @@ function renderScenarioPanel(props) {
             </button>
           </div>
         </div>
-      </div>
 
-      <!-- Inspector Tabs -->
-      <div class="panel-card">
-        <div class="tab-bar">
-          <button class="tab-btn ${activeRightTab === 'cascade' ? 'active' : ''}" data-tab="cascade">
-            Impacted (${activeSim.blastRadiusNodes.length})
-          </button>
-          <button class="tab-btn ${activeRightTab === 'bottlenecks' ? 'active' : ''}" data-tab="bottlenecks">
-            Blockers (${activeSim.topBottlenecks.length})
-          </button>
-          <button class="tab-btn ${activeRightTab === 'governance' ? 'active' : ''}" data-tab="governance">
-            Delivery Health
-          </button>
-          <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
-            AI Action Plan
-          </button>
-        </div>
-        <div class="tab-body">
-          ${renderTabBody(props)}
+        <!-- Unified Inspector Tabs Section -->
+        <div class="scenario-inspector-section">
+          <div class="tab-bar">
+            <button class="tab-btn ${activeRightTab === 'cascade' ? 'active' : ''}" data-tab="cascade">
+              Impacted (${activeSim.blastRadiusNodes.length})
+            </button>
+            <button class="tab-btn ${activeRightTab === 'bottlenecks' ? 'active' : ''}" data-tab="bottlenecks">
+              Blockers (${activeSim.topBottlenecks.length})
+            </button>
+            <button class="tab-btn ${activeRightTab === 'governance' ? 'active' : ''}" data-tab="governance">
+              Delivery Health
+            </button>
+            <button class="tab-btn ${activeRightTab === 'rovo-mcp' ? 'active' : ''}" data-tab="rovo-mcp">
+              AI Action Plan
+            </button>
+          </div>
+          <div class="tab-body">
+            ${renderTabBody(props)}
+          </div>
         </div>
       </div>
     </div>
