@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" width="1200" height="760" role="img" aria-labelledby="arch-title">
+  <title id="arch-title">Rovo-World-Model Native Atlassian Forge Architecture Overview</title>
+  <defs>
+    <pattern id="bg-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="12" cy="12" r="1" fill="#CBD5E1" opacity="0.65"/>
+    </pattern>
+    <filter id="card-shadow" x="-3%" y="-5%" width="106%" height="114%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.06"/>
+    </filter>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#0C66E4"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#1F845A"/>
+    </marker>
+    <marker id="arrow-indigo" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#4F46E5"/>
+    </marker>
+    <marker id="arrow-violet" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#6E5DC6"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#0F766E"/>
+    </marker>
+    <style>
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    </style>
+  </defs>
+
+  <!-- Outer Canvas Frame (Crisp on both GitHub Light & Dark themes) -->
+  <rect x="4" y="4" width="1192" height="752" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <rect x="4" y="4" width="1192" height="752" rx="16" fill="url(#bg-dots)"/>
+
+  <!-- Top Header Strip -->
+  <circle cx="42" cy="36" r="7" fill="#0C66E4"/>
+  <circle cx="42" cy="36" r="2.8" fill="#FFFFFF"/>
+  <text x="58" y="42" class="sans" font-size="18" font-weight="700" fill="#0F172A">Rovo-World-Model — Native Atlassian Forge Architecture</text>
+
+  <rect x="668" y="23" width="210" height="26" rx="13" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1"/>
+  <text x="773" y="40" text-anchor="middle" class="sans" font-size="11.5" font-weight="700" fill="#0C66E4">100% Native Forge · nodejs22.x</text>
+
+  <rect x="888" y="23" width="150" height="26" rx="13" fill="#ECFDF5" stroke="#6EE7B7" stroke-width="1"/>
+  <text x="963" y="40" text-anchor="middle" class="sans" font-size="11.5" font-weight="700" fill="#047857">Zero External Servers</text>
+
+  <rect x="1048" y="23" width="120" height="26" rx="13" fill="#EEF2FF" stroke="#A5B4FC" stroke-width="1"/>
+  <text x="1108" y="40" text-anchor="middle" class="sans" font-size="11.5" font-weight="700" fill="#4338CA">Codegeist 2026</text>
+
+  <!-- LAYER 1: Atlassian Cloud & Teamwork Graph Banner -->
+  <rect x="32" y="64" width="1136" height="82" rx="12" fill="#0F172A" stroke="#334155" stroke-width="1.5" filter="url(#card-shadow)"/>
+  <text x="54" y="86" class="sans" font-size="10.5" font-weight="700" letter-spacing="1.1" fill="#38BDF8">DATA &amp; ORGANIZATIONAL GRAPH LAYER</text>
+  <text x="54" y="111" class="sans" font-size="17" font-weight="700" fill="#F8FAFC">Atlassian Cloud &amp; Teamwork Graph (TWG)</text>
+  <text x="54" y="131" class="sans" font-size="12" fill="#94A3B8">Live Jira context, dependency links, teams, goals &amp; ADRs</text>
+
+  <!-- Layer 1 Entity Pills -->
+  <rect x="448" y="88" width="154" height="34" rx="8" fill="#1E293B" stroke="#475569" stroke-width="1.2"/>
+  <circle cx="464" cy="105" r="4" fill="#38BDF8"/>
+  <text x="475" y="109" class="sans" font-size="12" font-weight="600" fill="#F8FAFC">Jira Issues &amp; Links</text>
+
+  <rect x="612" y="88" width="188" height="34" rx="8" fill="#1E293B" stroke="#475569" stroke-width="1.2"/>
+  <circle cx="628" cy="105" r="4" fill="#60A5FA"/>
+  <text x="639" y="109" class="sans" font-size="12" font-weight="600" fill="#F8FAFC">Jira Teams (Field/Label)</text>
+
+  <rect x="810" y="88" width="186" height="34" rx="8" fill="#1E293B" stroke="#475569" stroke-width="1.2"/>
+  <circle cx="826" cy="105" r="4" fill="#34D399"/>
+  <text x="837" y="109" class="sans" font-size="12" font-weight="600" fill="#F8FAFC">Townsquare Goals (GQL)</text>
+
+  <rect x="1006" y="88" width="142" height="34" rx="8" fill="#1E293B" stroke="#475569" stroke-width="1.2"/>
+  <circle cx="1022" cy="105" r="4" fill="#A78BFA"/>
+  <text x="1033" y="109" class="sans" font-size="12" font-weight="600" fill="#F8FAFC">Confluence ADRs</text>
+
+  <!-- FLOW 1 -> 2 Connectors -->
+  <line x1="310" y1="146" x2="310" y2="185" stroke="#0C66E4" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <rect x="150" y="154" width="320" height="22" rx="11" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.2"/>
+  <text x="310" y="169" text-anchor="middle" class="sans" font-size="11" font-weight="600" fill="#0055CC">Jira REST v3 &amp; TWG GraphQL (asUser / asApp fallback)</text>
+
+  <line x1="890" y1="146" x2="890" y2="185" stroke="#1F845A" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect x="742" y="154" width="296" height="22" rx="11" fill="#FFFFFF" stroke="#6EE7B7" stroke-width="1.2"/>
+  <text x="890" y="169" text-anchor="middle" class="sans" font-size="11" font-weight="600" fill="#1F845A">0-Issue Auto-Fallback &amp; 1-Click Live Seeder</text>
+
+  <!-- LAYER 2: Extraction & Seeder Cards -->
+  <!-- Left Card: Live Extractor -->
+  <rect x="32" y="190" width="556" height="122" rx="11" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" filter="url(#card-shadow)"/>
+  <path d="M 32 201 Q 32 190 43 190 L 577 190 Q 588 190 588 201 L 588 195 L 32 195 Z" fill="#0C66E4"/>
+  <rect x="50" y="205" width="112" height="20" rx="5" fill="#E9F2FF"/>
+  <text x="106" y="219" text-anchor="middle" class="sans" font-size="10.5" font-weight="700" fill="#0055CC">LIVE EXTRACTOR</text>
+  <text x="568" y="219" text-anchor="end" class="mono" font-size="11" fill="#475569">src/twg/graphFetcher.ts · src/engine/dag.ts</text>
+  <text x="50" y="246" class="sans" font-size="15.5" font-weight="700" fill="#0F172A">Causal Graph Extractor &amp; Cycle-Safe DAG Builder</text>
+  <circle cx="56" cy="265" r="3" fill="#0C66E4"/>
+  <text x="68" y="269" class="sans" font-size="12" fill="#334155">Three-Color DFS Cycle Auto-Breaker (circular Jira links never crash)</text>
+  <circle cx="56" cy="283" r="3" fill="#0C66E4"/>
+  <text x="68" y="287" class="sans" font-size="12" fill="#334155">Deterministic Kahn Topological Sort + FS / SS / FF / SF Precedence &amp; Lag</text>
+  <circle cx="56" cy="301" r="3" fill="#0C66E4"/>
+  <text x="68" y="305" class="sans" font-size="12" fill="#334155">Live cloudId TWG Goal Status &amp; Confluence ADR Node Enrichment</text>
+
+  <!-- Right Card: Fallback & Seeder -->
+  <rect x="612" y="190" width="556" height="122" rx="11" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" filter="url(#card-shadow)"/>
+  <path d="M 612 201 Q 612 190 623 190 L 1157 190 Q 1168 190 1168 201 L 1168 195 L 612 195 Z" fill="#1F845A"/>
+  <rect x="630" y="205" width="152" height="20" rx="5" fill="#DFFCF0"/>
+  <text x="706" y="219" text-anchor="middle" class="sans" font-size="10.5" font-weight="700" fill="#1F845A">ZERO-CONFIG RESILIENCE</text>
+  <text x="1148" y="219" text-anchor="end" class="mono" font-size="11" fill="#475569">src/twg/syntheticSeeder.ts</text>
+  <text x="630" y="246" class="sans" font-size="15.5" font-weight="700" fill="#0F172A">Zero-Config Fallback &amp; Live Jira Issue Seeder</text>
+  <circle cx="636" cy="265" r="3" fill="#1F845A"/>
+  <text x="648" y="269" class="sans" font-size="12" fill="#334155">Instant 18-Node "Project Chronos" Snapshot (3 Teams · 2 TWG Goals)</text>
+  <circle cx="636" cy="283" r="3" fill="#1F845A"/>
+  <text x="648" y="287" class="sans" font-size="12" fill="#334155">Conditional "+ Add Sample Issues" creates linked Jira tasks in empty projects</text>
+  <circle cx="636" cy="301" r="3" fill="#1F845A"/>
+  <text x="648" y="305" class="sans" font-size="12" fill="#334155">Zero external setup or blank screens — judge-ready in &lt; 2 minutes</text>
+
+  <!-- FLOW 2 -> 3 Converging Connector -->
+  <path d="M 310 312 L 310 333 L 890 333 L 890 312" fill="none" stroke="#6366F1" stroke-width="2" stroke-linejoin="round"/>
+  <line x1="600" y1="333" x2="600" y2="354" stroke="#4F46E5" stroke-width="2" marker-end="url(#arrow-indigo)"/>
+  <rect x="492" y="322" width="216" height="22" rx="11" fill="#EEF2FF" stroke="#818CF8" stroke-width="1.2"/>
+  <text x="600" y="337" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#3730A3">Normalized CausalGraph Snapshot</text>
+
+  <!-- LAYER 3: Core Causal Monte Carlo Hero Card -->
+  <rect x="32" y="358" width="1136" height="140" rx="12" fill="#EEF2FF" stroke="#6366F1" stroke-width="1.75" filter="url(#card-shadow)"/>
+  <rect x="50" y="372" width="156" height="22" rx="6" fill="#4F46E5"/>
+  <text x="128" y="387" text-anchor="middle" class="sans" font-size="10.5" font-weight="700" fill="#FFFFFF">CAUSAL WORLD MODEL</text>
+  <text x="218" y="388" class="sans" font-size="16" font-weight="700" fill="#1E1B4B">Causal Monte Carlo &amp; do-Calculus Simulator Engine</text>
+  <text x="996" y="387" text-anchor="end" class="mono" font-size="11.5" fill="#4338CA">src/engine/simulator.ts</text>
+  <rect x="1010" y="371" width="138" height="24" rx="12" fill="#FFFFFF" stroke="#818CF8" stroke-width="1.2"/>
+  <text x="1079" y="387" text-anchor="middle" class="sans" font-size="11.5" font-weight="700" fill="#4338CA">500 runs · &lt; 15 ms</text>
+
+  <!-- 3 Inner Engine Sub-Cards -->
+  <rect x="50" y="405" width="354" height="79" rx="8" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1.25"/>
+  <circle cx="66" cy="424" r="4" fill="#0C66E4"/>
+  <text x="77" y="428" class="sans" font-size="13" font-weight="700" fill="#0F172A">Paired Twin-Network CRN</text>
+  <text x="64" y="450" class="sans" font-size="12" fill="#475569">• 500 Common Random Numbers iterations</text>
+  <text x="64" y="469" class="sans" font-size="12" fill="#475569">• 3-Point PERT Beta + Bernoulli pureRisks</text>
+
+  <rect x="423" y="405" width="354" height="79" rx="8" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1.25"/>
+  <circle cx="439" cy="424" r="4" fill="#6E5DC6"/>
+  <text x="450" y="428" class="sans" font-size="13" font-weight="700" fill="#0F172A">Counterfactual Interventions</text>
+  <text x="437" y="450" class="sans" font-size="12" fill="#475569">• Issue Shifts (-5d..+60d) · +1 Dev (Brooks Law)</text>
+  <text x="437" y="469" class="sans" font-size="12" fill="#475569">• Decouple Edges · Trim MVP · Person WIP Shifts</text>
+
+  <rect x="796" y="405" width="352" height="79" rx="8" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1.25"/>
+  <circle cx="812" cy="424" r="4" fill="#1F845A"/>
+  <text x="823" y="428" class="sans" font-size="13" font-weight="700" fill="#0F172A">Executive Decision Outputs</text>
+  <text x="810" y="450" class="sans" font-size="12" fill="#475569">• 50% / 85% / 95% Confidence + 3-Tier Buffers</text>
+  <text x="810" y="469" class="sans" font-size="12" fill="#475569">• Engineering EVM (CPI / SPI / EAC) &amp; Goal Risk</text>
+
+  <!-- FLOW 3 -> 4 Fan-Out Connectors -->
+  <line x1="212" y1="498" x2="212" y2="537" stroke="#0C66E4" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <line x1="600" y1="498" x2="600" y2="537" stroke="#6E5DC6" stroke-width="2" marker-end="url(#arrow-violet)"/>
+  <line x1="988" y1="498" x2="988" y2="537" stroke="#0F766E" stroke-width="2" marker-end="url(#arrow-teal)"/>
+
+  <!-- LAYER 4: 3 Native Forge Surface Cards -->
+  <!-- Card 1: Custom UI Cockpit -->
+  <rect x="32" y="542" width="360" height="162" rx="11" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" filter="url(#card-shadow)"/>
+  <path d="M 32 553 Q 32 542 43 542 L 381 542 Q 392 542 392 553 L 392 547 L 32 547 Z" fill="#0C66E4"/>
+  <rect x="50" y="557" width="112" height="20" rx="5" fill="#E9F2FF"/>
+  <text x="106" y="571" text-anchor="middle" class="mono" font-size="10.5" font-weight="700" fill="#0055CC">jira:projectPage</text>
+  <text x="374" y="571" text-anchor="end" class="mono" font-size="11" fill="#64748B">static/ui/</text>
+  <text x="50" y="598" class="sans" font-size="15.5" font-weight="700" fill="#0F172A">Custom UI Cockpit</text>
+  <circle cx="56" cy="619" r="3" fill="#0C66E4"/>
+  <text x="68" y="623" class="sans" font-size="12" fill="#334155">Drag &amp; Drop Panels + 4-Shape Dependency Map</text>
+  <circle cx="56" cy="640" r="3" fill="#0C66E4"/>
+  <text x="68" y="644" class="sans" font-size="12" fill="#334155">Time Machine Scrubber &amp; Probability Histogram</text>
+  <circle cx="56" cy="661" r="3" fill="#0C66E4"/>
+  <text x="68" y="665" class="sans" font-size="12" fill="#334155">Unified What-If Card (By Issue / Person) + Legend</text>
+  <circle cx="56" cy="682" r="3" fill="#0C66E4"/>
+  <text x="68" y="686" class="sans" font-size="12" fill="#334155">1-Click "Ask @Rovo-World-Model Agent" Prompt</text>
+
+  <!-- Card 2: Rovo Agent & Skills -->
+  <rect x="420" y="542" width="360" height="162" rx="11" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" filter="url(#card-shadow)"/>
+  <path d="M 420 553 Q 420 542 431 542 L 769 542 Q 780 542 780 553 L 780 547 L 420 547 Z" fill="#6E5DC6"/>
+  <rect x="438" y="557" width="144" height="20" rx="5" fill="#F3F0FF"/>
+  <text x="510" y="571" text-anchor="middle" class="mono" font-size="10.5" font-weight="700" fill="#5E4DB2">rovo:agent · skill</text>
+  <text x="762" y="571" text-anchor="end" class="mono" font-size="11" fill="#64748B">src/rovo/ + skills/</text>
+  <text x="438" y="598" class="sans" font-size="15.5" font-weight="700" fill="#0F172A">Rovo Agent, Actions &amp; Skills</text>
+  <circle cx="444" cy="619" r="3" fill="#6E5DC6"/>
+  <text x="456" y="623" class="sans" font-size="12" fill="#334155">rovo-world-model-agent + Custom SVG Avatar</text>
+  <circle cx="444" cy="640" r="3" fill="#6E5DC6"/>
+  <text x="456" y="644" class="sans" font-size="12" fill="#334155">2 Reusable Skills (recovery, executive-brief)</text>
+  <circle cx="444" cy="661" r="3" fill="#6E5DC6"/>
+  <text x="456" y="665" class="sans" font-size="12" fill="#334155">3 Actions (10-input simulate-delay-impact)</text>
+  <circle cx="444" cy="682" r="3" fill="#6E5DC6"/>
+  <text x="456" y="686" class="sans" font-size="12" fill="#334155">Live cloudId TWG Context Forwarding</text>
+
+  <!-- Card 3: Dual MCP Server -->
+  <rect x="808" y="542" width="360" height="162" rx="11" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" filter="url(#card-shadow)"/>
+  <path d="M 808 553 Q 808 542 819 542 L 1157 542 Q 1168 542 1168 553 L 1168 547 L 808 547 Z" fill="#0F766E"/>
+  <rect x="826" y="557" width="154" height="20" rx="5" fill="#CCFBF1"/>
+  <text x="903" y="571" text-anchor="middle" class="mono" font-size="10.5" font-weight="700" fill="#0F766E">rovo:mcp · webtrigger</text>
+  <text x="1150" y="571" text-anchor="end" class="mono" font-size="11" fill="#64748B">src/mcp/server.ts</text>
+  <text x="826" y="598" class="sans" font-size="15.5" font-weight="700" fill="#0F172A">Dual Atlassian MCP Server</text>
+  <circle cx="832" cy="619" r="3" fill="#0F766E"/>
+  <text x="844" y="623" class="sans" font-size="12" fill="#334155">Native rovo:mcp (Rovo-World-Model MCP)</text>
+  <circle cx="832" cy="640" r="3" fill="#0F766E"/>
+  <text x="844" y="644" class="sans" font-size="12" fill="#334155">JSON-RPC 2.0 Webtrigger (6 live MCP tools)</text>
+  <circle cx="832" cy="661" r="3" fill="#0F766E"/>
+  <text x="844" y="665" class="sans" font-size="12" fill="#334155">Full Rovo Input Schema Parity (optional args)</text>
+  <circle cx="832" cy="682" r="3" fill="#0F766E"/>
+  <text x="844" y="686" class="sans" font-size="12" fill="#334155">X-PWM-Confirm-Write: true Jira Write Guard</text>
+
+  <!-- Bottom Marketplace Footer Bar -->
+  <rect x="32" y="716" width="1136" height="28" rx="7" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1"/>
+  <text x="48" y="734" class="sans" font-size="11.5" font-weight="700" fill="#334155">Least-Privilege Forge Scopes:</text>
+  <text x="228" y="734" class="mono" font-size="11.5" fill="#0C66E4">read:jira-work  ·  write:jira-work  ·  read:jira-user  ·  storage:app</text>
+  <text x="1152" y="734" text-anchor="end" class="sans" font-size="11.5" font-weight="600" fill="#475569">All 4 Codegeist 2026 Bonus Tracks · MIT License</text>
+</svg>

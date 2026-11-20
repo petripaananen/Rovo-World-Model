@@ -62,33 +62,9 @@ To ship with confidence, engineering teams need a **Causal Project World Model (
 
 ## 3. Architecture Overview
 
-```text
-┌────────────────────────────────────────────────────────────────────────────┐
-│                  Atlassian Cloud & Teamwork Graph (TWG)                    │
-│        Jira Issues (Blocks / Depends on)  •  Teams  •  TWG Goals           │
-└──────────────────┬──────────────────────────────────────┬──────────────────┘
-                   │ Jira REST v3 & TWG GraphQL           │ 0-issue fallback
-                   ▼                                      ▼
-┌───────────────────────────────────┐    ┌───────────────────────────────────┐
-│ Live Extractor (src/twg/)         │    │ Zero-Config Fallback & Seeder     │
-│ • Three-Color DFS Cycle Breaker   │    │ Project Chronos (18 Nodes)        │
-│ • Deterministic Kahn Topo-Sort    │    │ + 1-Click Add Sample Issues       │
-└──────────────────┬────────────────┘    └────────────────┬──────────────────┘
-                   └──────────────────┬───────────────────┘
-                                      ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│     Causal Monte Carlo & do-Calculus Engine (src/engine/simulator.ts)      │
-│  • 500-Iteration Twin-Network Common Random Numbers (CRN) (< 15 ms)        │
-│  • Levers: Issue Shifts, +1 Dev (Brooks), Decouple, Trim MVP, Person WIP   │
-│  • Outputs: 50%/85%/95% Confidence, 3-Tier Buffers, EVM, Goal Risk         │
-└───────────┬──────────────────────────┬──────────────────────────┬──────────┘
-            ▼                          ▼                          ▼
-┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
-│ Custom UI Cockpit    │   │ Rovo Agent & Skills  │   │ MCP Server           │
-│ jira:projectPage     │   │ rovo:agent / skill   │   │ rovo:mcp +           │
-│ Drag & Drop Panels   │   │ + 3 action Modules   │   │ JSON-RPC 2.0 Endpoint│
-└──────────────────────┘   └──────────────────────┘   └──────────────────────┘
-```
+![Rovo-World-Model Architecture Overview](./docs/architecture-overview.png)
+
+*High-resolution diagram ([editable vector SVG](./docs/architecture-overview.svg)).*
 
 ---
 

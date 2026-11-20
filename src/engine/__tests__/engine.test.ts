@@ -1225,7 +1225,7 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
     assert.match(cssText, /\.workspace-grid-3col\s*\{[^}]*align-items:\s*start;/s);
   });
 
-  it('keeps README.md free of local file links, raw $do$ LaTeX, broken relative links, and misaligned ASCII diagram boxes', () => {
+  it('keeps README.md free of local file links, raw $do$ LaTeX, broken relative links, and embeds valid architecture image assets', () => {
     const repoRoot = path.resolve(__dirname, '../../..');
     const readmeText = fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
 
@@ -1255,17 +1255,20 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
       );
     }
 
-    const asciiMatch = readmeText.match(/```text\r?\n([\s\S]*?)```/);
-    assert.ok(asciiMatch, 'Expected fenced ```text architecture diagram in README.md');
-    const diagramBlock = asciiMatch[1];
-    assert.equal(diagramBlock.includes('`'), false, 'ASCII architecture diagram must not contain literal backticks');
+    assert.ok(readmeText.includes('./docs/architecture-overview.png'));
+    assert.ok(readmeText.includes('./docs/architecture-overview.svg'));
 
-    const borderedLines = diagramBlock
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('└'));
-    assert.ok(borderedLines.length > 0);
-    for (const line of borderedLines) {
-      assert.equal(line.length, 78, `Misaligned ASCII diagram row (len=${line.length}): ${line}`);
-    }
+    const pngBytes = fs.readFileSync(path.join(repoRoot, 'docs/architecture-overview.png'));
+    assert.ok(pngBytes.length > 20_000, `Expected high-res PNG > 20KB, got ${pngBytes.length}`);
+    assert.deepEqual(
+      Array.from(pngBytes.subarray(0, 8)),
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      'docs/architecture-overview.png must start with valid PNG magic bytes'
+    );
+
+    const svgText = fs.readFileSync(path.join(repoRoot, 'docs/architecture-overview.svg'), 'utf8');
+    assert.ok(svgText.includes('<svg'));
+    assert.equal(svgText.includes('<script'), false);
+    assert.equal(svgText.includes('<foreignObject'), false);
   });
 });
