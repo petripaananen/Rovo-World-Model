@@ -509,14 +509,18 @@ export interface RawJiraIssue {
       name?: string;
     };
     duedate?: string | null;
+    resolutiondate?: string | null;
     timetracking?: {
       originalEstimateSeconds?: number;
       remainingEstimateSeconds?: number;
+      timeSpentSeconds?: number;
     } | null;
     timeoriginalestimate?: number | null;
     timeestimate?: number | null;
+    timespent?: number | null;
     customfield_10016?: number | null; // Story points
     customfield_10001?: { name?: string; title?: string } | string | null; // Atlassian Team field
+    customfield_10021?: unknown[] | null; // Jira Kanban Flagged / Impediment field
     components?: Array<{
       id?: string;
       name?: string;

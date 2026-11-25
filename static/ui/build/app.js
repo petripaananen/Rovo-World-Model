@@ -536,6 +536,8 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
         ];
     const nodes = [];
     const rawEdges = [];
+    const edgeOverridesByPair = new Map();
+    const defaultIncomingByTarget = new Map();
     // Map Epic / parent keys to their child issues in the same project
     const childrenByParentKey = new Map();
     for (const issue of rawIssues) {
@@ -546,14 +548,18 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
             childrenByParentKey.set(parentKey, list);
         }
     }
+    const refIso = (referenceDate ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
     rawIssues.forEach((issue, index) => {
         const statusName = issue.fields.status?.name ?? 'To Do';
+        const labels = issue.fields.labels ?? [];
         const storyPoints = issue.fields.customfield_10016 ?? null;
         const estimateSeconds = issue.fields.timetracking?.remainingEstimateSeconds ??
             issue.fields.timetracking?.originalEstimateSeconds ??
             issue.fields.timeestimate ??
             issue.fields.timeoriginalestimate ??
             null;
+        const estLabel = labels.find((l) => /^(?:estimate|est):\d+(?:\.\d+)?d?$/i.test(l));
+        const estLabelMatch = estLabel?.match(/^(?:estimate|est):(\d+(?:\.\d+)?)d?$/i);
         let baseEstimateDays = 5;
         if (typeof estimateSeconds === 'number' && estimateSeconds > 0) {
             baseEstimateDays = Math.max(1, Math.round(estimateSeconds / (8 * 3600)));
@@ -561,26 +567,33 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
         else if (typeof storyPoints === 'number' && storyPoints > 0) {
             baseEstimateDays = Math.max(1, Math.round(storyPoints * 1.25));
         }
+        else if (estLabelMatch) {
+            baseEstimateDays = Math.max(0.5, Number(parseFloat(estLabelMatch[1]).toFixed(1)));
+        }
         else {
             const issueType = (issue.fields.issuetype?.name ?? 'Task').toLowerCase();
             baseEstimateDays = issueType === 'epic' ? 8 : issueType === 'bug' ? 3 : 5;
         }
-        const statusLower = statusName.toLowerCase();
+        const hasKanbanFlag = Array.isArray(issue.fields.customfield_10021) &&
+            issue.fields.customfield_10021.length > 0;
+        const hasBlockedLabel = labels.some((l) => l.toLowerCase() === 'blocked' || l.toLowerCase() === 'status:blocked');
+        let normalizedStat = normalizeStatus(statusName);
+        if (normalizedStat !== 'Done' && (hasKanbanFlag || hasBlockedLabel)) {
+            normalizedStat = 'Blocked';
+        }
         let uncertaintySigma = 1.5;
-        if (statusLower === 'done' || statusLower === 'closed' || statusLower === 'resolved') {
+        if (normalizedStat === 'Done') {
             uncertaintySigma = 0.2;
         }
-        else if (statusLower.includes('block')) {
+        else if (normalizedStat === 'Blocked') {
             uncertaintySigma = Math.max(2.2, Number((baseEstimateDays * 0.45).toFixed(2)));
         }
-        else if (statusLower.includes('progress')) {
+        else if (normalizedStat === 'In Progress') {
             uncertaintySigma = Math.max(1.1, Number((baseEstimateDays * 0.28).toFixed(2)));
         }
         else {
             uncertaintySigma = Math.max(1.4, Number((baseEstimateDays * 0.35).toFixed(2)));
         }
-        const labels = issue.fields.labels ?? [];
-        const teamLabel = labels.find((l) => l.toLowerCase().startsWith('team:'));
         const goalLabel = labels.find((l) => l.toLowerCase().startsWith('goal:'));
         const pertLabel = labels.find((l) => l.toLowerCase().startsWith('pert:'));
         let optimisticDays;
@@ -604,24 +617,116 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
             ? goalLabel.slice(5).toUpperCase()
             : defaultGoals[index < Math.ceil(rawIssues.length * 0.55) ? 0 : 1].id;
         const issueTypeName = issue.fields.issuetype?.name || 'Task';
+        const hasGateLabel = labels.some((l) => l.toLowerCase() === 'gate' || l.toLowerCase() === 'stage-gate');
         const isStageGate = issueTypeName.toLowerCase() === 'milestone' ||
             issueTypeName.toLowerCase() === 'gate' ||
+            hasGateLabel ||
             (issue.fields.summary ?? '').toLowerCase().includes('gate');
-        const normalizedStat = normalizeStatus(statusName);
+        const timeSpentSeconds = issue.fields.timetracking?.timeSpentSeconds ?? issue.fields.timespent ?? null;
+        const spentLabel = labels.find((l) => /^spent:\d+(?:\.\d+)?d?$/i.test(l));
+        const spentMatch = spentLabel?.match(/^spent:(\d+(?:\.\d+)?)d?$/i);
         const plannedEffortDays = baseEstimateDays;
-        const actualEffortDays = normalizedStat === 'Done'
+        let actualEffortDays = normalizedStat === 'Done'
             ? baseEstimateDays
             : normalizedStat === 'In Progress'
                 ? Number((baseEstimateDays * 0.55).toFixed(1))
                 : normalizedStat === 'Blocked'
                     ? Number((baseEstimateDays * 0.4).toFixed(1))
                     : 0;
+        if (typeof timeSpentSeconds === 'number' && timeSpentSeconds > 0) {
+            actualEffortDays = Number((timeSpentSeconds / (8 * 3600)).toFixed(1));
+        }
+        else if (spentMatch) {
+            actualEffortDays = Math.max(0, Number(parseFloat(spentMatch[1]).toFixed(1)));
+        }
+        const handoffPending = labels.some((l) => /^handoff:(?:pending|unaccepted|blocked)$/i.test(l));
+        const handoffAcceptedByDownstream = handoffPending ? false : undefined;
+        let completedDaysAgo;
+        const doneAgoLabel = labels.find((l) => /^(?:done-ago|completed-ago):\d+d?$/i.test(l));
+        const doneAgoMatch = doneAgoLabel?.match(/^(?:done-ago|completed-ago):(\d+)d?$/i);
+        if (doneAgoMatch) {
+            completedDaysAgo = Math.max(1, parseInt(doneAgoMatch[1], 10));
+        }
+        else if (normalizedStat === 'Done' && issue.fields.resolutiondate) {
+            const refMs = Date.parse(`${refIso}T00:00:00.000Z`);
+            const resMs = Date.parse(`${issue.fields.resolutiondate.slice(0, 10)}T00:00:00.000Z`);
+            if (Number.isFinite(refMs) && Number.isFinite(resMs)) {
+                completedDaysAgo = Math.max(1, Math.round((refMs - resMs) / 86400000));
+            }
+        }
+        const adrLabel = labels.find((l) => /^adr:[^:]+:.+$/i.test(l));
+        const adrMatch = adrLabel?.match(/^adr:([^:]+):(.+)$/i);
+        const confluenceDecision = adrMatch
+            ? {
+                id: adrMatch[1].trim().toUpperCase(),
+                title: `${adrMatch[1].trim().toUpperCase()}: ${formatLabelValue(adrMatch[2])}`,
+                spaceKey: 'ARCH',
+            }
+            : undefined;
+        const pureRisks = [];
+        labels.forEach((lbl, rIdx) => {
+            const rMatch = lbl.match(/^risk:(0?\.\d+|1(?:\.0+)?)-(\d+(?:\.\d+)?)(?:-(\d+(?:\.\d+)?))?$/i);
+            if (rMatch) {
+                pureRisks.push({
+                    id: `RISK-${issue.key}-${rIdx + 1}`,
+                    title: `Technical variance shock on ${issue.key}`,
+                    probability: Math.max(0.01, Math.min(1, parseFloat(rMatch[1]))),
+                    delayImpactDays: Math.max(0.5, parseFloat(rMatch[2])),
+                    ...(rMatch[3] ? { mitigationEffortDays: Math.max(0.5, parseFloat(rMatch[3])) } : {}),
+                });
+            }
+        });
+        const ownerLabel = labels.find((l) => /^owner:.+$/i.test(l));
+        const ownerName = ownerLabel ? formatLabelValue(ownerLabel.slice(6)) : '';
+        const resolvedAssignee = ownerName.length > 0
+            ? ownerName
+            : issue.fields.assignee?.displayName || 'Unassigned';
+        // Parse optional precedence/lag labels (`edge:<FROM>:<FS|SS|FF|SF>:<lag>`, `prec:SS`, `lag:2`)
+        let defaultPrec;
+        let defaultLag;
+        for (const lbl of labels) {
+            const edgeMatch = lbl.match(/^edge:([A-Z0-9_-]+):(FS|SS|FF|SF):(-?\d+(?:\.\d+)?)d?$/i);
+            if (edgeMatch) {
+                const fromUpper = edgeMatch[1].toUpperCase();
+                const pType = edgeMatch[2].toUpperCase();
+                const lagVal = parseFloat(edgeMatch[3]);
+                edgeOverridesByPair.set(`${fromUpper}->${issue.key.toUpperCase()}`, {
+                    precedenceType: pType,
+                    lagDays: Number.isFinite(lagVal) ? lagVal : 0,
+                });
+                continue;
+            }
+            const precMatch = lbl.match(/^prec:(FS|SS|FF|SF)$/i);
+            if (precMatch) {
+                defaultPrec = precMatch[1].toUpperCase();
+            }
+            const lagMatch = lbl.match(/^lag:(-?\d+(?:\.\d+)?)d?$/i);
+            if (lagMatch) {
+                const parsedLag = parseFloat(lagMatch[1]);
+                if (Number.isFinite(parsedLag)) {
+                    defaultLag = parsedLag;
+                }
+            }
+        }
+        if (defaultPrec !== undefined || defaultLag !== undefined) {
+            defaultIncomingByTarget.set(issue.key.toUpperCase(), {
+                precedenceType: defaultPrec,
+                lagDays: defaultLag,
+            });
+        }
         // Compute Sub-task / Epic child completion metrics for Concept 1 + Concept 3 progress rings
         const explicitSubtasks = issue.fields.subtasks ?? [];
         const epicChildren = childrenByParentKey.get(issue.key) ?? [];
         const childStatuses = explicitSubtasks.length > 0
             ? explicitSubtasks.map((st) => normalizeStatus(st.fields?.status?.name ?? 'To Do'))
-            : epicChildren.map((ch) => normalizeStatus(ch.fields.status?.name ?? 'To Do'));
+            : epicChildren.map((ch) => {
+                const chLabels = ch.fields.labels ?? [];
+                const chBlocked = (Array.isArray(ch.fields.customfield_10021) &&
+                    ch.fields.customfield_10021.length > 0) ||
+                    chLabels.some((l) => l.toLowerCase() === 'blocked' || l.toLowerCase() === 'status:blocked');
+                const baseSt = normalizeStatus(ch.fields.status?.name ?? 'To Do');
+                return baseSt !== 'Done' && chBlocked ? 'Blocked' : baseSt;
+            });
         let subtaskTotalCount = childStatuses.length;
         let subtaskDoneCount = 0;
         let subtaskProgressPct = 0;
@@ -672,11 +777,15 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
             pessimisticDays,
             plannedEffortDays,
             actualEffortDays,
+            ...(handoffAcceptedByDownstream !== undefined ? { handoffAcceptedByDownstream } : {}),
+            ...(completedDaysAgo !== undefined ? { completedDaysAgo } : {}),
+            ...(confluenceDecision ? { confluenceDecision } : {}),
+            ...(pureRisks.length > 0 ? { pureRisks } : {}),
             isStageGate,
             subtaskDoneCount,
             subtaskTotalCount,
             subtaskProgressPct,
-            assignee: issue.fields.assignee?.displayName || 'Unassigned',
+            assignee: resolvedAssignee,
             team: assignedTeam,
             goalId: assignedGoalId,
             issueType: issueTypeName,
@@ -699,6 +808,7 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
                     (typeName.includes('depend') && !outwardDesc.includes('is depended on')));
             const weight = isHardBlock ? 1.0 : 0.65;
             const depLabel = isHardBlock ? 'Blocks' : 'Architectural Decision';
+            const inwardDepLabel = isHardBlock ? 'Depends on' : 'Architectural Decision';
             if (link.outwardIssue?.key) {
                 if (isReverseDependsOutward) {
                     rawEdges.push({
@@ -730,13 +840,24 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
                     rawEdges.push({
                         from: link.inwardIssue.key,
                         to: issue.key,
-                        dependencyType: 'Depends on',
+                        dependencyType: inwardDepLabel,
                         propagationWeight: weight,
                     });
                 }
             }
         }
     });
+    // Apply parsed precedence (`FS`, `SS`, `FF`, `SF`) and lead/lag (`lagDays`) overrides to rawEdges
+    for (const edge of rawEdges) {
+        const pairOv = edgeOverridesByPair.get(`${edge.from.toUpperCase()}->${edge.to.toUpperCase()}`);
+        const targetDefault = defaultIncomingByTarget.get(edge.to.toUpperCase());
+        if (pairOv?.precedenceType ?? targetDefault?.precedenceType) {
+            edge.precedenceType = pairOv?.precedenceType ?? targetDefault?.precedenceType;
+        }
+        if (pairOv?.lagDays !== undefined || targetDefault?.lagDays !== undefined) {
+            edge.lagDays = pairOv?.lagDays ?? targetDefault?.lagDays;
+        }
+    }
     const nodeKeySet = new Set(nodes.map((n) => n.key));
     const internalEdgesCount = rawEdges.filter((e) => nodeKeySet.has(e.from) && nodeKeySet.has(e.to) && e.from !== e.to).length;
     if (internalEdgesCount === 0 && nodes.length > 1) {
@@ -817,11 +938,14 @@ function buildDAGFromJiraIssues(projectKey, rawIssues, goals = [], teams = [], r
  * 3. Explicit `teams` array passed from Atlassian Teamwork Graph
  * 4. If the Jira project/issue has no team configured, returns `'No Team Assigned'` (never fabricates fake teams).
  */
+function formatLabelValue(raw) {
+    return raw.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+}
 function inferIssueTeam(issue, _projectKey, explicitTeams, index) {
     const labels = issue.fields.labels ?? [];
     const teamLabel = labels.find((l) => l.toLowerCase().startsWith('team:'));
-    if (teamLabel && teamLabel.slice(5).trim().length > 0) {
-        return teamLabel.slice(5).trim();
+    if (teamLabel && formatLabelValue(teamLabel.slice(5)).length > 0) {
+        return formatLabelValue(teamLabel.slice(5));
     }
     const rawTeamField = issue.fields.customfield_10001;
     if (typeof rawTeamField === 'string' && rawTeamField.trim().length > 0) {
@@ -4710,7 +4834,7 @@ const initialBaseline = runMonteCarloSimulation(initialGraph, { iterations: 500 
 const state = {
     availableProjects: [
         { id: 'BLP', key: 'BLP', name: 'BloomPath Sprint' },
-        { id: 'TRI', key: 'TRI', name: 'Triton' },
+        { id: 'KAN', key: 'KAN', name: 'Triton' },
     ],
     graph: initialGraph,
     baselineSim: initialBaseline,

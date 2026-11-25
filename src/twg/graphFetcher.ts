@@ -119,7 +119,7 @@ export async function fetchAvailableJiraProjects(): Promise<JiraProjectSummary[]
 
   return [
     { id: 'BLP', key: 'BLP', name: 'BloomPath Sprint' },
-    { id: 'TRI', key: 'TRI', name: 'Triton' },
+    { id: 'KAN', key: 'KAN', name: 'Triton' },
   ];
 }
 
@@ -168,7 +168,7 @@ export async function fetchProjectCausalGraph(
     const projectName = projectMeta ? projectMeta.name : `${safeProjectKey} Project`;
 
     const fields =
-      'summary,status,issuelinks,assignee,timetracking,duedate,issuetype,timeoriginalestimate,timeestimate,customfield_10016,customfield_10001,components,labels,parent,subtasks';
+      'summary,status,issuelinks,assignee,timetracking,duedate,resolutiondate,issuetype,timeoriginalestimate,timeestimate,timespent,customfield_10016,customfield_10001,customfield_10021,components,labels,parent,subtasks';
 
     // Prefer Jira Cloud's current `/rest/api/3/search/jql` endpoint with quoted project key,
     // falling back to legacy `/rest/api/3/search` only if needed.

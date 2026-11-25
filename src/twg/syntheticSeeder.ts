@@ -538,7 +538,7 @@ export async function seedProjectChronosScenario(options: {
             summary: `[PWM] ${node.summary}`,
             issuetype: { name: 'Task' },
             labels: [
-              `team:${node.team.replace(/\s+/g, '-')}`,
+              `team:${node.team.replace(/\s+/g, '_')}`,
               `goal:${node.goalId}`,
               `estimate:${node.baseEstimateDays}d`,
             ],

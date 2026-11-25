@@ -252,7 +252,7 @@ const initialBaseline = runMonteCarloSimulation(initialGraph, { iterations: 500 
 const state: CockpitState = {
   availableProjects: [
     { id: 'BLP', key: 'BLP', name: 'BloomPath Sprint' },
-    { id: 'TRI', key: 'TRI', name: 'Triton' },
+    { id: 'KAN', key: 'KAN', name: 'Triton' },
   ],
   graph: initialGraph,
   baselineSim: initialBaseline,

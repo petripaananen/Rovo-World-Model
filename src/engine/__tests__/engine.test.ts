@@ -1271,4 +1271,127 @@ describe('Project World Model (PWM) — Causal DAG & Monte Carlo Simulator', () 
     assert.equal(svgText.includes('<script'), false);
     assert.equal(svgText.includes('<foreignObject'), false);
   });
+
+  it('extracts advanced live Jira labels (underscore teams, blocked, gate, estimate, spent, handoff, done-ago, adr, risk, owner, and edge precedence/lag)', () => {
+    const graph = buildDAGFromJiraIssues(
+      'KAN',
+      [
+        {
+          id: '8001',
+          key: 'KAN-1',
+          fields: {
+            summary: '[AI Core] Multi-Agent Workflow Simulation',
+            status: { name: 'Done' },
+            labels: [
+              'team:AI_Core',
+              'goal:GOAL-ALPHA',
+              'estimate:4d',
+              'spent:5d',
+              'handoff:pending',
+              'done-ago:21d',
+              'adr:ADR-01:Multi_Agent_Kernel',
+              'owner:Elena_Vance',
+            ],
+            issuelinks: [
+              {
+                type: { name: 'Blocks', outward: 'blocks', inward: 'is blocked by' },
+                outwardIssue: { key: 'KAN-2' },
+              },
+              {
+                type: { name: 'Relates', outward: 'relates to', inward: 'relates to' },
+                outwardIssue: { key: 'KAN-3' },
+              },
+            ],
+          },
+        },
+        {
+          id: '8002',
+          key: 'KAN-2',
+          fields: {
+            summary: '[Backend] Storage Layer v2',
+            status: { name: 'In Progress' },
+            labels: [
+              'team:Backend_Platform',
+              'goal:GOAL-ALPHA',
+              'blocked',
+              'pert:2-5-11',
+              'spent:4d',
+              'risk:0.35-5-1.5',
+              'owner:Marcus_Chen',
+              'edge:KAN-1:SS:2',
+            ],
+            issuelinks: [
+              {
+                type: { name: 'Blocks', outward: 'blocks', inward: 'is blocked by' },
+                outwardIssue: { key: 'KAN-3' },
+              },
+            ],
+          },
+        },
+        {
+          id: '8003',
+          key: 'KAN-3',
+          fields: {
+            summary: 'Audit security permissions for sensitive data access',
+            status: { name: 'To Do' },
+            labels: [
+              'team:Frontend_UX',
+              'goal:GOAL-OMEGA',
+              'estimate:3d',
+              'gate',
+              'owner:Aria_Patel',
+              'edge:KAN-2:FF:-1',
+            ],
+          },
+        },
+      ],
+      [],
+      [],
+      '2026-11-25'
+    );
+
+    assert.deepEqual(
+      graph.teams.map((t) => t.name),
+      ['AI Core', 'Backend Platform', 'Frontend UX']
+    );
+
+    const n1 = graph.nodes.find((n) => n.key === 'KAN-1')!;
+    assert.equal(n1.team, 'AI Core');
+    assert.equal(n1.assignee, 'Elena Vance');
+    assert.equal(n1.baseEstimateDays, 4);
+    assert.equal(n1.actualEffortDays, 5);
+    assert.equal(n1.handoffAcceptedByDownstream, false);
+    assert.equal(n1.completedDaysAgo, 21);
+    assert.deepEqual(n1.confluenceDecision, {
+      id: 'ADR-01',
+      title: 'ADR-01: Multi Agent Kernel',
+      spaceKey: 'ARCH',
+    });
+
+    const n2 = graph.nodes.find((n) => n.key === 'KAN-2')!;
+    assert.equal(n2.status, 'Blocked');
+    assert.equal(n2.assignee, 'Marcus Chen');
+    assert.equal(n2.pureRisks?.length, 1);
+    assert.equal(n2.pureRisks?.[0].probability, 0.35);
+    assert.equal(n2.pureRisks?.[0].delayImpactDays, 5);
+    assert.equal(n2.pureRisks?.[0].mitigationEffortDays, 1.5);
+
+    const n3 = graph.nodes.find((n) => n.key === 'KAN-3')!;
+    assert.equal(n3.isStageGate, true);
+    assert.equal(n3.assignee, 'Aria Patel');
+
+    const e12 = graph.edges.find((e) => e.from === 'KAN-1' && e.to === 'KAN-2')!;
+    assert.equal(e12.precedenceType, 'SS');
+    assert.equal(e12.lagDays, 2);
+
+    const e13 = graph.edges.find((e) => e.from === 'KAN-1' && e.to === 'KAN-3')!;
+    assert.equal(e13.dependencyType, 'Architectural Decision');
+
+    const e23 = graph.edges.find((e) => e.from === 'KAN-2' && e.to === 'KAN-3')!;
+    assert.equal(e23.precedenceType, 'FF');
+    assert.equal(e23.lagDays, -1);
+
+    const sim = runMonteCarloSimulation(graph, { iterations: 200 });
+    assert.ok(sim.deliveryGovernance?.stageGateNodes.includes('KAN-3'));
+  });
 });
