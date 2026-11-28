@@ -11,13 +11,15 @@
  * - `mcpWebtriggerHandler`: MCP JSON-RPC 2.0 Webtrigger `mcp-world-model-endpoint`
  */
 
+import crypto from 'node:crypto';
 import Resolver from '@forge/resolver';
 import { runIntervention, runMonteCarloSimulation } from './engine/simulator';
 import {
   AssigneeInterventionOverride,
   NodeInterventionOverride,
 } from './engine/types';
-import { MCP_TOOLS_MANIFEST, mcpWebtriggerHandler } from './mcp/server';
+import { MCP_TOOLS_MANIFEST } from './mcp/manifest';
+import { mcpWebtriggerHandler } from './mcp/server';
 import {
   analyzeCriticalPath,
   analyzeCriticalPathHandler,
@@ -33,6 +35,31 @@ import {
 import { seedJiraProject, seedProjectChronosScenario } from './twg/syntheticSeeder';
 
 const resolver = new Resolver();
+
+async function ensureMcpBearerSecretProvisioned(): Promise<void> {
+  try {
+    const forgeApi = await import('@forge/api');
+    const storage = forgeApi?.storage as
+      | {
+          getSecret?: (k: string) => Promise<unknown>;
+          setSecret?: (k: string, v: string) => Promise<void>;
+        }
+      | undefined;
+    if (
+      storage &&
+      typeof storage.getSecret === 'function' &&
+      typeof storage.setSecret === 'function'
+    ) {
+      const existing = await storage.getSecret('pwm:mcp:bearerToken');
+      if (typeof existing !== 'string' || existing.trim().length === 0) {
+        const token = crypto.randomBytes(32).toString('hex');
+        await storage.setSecret('pwm:mcp:bearerToken', token);
+      }
+    }
+  } catch {
+    // Ignore outside Forge runtime
+  }
+}
 
 function extractProjectKey(req: unknown, payloadProjectKey?: string): string | undefined {
   if (payloadProjectKey && payloadProjectKey.trim().length > 0) {
@@ -58,12 +85,16 @@ async function handleGetGraphData(req: { payload?: unknown; context?: unknown })
   };
   const projectKey = extractProjectKey(req, payload.projectKey);
   const cloudId = extractCloudId(req);
-  const availableProjects = await fetchAvailableJiraProjects();
+
+  await ensureMcpBearerSecretProvisioned();
+  const availableProjects = await fetchAvailableJiraProjects('user');
 
   const graph = await fetchProjectCausalGraph({
     projectKey,
     cloudId,
     forceDemo: payload.forceDemo,
+    authMode: 'user',
+    availableProjects,
   });
 
   const baselineSimulation = runMonteCarloSimulation(graph, { iterations: 500 });
@@ -81,7 +112,7 @@ resolver.define('getInitialWorldModel', handleGetGraphData);
 
 /**
  * 2. `runWhatIfSimulation` / `simulateIntervention` — Runs counterfactual simulation
- *    supporting `deltaDays` (-5 to +30), `addDeveloper`, and `decoupleBlockingEdges`.
+ *    supporting `deltaDays` (-5 to +60), `addDeveloper`, and `decoupleBlockingEdges`.
  */
 async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unknown }) {
   const payload = (req?.payload ?? {}) as {
@@ -102,10 +133,11 @@ async function handleRunWhatIfSimulation(req: { payload?: unknown; context?: unk
     projectKey,
     cloudId,
     forceDemo: payload.forceDemo,
+    authMode: 'user',
   });
 
   const targetNodeId =
-    payload.targetNodeId || graph.topologicalOrder[0] || graph.nodes[0]?.key || 'BLP-7';
+    payload.targetNodeId || graph.topologicalOrder[0] || graph.nodes[0]?.key || 'CHRON-104';
   const deltaDays = Number(payload.deltaDays ?? 0);
   const addDeveloper = Boolean(payload.addDeveloper);
   const decoupleBlockingEdges = Boolean(payload.decoupleBlockingEdges);
@@ -160,11 +192,12 @@ async function handleLoadDemoScenario(req: { payload?: unknown; context?: unknow
     projectKey?: string;
     populateJiraIssues?: boolean;
   };
-  const projectKey = extractProjectKey(req, payload.projectKey) || 'BLP';
+  const projectKey = extractProjectKey(req, payload.projectKey) || 'CHRON';
 
   const seedReport = await seedProjectChronosScenario({
     projectKey,
     populateJiraIssues: Boolean(payload.populateJiraIssues),
+    authMode: 'user',
   });
 
   const baselineSimulation = runMonteCarloSimulation(seedReport.graph, { iterations: 500 });
@@ -180,15 +213,22 @@ resolver.define('loadDemoScenario', handleLoadDemoScenario);
 resolver.define('seedDemoScenario', handleLoadDemoScenario);
 
 /**
- * 4. `createRealJiraIssues` — Uses `seedJiraProject(projectKey)` to create real linked issues via Jira REST API,
+ * 4. `createRealJiraIssues` — Uses `seedJiraProject(projectKey, 'user')` to create real linked issues via Jira REST API,
  *    then reloads the live Jira project graph.
  */
 resolver.define('createRealJiraIssues', async (req) => {
   const payload = (req?.payload ?? {}) as { projectKey?: string };
-  const projectKey = extractProjectKey(req, payload.projectKey) || 'BLP';
+  const projectKey = extractProjectKey(req, payload.projectKey);
+  if (!projectKey || !/^[A-Z][A-Z0-9_]{0,15}$/.test(projectKey)) {
+    throw new Error('Valid Jira projectKey is required to create sample Jira issues.');
+  }
   const cloudId = extractCloudId(req);
-  const seedReport = await seedJiraProject(projectKey);
-  const liveGraph = await fetchProjectCausalGraph({ projectKey, cloudId });
+  const seedReport = await seedJiraProject(projectKey, 'user');
+  const liveGraph = await fetchProjectCausalGraph({
+    projectKey,
+    cloudId,
+    authMode: 'user',
+  });
   const baselineSimulation = runMonteCarloSimulation(liveGraph, { iterations: 500 });
   return {
     seedReport,
@@ -208,6 +248,7 @@ resolver.define('resetScenario', async (req) => {
     projectKey,
     cloudId,
     forceDemo: payload.forceDemo,
+    authMode: 'user',
   });
   const baselineSimulation = runMonteCarloSimulation(graph, { iterations: 500 });
   return {
@@ -261,22 +302,25 @@ resolver.define('invokeRovoOrMcpAction', async (req) => {
       assigneeOverrides: payload.assigneeOverrides,
       projectKey: payload.projectKey,
       cloudId,
+      authMode: 'user',
     });
   }
   if (payload.actionKey === 'analyze-critical-path') {
     return analyzeCriticalPath({
       projectKey: payload.projectKey,
       cloudId,
+      authMode: 'user',
     });
   }
   if (payload.actionKey === 'seed-demo-scenario') {
     return seedDemoScenario({
       projectKey: payload.projectKey,
       populateJiraIssues: payload.populateJiraIssues,
+      authMode: 'user',
     });
   }
 
-  return { error: `Unknown actionKey: ${payload.actionKey}` };
+  return { error: `Unknown actionKey: ${String(payload.actionKey ?? '')}` };
 });
 
 export const uiResolverHandler = resolver.getDefinitions();

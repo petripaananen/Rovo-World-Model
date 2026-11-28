@@ -16,10 +16,11 @@ import {
   NodeInterventionOverride,
   SimulationResult,
 } from '../../../../src/engine/types';
-import { MCP_TOOLS_MANIFEST } from '../../../../src/mcp/server';
+import { MCP_TOOLS_MANIFEST } from '../../../../src/mcp/manifest';
 import {
   escapeHtmlText,
   formatFriendlyDate,
+  getInitials,
   renderDragHandleBadge,
   renderInfoTooltip,
   renderJiraStatusLozenge,
@@ -73,6 +74,16 @@ function isAssigneeOverrideActive(aOv: AssigneeInterventionOverride): boolean {
   );
 }
 
+function sanitizePromptField(raw: string | undefined | null, maxLen = 120): string {
+  const clean = String(raw ?? '')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/[`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (clean.length <= maxLen) return clean;
+  return `${clean.slice(0, maxLen - 1)}…`;
+}
+
 export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   const {
     graph,
@@ -107,7 +118,7 @@ export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   for (const [k, ov] of Object.entries(mergedNodes)) {
     const n = graph.nodes.find((item) => item.key === k);
     scenarioClauses.push(
-      `issue ${k}${n ? ` ("${n.summary}")` : ''} [${summarizeNodeOverride(ov)}]`
+      `issue ${sanitizePromptField(k, 32)}${n ? ` ("${sanitizePromptField(n.summary)}")` : ''} [${summarizeNodeOverride(ov)}]`
     );
   }
 
@@ -115,18 +126,23 @@ export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
     ([, aOv]) => isAssigneeOverrideActive(aOv)
   );
   for (const [person, aOv] of activeAssigneeEntries) {
-    scenarioClauses.push(`person "${person}" [${summarizeAssigneeOverride(aOv)}]`);
+    scenarioClauses.push(
+      `person "${sanitizePromptField(person, 60)}" [${summarizeAssigneeOverride(aOv)}]`
+    );
   }
 
   const node = graph.nodes.find((n) => n.key === selectedNodeKey) ?? graph.nodes[0];
   const goal = (node ? graph.goals.find((g) => g.id === node.goalId) : undefined) ?? graph.goals[0];
+  const safeProjName = sanitizePromptField(graph.projectName, 80);
+  const safeProjKey = sanitizePromptField(graph.projectKey, 24);
+  const safeGoalName = sanitizePromptField(goal?.name ?? 'Sprint Delivery', 80);
 
   if (!node) {
-    return `@Rovo-World-Model Agent Project "${graph.projectName}" (${graph.projectKey}) currently has 0 issues. Populate sample linked Jira issues or add issues in Jira to run Monte Carlo dependency forecasting.`;
+    return `@Rovo-World-Model Agent Project "${safeProjName}" (${safeProjKey}) currently has 0 issues. Populate sample linked Jira issues or add issues in Jira to run Monte Carlo dependency forecasting.`;
   }
 
   if (scenarioClauses.length > 1) {
-    return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), run a combined counterfactual simulation for: ${scenarioClauses.join(' + ')}. Projected Target Commit Date (85% safe) is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues affecting "${goal?.name ?? 'Sprint Delivery'}". Recommend a concrete mitigation plan.`;
+    return `@Rovo-World-Model Agent In project "${safeProjName}" (${safeProjKey}), run a combined counterfactual simulation for: ${scenarioClauses.join(' + ')}. Projected Target Commit Date (85% safe) is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues affecting "${safeGoalName}". Recommend a concrete mitigation plan.`;
   }
 
   const shiftStr =
@@ -140,10 +156,10 @@ export function buildRovoMitigationPrompt(props: ScenarioPanelProps): string {
   const modSuffix = modifiers.length > 0 ? ` while ${modifiers.join(' and ')}` : '';
 
   if (scenarioClauses.length === 1 && activeAssigneeEntries.length === 1) {
-    return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate workload impact for ${scenarioClauses[0]} towards our "${goal?.name ?? 'Sprint Delivery'}" goal. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
+    return `@Rovo-World-Model Agent In project "${safeProjName}" (${safeProjKey}), simulate workload impact for ${scenarioClauses[0]} towards our "${safeGoalName}" goal. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
   }
 
-  return `@Rovo-World-Model Agent In project "${graph.projectName}" (${graph.projectKey}), simulate what happens to our "${goal?.name ?? 'Sprint Delivery'}" goal if issue ${node.key} ("${node.summary}") is ${shiftStr}${modSuffix}. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
+  return `@Rovo-World-Model Agent In project "${safeProjName}" (${safeProjKey}), simulate what happens to our "${safeGoalName}" goal if issue ${sanitizePromptField(node.key, 32)} ("${sanitizePromptField(node.summary)}") is ${shiftStr}${modSuffix}. Projected release date is ${activeSim.p85Date} with ${activeSim.blastRadiusNodes.length} impacted downstream issues. Recommend a concrete mitigation plan.`;
 }
 
 function renderTabBody(props: ScenarioPanelProps): string {
@@ -420,72 +436,6 @@ function renderTabBody(props: ScenarioPanelProps): string {
   `;
 }
 
-export function renderGoalsCard(activeSim: SimulationResult): string {
-  return `
-    <div class="panel-card goals-panel-card">
-      <div class="panel-header">
-        <div class="panel-title">
-          <span>Teamwork Graph Goals</span>
-          ${renderInfoTooltip(
-            'Teamwork Graph Goal Alignment',
-            'Tracks how issue schedule changes ripple up to linked Teamwork Graph Goals.'
-          )}
-        </div>
-        <span class="jira-lozenge jira-lozenge-goal">${activeSim.goalImpacts.length} GOALS</span>
-      </div>
-      <div class="goals-list-horizontal">
-        ${activeSim.goalImpacts
-          .map((goal) => {
-            const statusClass =
-              goal.status === 'Off Track'
-                ? 'off-track'
-                : goal.status === 'At Risk'
-                  ? 'at-risk'
-                  : '';
-            const probPct = Math.round(goal.probabilityOfOnTime * 100);
-            const barColor =
-              goal.status === 'Off Track'
-                ? '#CA3521'
-                : goal.status === 'At Risk'
-                  ? '#D97706'
-                  : '#1F845A';
-            const shiftSign =
-              goal.rippleDelayDays > 0
-                ? `+${goal.rippleDelayDays}d`
-                : goal.rippleDelayDays < 0
-                  ? `${goal.rippleDelayDays}d`
-                  : '';
-            const shiftClass = goal.rippleDelayDays > 0 ? 'text-danger' : 'text-success';
-
-            return `
-              <div class="goal-card ${statusClass}" title="Goal Key: ${escapeHtmlText(goal.goalKey)} | Owner: ${escapeHtmlText(goal.ownerTeam)}">
-                <div class="goal-top">
-                  <div>
-                    <div class="goal-name">${escapeHtmlText(goal.goalName)}</div>
-                    <div class="goal-owner-sub">
-                      Owner: ${escapeHtmlText(goal.ownerTeam)}
-                    </div>
-                  </div>
-                  ${renderJiraStatusLozenge(goal.status)}
-                </div>
-                <div class="goal-dates-row">
-                  <span>Target: <strong>${formatFriendlyDate(goal.targetDate)}</strong></span>
-                  <span>Projected: <strong>${formatFriendlyDate(goal.p85CompletionDate)}</strong> ${shiftSign ? `<em class="${shiftClass}">(${shiftSign})</em>` : ''}</span>
-                  <span>On-Time: <strong>${probPct}%</strong></span>
-                </div>
-                <svg width="100%" height="6" class="prob-bar-svg">
-                  <rect x="0" y="0" width="100%" height="6" rx="3" fill="#DCDFE4" />
-                  <rect x="0" y="0" width="${Math.max(4, probPct)}%" height="6" rx="3" fill="${barColor}" />
-                </svg>
-              </div>
-            `;
-          })
-          .join('')}
-      </div>
-    </div>
-  `;
-}
-
 export function renderScenarioPanel(props: ScenarioPanelProps): string {
   const {
     graph,
@@ -586,13 +536,6 @@ export function renderScenarioPanel(props: ScenarioPanelProps): string {
       : selectedNode.uncertaintySigma >= 1.0
         ? 'Medium'
         : 'Low';
-
-  const getInitials = (name: string) =>
-    name
-      .split(/\s+/)
-      .map((part) => part[0]?.toUpperCase() ?? '')
-      .join('')
-      .slice(0, 2) || 'DEV';
 
   const assigneeInitials = getInitials(selectedNode.assignee);
   const doneSub = selectedNode.subtaskDoneCount ?? 0;

@@ -1,11 +1,12 @@
 /**
  * Rovo-World-Model — Main Custom UI Cockpit Controller (`static/ui/src/cockpit.ts`)
  *
- * Uses Atlassian Forge's `window.__bridge.callBridge('invoke', ...)` to load real Jira projects
- * (e.g., `BloomPath Sprint (BLP)`, `Triton (TRI)`) and their live issues directly from Jira Cloud.
+ * Uses official `@forge/bridge` `invoke()` to load live Jira projects and issues
+ * strictly under the active Jira user's permissions.
  */
 
-import { addCalendarDays, buildDAGFromJiraIssues } from '../../../src/engine/dag';
+import { invoke } from '@forge/bridge';
+import { buildDAGFromJiraIssues } from '../../../src/engine/dag';
 import { runIntervention, runMonteCarloSimulation } from '../../../src/engine/simulator';
 import {
   AssigneeInterventionOverride,
@@ -133,8 +134,7 @@ interface CockpitState {
 }
 
 /**
- * Invokes Atlassian Forge Custom UI resolver via `window.__bridge.callBridge('invoke', ...)`
- * (the native runtime channel used by `@forge/bridge` inside Jira Cloud iframes).
+ * Invokes Atlassian Forge Custom UI backend resolver using the official `@forge/bridge` SDK.
  */
 async function invokeForgeResolver<T>(
   functionKey: string,
@@ -142,92 +142,28 @@ async function invokeForgeResolver<T>(
 ): Promise<T | null> {
   try {
     const win = window as unknown as {
-      __bridge?: {
-        callBridge?: (action: string, args?: unknown) => Promise<T>;
-      };
       __forgeBridge?: {
         invoke?: (k: string, p?: unknown) => Promise<T>;
       };
     };
-
-    if (win.__bridge && typeof win.__bridge.callBridge === 'function') {
-      return await win.__bridge.callBridge('invoke', {
-        functionKey,
-        payload,
-      });
-    }
     if (win.__forgeBridge && typeof win.__forgeBridge.invoke === 'function') {
       return await win.__forgeBridge.invoke(functionKey, payload);
     }
+    return (await invoke<T>(functionKey, payload)) ?? null;
   } catch {
-    // Fallback when running outside Jira iframe
+    return null;
   }
-  return null;
 }
 
 /**
- * Builds the default initial graph from real Jira project issues (`BloomPath Sprint (BLP)`)
- * while the live `getGraphData` bridge call completes.
+ * Clean neutral initial connecting graph before `getGraphData` resolves (contains zero personal/dev data).
  */
-function createInitialRealProjectGraph(projectKey = 'BLP', projectName = 'BloomPath Sprint'): CausalGraph {
+function createInitialConnectingGraph(): CausalGraph {
   const todayIso = new Date().toISOString().slice(0, 10);
-  const dag = buildDAGFromJiraIssues(
-    projectKey,
-    [
-      {
-        id: '10007',
-        key: `${projectKey}-7`,
-        fields: {
-          summary: 'Test Issue 2 - Progress Tracking',
-          status: { name: 'To Do' },
-          assignee: { displayName: 'Petri Paananen' },
-          customfield_10016: 4,
-          issuelinks: [
-            {
-              type: { name: 'Blocks', outward: 'blocks' },
-              outwardIssue: { key: `${projectKey}-8` },
-            },
-          ],
-        },
-      },
-      {
-        id: '10008',
-        key: `${projectKey}-8`,
-        fields: {
-          summary: 'Test Issue 3 - Sprint Health',
-          status: { name: 'To Do' },
-          assignee: { displayName: 'Petri Paananen' },
-          customfield_10016: 5,
-        },
-      },
-    ],
-    [
-      {
-        id: 'GOAL-ALPHA',
-        key: `${projectKey}-GOAL-1`,
-        name: `${projectName} Sprint Delivery`,
-        targetDate: addCalendarDays(todayIso, 18),
-        targetDayOffset: 18,
-        ownerTeam: 'No Team Assigned',
-        status: 'On Track',
-      },
-      {
-        id: 'GOAL-OMEGA',
-        key: `${projectKey}-GOAL-2`,
-        name: `${projectName} Release Milestone`,
-        targetDate: addCalendarDays(todayIso, 32),
-        targetDayOffset: 32,
-        ownerTeam: 'No Team Assigned',
-        status: 'On Track',
-      },
-    ],
-    [],
-    todayIso
-  );
-
+  const dag = buildDAGFromJiraIssues('SYNC', [], [], [], todayIso);
   return {
     ...dag,
-    projectName,
+    projectName: 'Connecting to Jira...',
     isSyntheticDemo: false,
   };
 }
@@ -246,19 +182,16 @@ function pickDefaultAssignee(graph: CausalGraph): string {
   return sorted[0]?.[0] ?? 'Unassigned';
 }
 
-const initialGraph = createInitialRealProjectGraph('BLP', 'BloomPath Sprint');
+const initialGraph = createInitialConnectingGraph();
 const initialBaseline = runMonteCarloSimulation(initialGraph, { iterations: 500 });
 
 const state: CockpitState = {
-  availableProjects: [
-    { id: 'BLP', key: 'BLP', name: 'BloomPath Sprint' },
-    { id: 'KAN', key: 'KAN', name: 'Triton' },
-  ],
+  availableProjects: [],
   graph: initialGraph,
   baselineSim: initialBaseline,
   activeSim: initialBaseline,
   intervention: null,
-  selectedNodeKey: initialGraph.nodes[0]?.key ?? 'BLP-7',
+  selectedNodeKey: initialGraph.nodes[0]?.key ?? '',
   delayDays: 0,
   addDeveloper: false,
   decoupleBlockingEdges: false,
@@ -274,7 +207,7 @@ const state: CockpitState = {
   activeRightTab: 'cascade',
   copiedPromptNotice: false,
   statusBanner:
-    'Connected to Jira project — Click any issue card or drag the Schedule Change slider to simulate timeline impacts.',
+    'Connecting to Jira project via Forge Bridge — loading issues and dependency links…',
 };
 
 function getMergedNodeOverrides(): Record<string, NodeInterventionOverride> {
@@ -415,12 +348,15 @@ let didDragDuringPress = false;
 
 function scrollDagToSelectedNode(smooth = true): void {
   const viewport = document.getElementById('dag-viewport-container');
-  if (!viewport) return;
-  const selectedEl = viewport.querySelector<SVGGElement>(
-    `.dag-node-group[data-node-key="${state.selectedNodeKey}"]`
-  );
+  if (!viewport || !state.selectedNodeKey) return;
+  let selectedEl: SVGGElement | null = null;
+  viewport.querySelectorAll<SVGGElement>('.dag-node-group').forEach((el) => {
+    if (!selectedEl && el.getAttribute('data-node-key') === state.selectedNodeKey) {
+      selectedEl = el;
+    }
+  });
   if (!selectedEl) return;
-  const nodeX = Number(selectedEl.getAttribute('data-node-x') ?? 0);
+  const nodeX = Number((selectedEl as SVGGElement).getAttribute('data-node-x') ?? 0);
   const targetLeft = Math.max(0, nodeX - viewport.clientWidth / 2 + 100);
   if (typeof viewport.scrollTo === 'function') {
     viewport.scrollTo({
@@ -702,10 +638,9 @@ async function loadJiraProjectGraph(projectKey?: string): Promise<void> {
     state.availableProjects = remoteData.availableProjects;
   }
 
-  if (remoteData?.graph && remoteData.graph.nodes && remoteData.graph.nodes.length >= 1) {
+  if (remoteData?.graph && remoteData.graph.nodes) {
     state.graph = remoteData.graph;
-    state.selectedNodeKey =
-      remoteData.graph.nodes[0]?.key ?? state.selectedNodeKey;
+    state.selectedNodeKey = remoteData.graph.nodes[0]?.key ?? '';
     state.delayDays = 0;
     state.addDeveloper = false;
     state.decoupleBlockingEdges = false;
@@ -714,25 +649,17 @@ async function loadJiraProjectGraph(projectKey?: string): Promise<void> {
     state.assigneeOverrides = {};
     state.selectedAssignee = pickDefaultAssignee(state.graph);
     recomputeSimulation();
-    state.statusBanner = `Loaded live Jira project "${state.graph.projectName}" (${state.graph.projectKey}) with ${state.graph.nodes.length} ${
-      state.graph.nodes.length === 1 ? 'issue' : 'issues'
-    }.`;
+    state.statusBanner =
+      state.graph.nodes.length === 0
+        ? `Project "${state.graph.projectName}" (${state.graph.projectKey}) has 0 issues. Click + Add Sample Issues to populate sample tasks.`
+        : `Loaded live Jira project "${state.graph.projectName}" (${state.graph.projectKey}) with ${state.graph.nodes.length} ${
+            state.graph.nodes.length === 1 ? 'issue' : 'issues'
+          }.`;
     renderCockpit();
-  } else if (projectKey) {
-    const matched = state.availableProjects.find((p) => p.key === projectKey);
-    state.graph = createInitialRealProjectGraph(
-      projectKey,
-      matched?.name ?? `${projectKey} Project`
-    );
-    state.selectedNodeKey = state.graph.nodes[0]?.key ?? `${projectKey}-1`;
-    state.delayDays = 0;
-    state.addDeveloper = false;
-    state.decoupleBlockingEdges = false;
-    state.trimScope = false;
-    state.pinnedNodeOverrides = {};
-    state.assigneeOverrides = {};
-    state.selectedAssignee = pickDefaultAssignee(state.graph);
-    recomputeSimulation();
+  } else {
+    state.statusBanner = projectKey
+      ? `Unable to load Jira project "${projectKey}" — verify Jira Browse permissions or click Sync Jira Project.`
+      : 'Unable to load Jira project via Forge Bridge — click Sync Jira Project to retry.';
     renderCockpit();
   }
 }
@@ -1002,15 +929,34 @@ function attachCockpitEventListeners(
         activeRightTab: state.activeRightTab,
         copiedPromptNotice: state.copiedPromptNotice,
       });
+      let copied = false;
       try {
         if (navigator.clipboard && navigator.clipboard.writeText) {
           await navigator.clipboard.writeText(promptText);
+          copied = true;
         }
       } catch {
-        // Fallback when clipboard permission is restricted in sandboxed iframe
+        copied = false;
       }
-      state.copiedPromptNotice = true;
-      state.statusBanner = `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`;
+      if (!copied && typeof document.execCommand === 'function') {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = promptText;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          copied = document.execCommand('copy');
+          document.body.removeChild(ta);
+        } catch {
+          copied = false;
+        }
+      }
+      state.copiedPromptNotice = copied;
+      state.statusBanner = copied
+        ? `Copied Rovo Prompt — open Rovo Chat in Jira and paste to ask @Rovo-World-Model Agent!`
+        : `Clipboard write blocked by iframe policy — prompt ready in Rovo Chat.`;
       renderCockpit();
     });
   }
@@ -1294,7 +1240,8 @@ function attachCockpitEventListeners(
       const topKey =
         state.activeSim.topBottlenecks[0]?.key ??
         state.graph.nodes[0]?.key ??
-        'BLP-7';
+        '';
+      if (!topKey) return;
       switchSelectedIssue(topKey);
       state.simulatorMode = 'issue';
       if (state.delayDays === 0) state.delayDays = 5;
@@ -1306,10 +1253,10 @@ function attachCockpitEventListeners(
     });
   }
 
-  // 12. Header Action: Reset (`invoke('resetScenario')`)
+  // 12. Header Action: Reset
   const btnReset = document.getElementById('btn-reset-sim');
   if (btnReset) {
-    btnReset.addEventListener('click', async () => {
+    btnReset.addEventListener('click', () => {
       state.delayDays = 0;
       state.addDeveloper = false;
       state.decoupleBlockingEdges = false;
@@ -1318,11 +1265,11 @@ function attachCockpitEventListeners(
       state.assigneeOverrides = {};
       state.scrubberDayOffset = 0;
       state.selectedEpochIndex = 2;
+      state.copiedPromptNotice = false;
       recomputeSimulation();
       state.statusBanner =
         'What-If changes cleared — viewing baseline schedule for ' + state.graph.projectName + '.';
       renderCockpit();
-      await invokeForgeResolver('resetScenario', { projectKey: state.graph.projectKey });
     });
   }
 

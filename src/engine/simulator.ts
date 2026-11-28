@@ -34,9 +34,13 @@ import {
   PrecedenceType,
   ProbabilityConeBucket,
   ReserveBreakdown,
+  SIMULATION_BOUNDS,
   SimulationResult,
   TimeMachineEpoch,
   WhatIfInterventionOptions,
+  clampDelayDays,
+  clampUnavailableDays,
+  isReservedObjectKey,
 } from './types';
 
 export interface SimulationOptions {
@@ -108,7 +112,7 @@ export function computeNodeCompletionStepPct(
       if (!target) return false;
       const isCrossTeam =
         target.team !== node.team || edge.dependencyType === 'Cross-Team Handoff';
-      return isCrossTeam && target.status.toLowerCase() === 'to do' && edge.propagationWeight >= 0.95 && node.handoffAcceptedByDownstream !== undefined;
+      return isCrossTeam && target.status.toLowerCase() === 'to do' && edge.propagationWeight >= 0.95;
     });
     return hasUnacceptedCrossTeamHandoff ? 75 : 100;
   }
@@ -194,10 +198,16 @@ export function runMonteCarloSimulation(
 
   // Resolve optional single-node and compound multi-node / assignee interventions
   const intervenedKey = options.intervention?.targetNodeId
-    ? resolveNodeKey(graph.nodes, options.intervention.targetNodeId)
+    ? resolveNodeKey(
+        graph.nodes,
+        options.intervention.targetNodeId,
+        graph.isSyntheticDemo
+      )
     : undefined;
   const interventionDelta =
-    intervenedKey && options.intervention ? Number(options.intervention.deltaDays || 0) : 0;
+    intervenedKey && options.intervention
+      ? clampDelayDays(options.intervention.deltaDays, 0)
+      : 0;
   const addDeveloper = Boolean(intervenedKey && options.intervention?.addDeveloper);
   const decoupleBlockingEdges = Boolean(
     intervenedKey && options.intervention?.decoupleBlockingEdges
@@ -217,11 +227,13 @@ export function runMonteCarloSimulation(
     });
   }
 
+  let nodeOverrideCount = 0;
   for (const [rawKey, ov] of Object.entries(options.intervention?.nodeOverrides ?? {})) {
-    if (!ov) continue;
-    const resolved = resolveNodeKey(graph.nodes, rawKey);
+    if (!ov || isReservedObjectKey(rawKey)) continue;
+    if (++nodeOverrideCount > SIMULATION_BOUNDS.MAX_OVERRIDE_ENTRIES) break;
+    const resolved = resolveNodeKey(graph.nodes, rawKey, graph.isSyntheticDemo);
     if (!resolved) continue;
-    const d = Number(ov.deltaDays || 0);
+    const d = clampDelayDays(ov.deltaDays, 0);
     const hasMod =
       d !== 0 ||
       Boolean(ov.addDeveloper) ||
@@ -240,15 +252,21 @@ export function runMonteCarloSimulation(
   const reassignedNodeKeys = new Set<string>();
   const serializedAssignees = new Set<string>();
 
+  let assigneeOverrideCount = 0;
   for (const [rawAssignee, aOv] of Object.entries(
     options.intervention?.assigneeOverrides ?? {}
   )) {
-    if (!aOv) continue;
-    const assigneeName = aOv.assignee || rawAssignee;
+    if (!aOv || isReservedObjectKey(rawAssignee)) continue;
+    if (++assigneeOverrideCount > SIMULATION_BOUNDS.MAX_OVERRIDE_ENTRIES) break;
+    const assigneeName = (aOv.assignee || rawAssignee).trim();
+    const assigneeLower = assigneeName.toLowerCase();
+    if (!assigneeLower) continue;
+
     const activeAssigneeNodes = orderedNodes
       .filter(
         (node) =>
-          node.assignee === assigneeName && node.status.toLowerCase() !== 'done'
+          node.assignee.trim().toLowerCase() === assigneeLower &&
+          node.status.toLowerCase() !== 'done'
       )
       .sort(
         (a, b) =>
@@ -258,7 +276,7 @@ export function runMonteCarloSimulation(
 
     if (activeAssigneeNodes.length === 0) continue;
 
-    const ptoDays = Number(aOv.unavailableDays || 0);
+    const ptoDays = clampUnavailableDays(aOv.unavailableDays, 0);
     if (ptoDays !== 0) {
       activeAssigneeNodes.forEach((aNode, idx) => {
         const appliedDays =
@@ -266,7 +284,7 @@ export function runMonteCarloSimulation(
         const prev = effectiveNodeOverrides.get(aNode.key) ?? { deltaDays: 0 };
         effectiveNodeOverrides.set(aNode.key, {
           ...prev,
-          deltaDays: Number((prev.deltaDays + appliedDays).toFixed(1)),
+          deltaDays: clampDelayDays(Number((prev.deltaDays + appliedDays).toFixed(1)), 0),
         });
       });
     }
@@ -289,7 +307,7 @@ export function runMonteCarloSimulation(
     }
 
     if (aOv.serializeParallelWork) {
-      serializedAssignees.add(assigneeName);
+      serializedAssignees.add(assigneeLower);
       if (!effectiveNodeOverrides.has(activeAssigneeNodes[0].key)) {
         effectiveNodeOverrides.set(activeAssigneeNodes[0].key, { deltaDays: 0 });
       }
@@ -385,7 +403,7 @@ export function runMonteCarloSimulation(
       const effectiveAssignee = reassignedNodeKeys.has(node.key)
         ? `Reassigned (${node.key})`
         : node.assignee;
-      if (serializedAssignees.has(effectiveAssignee)) {
+      if (serializedAssignees.has(effectiveAssignee.trim().toLowerCase())) {
         const list = assigneeActiveTasks.get(effectiveAssignee) ?? [];
         if (list.length === 0) {
           list.push(node.key);
@@ -437,12 +455,19 @@ export function runMonteCarloSimulation(
       const nodeAddDev = Boolean(nodeOv?.addDeveloper);
       const nodeTrimScope = Boolean(nodeOv?.trimScope);
       const isNodeReassigned = reassignedNodeKeys.has(node.key);
-      const isAssigneeSerialized = serializedAssignees.has(node.assignee);
+      const isAssigneeSerialized = serializedAssignees.has(
+        node.assignee.trim().toLowerCase()
+      );
       const isTarget = Boolean(nodeOv) || isNodeReassigned || isAssigneeSerialized;
       const isDone = node.status.toLowerCase() === 'done';
 
       // Sample stochastic task duration using right-skewed normal noise
+      // Always consume the same RNG draws per node (including pureRisks) so CRN streams never desynchronize.
       const z = sampleStandardNormal(rng);
+      const riskUniforms =
+        node.pureRisks && node.pureRisks.length > 0
+          ? node.pureRisks.map(() => rng())
+          : undefined;
       let sampledDuration = 0;
 
       if (!isDone || (isTarget && (nodeDelta !== 0 || nodeAddDev || nodeTrimScope))) {
@@ -484,10 +509,10 @@ export function runMonteCarloSimulation(
         let rawDuration = Math.max(base * 0.35, base + skewNoise);
 
         // Discrete Pure Risk Events (Bernoulli shocks)
-        if (node.pureRisks && node.pureRisks.length > 0) {
-          for (const risk of node.pureRisks) {
-            const u = rng();
-            if (u < Math.max(0, Math.min(1, risk.probability))) {
+        if (node.pureRisks && riskUniforms) {
+          for (let rIdx = 0; rIdx < node.pureRisks.length; rIdx++) {
+            const risk = node.pureRisks[rIdx];
+            if (riskUniforms[rIdx] < Math.max(0, Math.min(1, risk.probability))) {
               rawDuration += Math.max(0, risk.delayImpactDays);
             }
           }
@@ -1291,10 +1316,10 @@ export function runIntervention(
   const assigneeOverrides =
     typeof iterationsOrOptions === 'object' ? iterationsOrOptions.assigneeOverrides : undefined;
 
-  // Support both acceleration (-5d) and delay (+120d)
-  const sanitizedDelta = Math.max(-5, Math.min(120, Number(deltaDays) || 0));
+  // Support both acceleration (-5d) and delay (+60d)
+  const sanitizedDelta = clampDelayDays(deltaDays, 0);
   const resolvedKey =
-    resolveNodeKey(graph.nodes, targetNodeId) ??
+    resolveNodeKey(graph.nodes, targetNodeId, graph.isSyntheticDemo) ??
     graph.topologicalOrder[0] ??
     graph.nodes[0]?.key ??
     targetNodeId;
@@ -1392,10 +1417,60 @@ export function runIntervention(
         ? maxMagnitudeDownstreamShift
         : sanitizedDelta;
 
+  // Recompute post-CRN cross-team blocked handoff idle days & cost of delay using exact CRN node shifts
+  let updatedDeliveryGovernance = intervenedSim.deliveryGovernance;
+  if (updatedDeliveryGovernance) {
+    const nodeByKey = new Map(graph.nodes.map((n) => [n.key, n]));
+    const decoupledSet = new Set<string>();
+    if (decoupleBlockingEdges) decoupledSet.add(resolvedKey);
+    for (const [k, ov] of Object.entries(nodeOverrides ?? {})) {
+      if (ov?.decoupleBlockingEdges) {
+        const rk = resolveNodeKey(graph.nodes, k, graph.isSyntheticDemo);
+        if (rk) decoupledSet.add(rk);
+      }
+    }
+    let crnHandoffIdleDays = 0;
+    for (const edge of graph.edges) {
+      const uNode = nodeByKey.get(edge.from);
+      const vNode = nodeByKey.get(edge.to);
+      if (!uNode || !vNode) continue;
+      const isCrossTeam =
+        uNode.team !== vNode.team ||
+        edge.dependencyType === 'Cross-Team Handoff' ||
+        vNode.executionMode === 'cross-team-dependency' ||
+        vNode.executionMode === 'external-vendor-api';
+      if (isCrossTeam) {
+        const effEdgeWeight = decoupledSet.has(edge.from)
+          ? Math.min(edge.propagationWeight, 0.25)
+          : edge.propagationWeight;
+        const uSlip = Math.max(0, intervenedSim.nodeStats[uNode.key]?.rippleDelayDays ?? 0);
+        crnHandoffIdleDays += uSlip > 0 ? uSlip * effEdgeWeight : 0.4;
+      }
+    }
+    crnHandoffIdleDays = Number(crnHandoffIdleDays.toFixed(1));
+    const crnCostOfDelay = Number(
+      (
+        Math.max(
+          0,
+          intervenedSim.p85Days -
+            (enrichedGoalImpacts[0]?.targetDayOffset ?? intervenedSim.p85Days)
+        ) *
+          1.5 +
+        crnHandoffIdleDays
+      ).toFixed(1)
+    );
+    updatedDeliveryGovernance = {
+      ...updatedDeliveryGovernance,
+      blockedHandoffIdleDays: crnHandoffIdleDays,
+      costOfDelayDevDays: crnCostOfDelay,
+    };
+  }
+
   const totalExecMs = Number((performance.now() - startClock).toFixed(2));
 
   return {
     ...intervenedSim,
+    deliveryGovernance: updatedDeliveryGovernance,
     rippleDelayDays,
     goalImpacts: enrichedGoalImpacts,
     executionTimeMs: totalExecMs,

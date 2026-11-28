@@ -54,47 +54,51 @@ export interface LoadGraphOptions {
   forceDemo?: boolean;
   referenceDate?: string;
   cloudId?: string;
+  authMode?: 'user' | 'app';
+  availableProjects?: JiraProjectSummary[];
+}
+
+interface JiraHttpResponse {
+  ok: boolean;
+  status?: number;
+  json: () => Promise<unknown>;
 }
 
 /**
- * Invokes Jira REST API preferring `api.asUser()` (to enforce the current user's Jira browse permissions
- * in Custom UI & Rovo contexts) and gracefully falling back to `api.asApp()` when running in an
- * unauthenticated webtrigger (MCP server) or background context.
+ * Invokes Jira REST API using explicit authorization mode:
+ * - `'user'` (Custom UI & Rovo): strictly executes `api.asUser()` and NEVER escalates to `api.asApp()`.
+ * - `'app'` (authenticated MCP server): executes `api.asApp()`.
  */
-async function requestJiraWithUserFallback(
+async function requestJiraAuthorized(
   forgeApi: typeof import('@forge/api'),
-  routeUrl: ReturnType<typeof import('@forge/api').route>
-): Promise<{ ok: boolean; json: () => Promise<unknown> }> {
+  routeUrl: ReturnType<typeof import('@forge/api').route>,
+  authMode: 'user' | 'app' = 'user'
+): Promise<JiraHttpResponse> {
   const api = forgeApi.default;
-  try {
-    if (typeof api.asUser === 'function') {
-      const userRes = await api.asUser().requestJira(routeUrl, {
-        headers: { Accept: 'application/json' },
-      });
-      if (userRes && userRes.ok) {
-        return userRes;
-      }
-    }
-  } catch {
-    // Fall back to app context when no user context is bound (e.g. MCP webtrigger)
+  if (authMode === 'app') {
+    return api.asApp().requestJira(routeUrl, {
+      headers: { Accept: 'application/json' },
+    }) as Promise<JiraHttpResponse>;
   }
-
-  return api.asApp().requestJira(routeUrl, {
+  return api.asUser().requestJira(routeUrl, {
     headers: { Accept: 'application/json' },
-  });
+  }) as Promise<JiraHttpResponse>;
 }
 
 /**
- * Fetches all available Jira projects on the user's Atlassian Cloud site (e.g., BloomPath Sprint, Triton).
+ * Fetches all available Jira projects on the user's Atlassian Cloud site.
  */
-export async function fetchAvailableJiraProjects(): Promise<JiraProjectSummary[]> {
+export async function fetchAvailableJiraProjects(
+  authMode: 'user' | 'app' = 'user'
+): Promise<JiraProjectSummary[]> {
   try {
     const forgeApi = await import('@forge/api');
     const { route } = forgeApi;
 
-    const response = await requestJiraWithUserFallback(
+    const response = await requestJiraAuthorized(
       forgeApi,
-      route`/rest/api/3/project/search?maxResults=50`
+      route`/rest/api/3/project/search?maxResults=50`,
+      authMode
     );
 
     if (response.ok) {
@@ -117,18 +121,31 @@ export async function fetchAvailableJiraProjects(): Promise<JiraProjectSummary[]
     // Offline / local unit test fallback
   }
 
-  return [
-    { id: 'BLP', key: 'BLP', name: 'BloomPath Sprint' },
-    { id: 'KAN', key: 'KAN', name: 'Triton' },
-  ];
+  return [{ id: 'CHRON', key: 'CHRON', name: 'Project Chronos (Demo Snapshot)' }];
+}
+
+async function readStoredSnapshot(projectKey: string): Promise<CausalGraph | null> {
+  try {
+    const forgeApi = await import('@forge/api');
+    if (forgeApi?.storage?.get) {
+      const stored = (await forgeApi.storage.get(`pwm:graph:${projectKey}`)) as
+        | CausalGraph
+        | undefined;
+      if (stored && Array.isArray(stored.nodes) && stored.nodes.length > 0) {
+        return stored;
+      }
+    }
+  } catch {
+    // Ignore storage read errors outside Forge runtime
+  }
+  return null;
 }
 
 /**
  * Fetches and builds the `CausalGraph` for a Jira project:
- * 1. If `forceDemo` is explicitly true, returns the synthetic graph (`isSyntheticDemo: true`).
- * 2. Queries live Jira issues + `issuelinks` for the active Jira project (even if the project has 1, 2, or 3 issues,
- *    such as `BLP-7` and `BLP-8` in BloomPath Sprint).
- * 3. Queries the Jira project name so the UI header displays the real Jira project name (e.g. `BloomPath Sprint` or `Triton`).
+ * 1. If `forceDemo` is explicitly true, returns stored or fresh synthetic graph (`isSyntheticDemo: true`).
+ * 2. Queries live Jira issues + `issuelinks` with pagination (up to 250 issues) using strict `authMode`.
+ * 3. Propagates `401`/`403` permission failures without falling back to `asApp()`.
  * 4. Falls back to the synthetic graph only when running offline in local unit tests or when the project has 0 issues.
  */
 export async function fetchProjectCausalGraph(
@@ -137,19 +154,25 @@ export async function fetchProjectCausalGraph(
   const demoReferenceDate = options.referenceDate || CHRONOS_DEFAULT_REFERENCE_DATE;
   const liveReferenceDate =
     options.referenceDate || new Date().toISOString().slice(0, 10);
+  const authMode = options.authMode ?? 'user';
 
   if (options.forceDemo) {
-    return getChronosSyntheticGraph(
-      (options.projectKey || 'CHRON').trim().toUpperCase(),
-      demoReferenceDate
-    );
+    const demoKey = (options.projectKey || 'CHRON').trim().toUpperCase() || 'CHRON';
+    const stored = await readStoredSnapshot(demoKey);
+    return stored ?? getChronosSyntheticGraph(demoKey, demoReferenceDate);
   }
+
+  let accessDeniedError: Error | null = null;
 
   try {
     const forgeApi = await import('@forge/api');
     const { route } = forgeApi;
 
-    const availableProjects = await fetchAvailableJiraProjects();
+    const availableProjects =
+      options.availableProjects && options.availableProjects.length > 0
+        ? options.availableProjects
+        : await fetchAvailableJiraProjects(authMode);
+
     let projectKey = (options.projectKey || '').trim().toUpperCase();
 
     if (!projectKey || projectKey === 'CHRON') {
@@ -157,50 +180,117 @@ export async function fetchProjectCausalGraph(
       if (matchedReal) {
         projectKey = matchedReal.key;
       } else {
-        projectKey = projectKey || 'BLP';
+        projectKey = projectKey || 'CHRON';
       }
     }
 
     const safeProjectKey = /^[A-Z][A-Z0-9_]*$/.test(projectKey)
       ? projectKey
-      : 'BLP';
+      : 'CHRON';
     const projectMeta = availableProjects.find((p) => p.key === safeProjectKey);
     const projectName = projectMeta ? projectMeta.name : `${safeProjectKey} Project`;
 
     const fields =
       'summary,status,issuelinks,assignee,timetracking,duedate,resolutiondate,issuetype,timeoriginalestimate,timeestimate,timespent,customfield_10016,customfield_10001,customfield_10021,components,labels,parent,subtasks';
 
-    // Prefer Jira Cloud's current `/rest/api/3/search/jql` endpoint with quoted project key,
-    // falling back to legacy `/rest/api/3/search` only if needed.
-    let response = await requestJiraWithUserFallback(
-      forgeApi,
-      route`/rest/api/3/search/jql?jql=project="${safeProjectKey}" ORDER BY created ASC&fields=${fields}&maxResults=100`
-    );
+    const MAX_ISSUES = 250;
+    const issues: RawJiraIssue[] = [];
+    let nextPageToken: string | undefined;
+    let jqlSuccess = false;
+    let useLegacySearch = false;
 
-    if (!response.ok) {
-      response = await requestJiraWithUserFallback(
-        forgeApi,
-        route`/rest/api/3/search?jql=project="${safeProjectKey}" ORDER BY created ASC&fields=${fields}&maxResults=100`
-      );
+    for (let page = 0; page < 3; page++) {
+      const routeUrl = nextPageToken
+        ? route`/rest/api/3/search/jql?jql=project="${safeProjectKey}" ORDER BY created ASC&fields=${fields}&maxResults=100&nextPageToken=${nextPageToken}`
+        : route`/rest/api/3/search/jql?jql=project="${safeProjectKey}" ORDER BY created ASC&fields=${fields}&maxResults=100`;
+
+      const response = await requestJiraAuthorized(forgeApi, routeUrl, authMode);
+      if (response.status === 401 || response.status === 403) {
+        accessDeniedError = new Error(
+          `Jira project access denied (${response.status}) for current user on ${safeProjectKey}`
+        );
+        break;
+      }
+      if (!response.ok) {
+        if (page === 0) useLegacySearch = true;
+        break;
+      }
+
+      jqlSuccess = true;
+      const payload = (await response.json()) as {
+        issues?: RawJiraIssue[];
+        nextPageToken?: string;
+        isLast?: boolean;
+      };
+      const batch = payload.issues ?? [];
+      issues.push(...batch);
+      if (
+        !payload.nextPageToken ||
+        payload.isLast ||
+        batch.length === 0 ||
+        issues.length >= MAX_ISSUES
+      ) {
+        break;
+      }
+      nextPageToken = payload.nextPageToken;
     }
 
-    if (response.ok) {
-      const payload = (await response.json()) as { issues?: RawJiraIssue[] };
-      const issues = payload.issues ?? [];
+    if (!accessDeniedError && useLegacySearch) {
+      let startAt = 0;
+      for (let page = 0; page < 3; page++) {
+        const response = await requestJiraAuthorized(
+          forgeApi,
+          route`/rest/api/3/search?jql=project="${safeProjectKey}" ORDER BY created ASC&fields=${fields}&maxResults=100&startAt=${startAt}`,
+          authMode
+        );
+        if (response.status === 401 || response.status === 403) {
+          accessDeniedError = new Error(
+            `Jira project access denied (${response.status}) for current user on ${safeProjectKey}`
+          );
+          break;
+        }
+        if (!response.ok) break;
+        jqlSuccess = true;
+        const payload = (await response.json()) as {
+          issues?: RawJiraIssue[];
+          total?: number;
+        };
+        const batch = payload.issues ?? [];
+        issues.push(...batch);
+        startAt += batch.length;
+        if (
+          batch.length === 0 ||
+          issues.length >= MAX_ISSUES ||
+          (typeof payload.total === 'number' && startAt >= payload.total)
+        ) {
+          break;
+        }
+      }
+    }
 
-      // Always return the real Jira project issues when at least 1 issue exists in the project
+    if (accessDeniedError) {
+      throw accessDeniedError;
+    }
+
+    if (jqlSuccess) {
       if (issues.length >= 1) {
+        const slicedIssues = issues.slice(0, MAX_ISSUES);
+        const allowedIssueKeys = new Set(
+          slicedIssues.map((iss) => iss.key.toUpperCase())
+        );
         const { goals, teams, issueGoalMap, issueConfluenceMap } =
           await fetchTeamworkGraphMetadata(
             forgeApi,
             safeProjectKey,
             projectName,
             liveReferenceDate,
-            options.cloudId
+            options.cloudId,
+            authMode,
+            allowedIssueKeys
           );
         const dag = buildDAGFromJiraIssues(
           safeProjectKey,
-          issues,
+          slicedIssues,
           goals,
           teams,
           liveReferenceDate
@@ -232,17 +322,25 @@ export async function fetchProjectCausalGraph(
           isSyntheticDemo: false,
         };
       }
+
+      const stored = await readStoredSnapshot(safeProjectKey);
+      if (stored) {
+        return stored;
+      }
     }
   } catch (err) {
+    if (accessDeniedError) {
+      throw accessDeniedError;
+    }
     console.info(
       `[PWM GraphFetcher] Using synthetic causal snapshot (${err instanceof Error ? err.message : 'offline/demo mode'}).`
     );
   }
 
-  return getChronosSyntheticGraph(
-    (options.projectKey || 'CHRON').trim().toUpperCase(),
-    demoReferenceDate
-  );
+  const fallbackKey =
+    (options.projectKey || 'CHRON').trim().toUpperCase() || 'CHRON';
+  const storedFallback = await readStoredSnapshot(fallbackKey);
+  return storedFallback ?? getChronosSyntheticGraph(fallbackKey, demoReferenceDate);
 }
 
 /**
@@ -296,6 +394,7 @@ export function parseTeamworkGraphEdges(
     sprintOffset?: number;
     releaseOffset?: number;
     defaultTeams?: TeamMetadata[];
+    allowedIssueKeys?: Set<string>;
   }
 ): ParsedTwgMetadata {
   const sprintOffset = options.sprintOffset ?? 24;
@@ -316,6 +415,16 @@ export function parseTeamworkGraphEdges(
 
     const iKeyRaw = colMap.get('i.key')?.trim();
     const issueKey = iKeyRaw ? iKeyRaw.toUpperCase() : undefined;
+
+    // Enforce project scoping: skip rows belonging to issues outside the fetched Jira project
+    if (
+      options.allowedIssueKeys &&
+      options.allowedIssueKeys.size > 0 &&
+      (!issueKey || !options.allowedIssueKeys.has(issueKey))
+    ) {
+      continue;
+    }
+
     const gId = colMap.get('g.id')?.trim();
     const gName = colMap.get('g.name')?.trim();
 
@@ -323,9 +432,12 @@ export function parseTeamworkGraphEdges(
       const goalIdx = parsedGoals.size;
       const fallbackOffset = goalIdx === 0 ? sprintOffset : releaseOffset;
       const rawTargetDate = colMap.get('g.targetDate')?.trim() || '';
+      const validIsoTargetDate = /^\d{4}-\d{2}-\d{2}$/.test(rawTargetDate)
+        ? rawTargetDate
+        : '';
       const offset = computeDayOffsetFromDates(
         options.referenceDate,
-        rawTargetDate,
+        validIsoTargetDate,
         fallbackOffset
       );
       const ownerTeam =
@@ -337,7 +449,8 @@ export function parseTeamworkGraphEdges(
         id: gId,
         key: gId,
         name: gName,
-        targetDate: rawTargetDate || addCalendarDays(options.referenceDate, offset),
+        targetDate:
+          validIsoTargetDate || addCalendarDays(options.referenceDate, offset),
         targetDayOffset: offset,
         ownerTeam,
         status: normalizeTwgGoalStatus(colMap.get('g.status')),
@@ -371,7 +484,9 @@ async function fetchTeamworkGraphMetadata(
   projectKey: string,
   projectName: string,
   referenceDate: string,
-  cloudId?: string
+  cloudId?: string,
+  authMode: 'user' | 'app' = 'user',
+  allowedIssueKeys?: Set<string>
 ): Promise<{
   goals: TeamworkGoal[];
   teams: TeamMetadata[];
@@ -428,18 +543,25 @@ async function fetchTeamworkGraphMetadata(
   ];
 
   try {
+    type GraphClient = {
+      requestGraph?: (
+        query: string,
+        variables?: Record<string, unknown>
+      ) => Promise<{ ok: boolean; json: () => Promise<unknown> }>;
+    };
     const api = forgeApi.default as unknown as {
-      asApp: () => {
-        requestGraph?: (
-          query: string,
-          variables?: Record<string, unknown>
-        ) => Promise<{ ok: boolean; json: () => Promise<unknown> }>;
-      };
+      asApp: () => GraphClient;
+      asUser?: () => GraphClient;
     };
 
-    const appClient = api.asApp();
-    if (typeof appClient.requestGraph === 'function' && cloudId && cloudId !== 'current') {
-      const res = await appClient.requestGraph(TWG_GOALS_AND_TEAMS_GRAPHQL_QUERY, {
+    const graphClient =
+      authMode === 'user' && typeof api.asUser === 'function'
+        ? api.asUser()
+        : authMode === 'app'
+          ? api.asApp()
+          : null;
+    if (graphClient && typeof graphClient.requestGraph === 'function' && cloudId && cloudId !== 'current') {
+      const res = await graphClient.requestGraph(TWG_GOALS_AND_TEAMS_GRAPHQL_QUERY, {
         cloudId,
         projectKey,
       });
@@ -461,6 +583,7 @@ async function fetchTeamworkGraphMetadata(
           sprintOffset,
           releaseOffset,
           defaultTeams,
+          allowedIssueKeys,
         });
 
         if (parsed.goals.length > 0) {

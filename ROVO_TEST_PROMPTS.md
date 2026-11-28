@@ -21,7 +21,7 @@ Use these 5 natural language prompts inside **Jira Rovo Chat** (`@Rovo-World-Mod
 ---
 
 ### Prompt 3: Person Capacity, Unavailability & Compound Scenario Simulation
-> *"What happens if Petri Paananen is unavailable for 5 days? Also test reassigning their parallel bottleneck and serializing concurrent work."*
+> *"What happens if Marcus Chen (or any active assignee in your project) is unavailable for 5 days? Also test reassigning their parallel bottleneck and serializing concurrent work."*
 
 - **Triggered Rovo Action & Skill:** `simulate-delay-impact` (`assigneeName`, `unavailableDays: 5`, `personMitigation: "reassign,serialize"`) + `causal-recovery-advisor`
 - **What it demonstrates:** Exercises assignee-level capacity simulation across live Jira issues, exposing concurrent WIP overload and showing days recovered when rebalancing or serializing parallel work. Also supports multi-issue compound overrides via `compoundOverridesJson`.

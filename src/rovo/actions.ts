@@ -12,6 +12,10 @@ import {
   AssigneeInterventionOverride,
   CausalGraph,
   NodeInterventionOverride,
+  SIMULATION_BOUNDS,
+  clampDelayDays,
+  clampUnavailableDays,
+  isReservedObjectKey,
 } from '../engine/types';
 import { fetchProjectCausalGraph } from '../twg/graphFetcher';
 import { seedProjectChronosScenario } from '../twg/syntheticSeeder';
@@ -44,30 +48,49 @@ export interface RovoSimulateDelayPayload {
   assigneeOverrides?: Record<string, AssigneeInterventionOverride>;
   projectKey?: string;
   cloudId?: string;
+  authMode?: 'user' | 'app';
   context?: RovoActionContext;
 }
 
 export interface RovoAnalyzeCriticalPathPayload {
   projectKey?: string;
   cloudId?: string;
+  authMode?: 'user' | 'app';
   context?: RovoActionContext;
 }
 
 export interface RovoSeedDemoPayload {
   projectKey?: string;
   populateJiraIssues?: boolean;
+  authMode?: 'user' | 'app';
   context?: RovoActionContext;
+}
+
+function sanitizeForLlmText(raw: string | undefined | null, maxLen = 120): string {
+  const cleaned = String(raw ?? '')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/[`<>]/g, '')
+    .replace(/(^|\s)#+\s*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length <= maxLen) return cleaned;
+  return `${cleaned.slice(0, maxLen - 1)}…`;
 }
 
 function extractActionCloudId(
   payload: { cloudId?: string; context?: RovoActionContext },
   context?: RovoActionContext
 ): string | undefined {
-  const candidates = [payload.cloudId, payload.context?.cloudId, context?.cloudId];
+  // Always prioritize Forge platform-verified context cloudId before caller payload
+  const candidates = [context?.cloudId, payload.context?.cloudId, payload.cloudId];
   for (const raw of candidates) {
     if (typeof raw === 'string') {
       const trimmed = raw.trim();
-      if (trimmed.length > 0 && trimmed !== 'current') {
+      if (
+        trimmed.length > 0 &&
+        trimmed !== 'current' &&
+        /^[a-zA-Z0-9-]{8,64}$/.test(trimmed)
+      ) {
         return trimmed;
       }
     }
@@ -125,10 +148,59 @@ function resolveDefaultTargetIssueKey(
   );
 }
 
+function sanitizeNodeOverridesMap(
+  input?: Record<string, NodeInterventionOverride>
+): Record<string, NodeInterventionOverride> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const clean: Record<string, NodeInterventionOverride> = Object.create(null);
+  let count = 0;
+  for (const [key, val] of Object.entries(input)) {
+    const cleanKey = key.trim();
+    if (!cleanKey || isReservedObjectKey(cleanKey) || !val || typeof val !== 'object' || Array.isArray(val)) {
+      continue;
+    }
+    if (++count > SIMULATION_BOUNDS.MAX_OVERRIDE_ENTRIES) break;
+    clean[cleanKey] = {
+      deltaDays: clampDelayDays(val.deltaDays, 0),
+      addDeveloper: Boolean(val.addDeveloper),
+      decoupleBlockingEdges: Boolean(val.decoupleBlockingEdges),
+      trimScope: Boolean(val.trimScope),
+    };
+  }
+  return clean;
+}
+
+function sanitizeAssigneeOverridesMap(
+  input?: Record<string, AssigneeInterventionOverride>
+): Record<string, AssigneeInterventionOverride> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const clean: Record<string, AssigneeInterventionOverride> = Object.create(null);
+  let count = 0;
+  for (const [key, val] of Object.entries(input)) {
+    const cleanKey = key.trim();
+    if (!cleanKey || isReservedObjectKey(cleanKey) || !val || typeof val !== 'object' || Array.isArray(val)) {
+      continue;
+    }
+    if (++count > SIMULATION_BOUNDS.MAX_OVERRIDE_ENTRIES) break;
+    clean[cleanKey] = {
+      assignee: (val.assignee || cleanKey).trim(),
+      unavailableDays: clampUnavailableDays(val.unavailableDays, 0),
+      reassignBottleneck: Boolean(val.reassignBottleneck),
+      serializeParallelWork: Boolean(val.serializeParallelWork),
+      pairOnTopBlocker: Boolean(val.pairOnTopBlocker),
+    };
+  }
+  return clean;
+}
+
 function parseCompoundOverridesJson(
   rawJson?: string
 ): Record<string, NodeInterventionOverride> {
-  if (typeof rawJson !== 'string' || rawJson.trim().length === 0) {
+  if (
+    typeof rawJson !== 'string' ||
+    rawJson.trim().length === 0 ||
+    rawJson.length > SIMULATION_BOUNDS.MAX_COMPOUND_JSON_BYTES
+  ) {
     return {};
   }
   try {
@@ -136,20 +208,17 @@ function parseCompoundOverridesJson(
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return {};
     }
-    const clean: Record<string, NodeInterventionOverride> = {};
+    const clean: Record<string, NodeInterventionOverride> = Object.create(null);
+    let count = 0;
     for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
       const cleanKey = key.trim();
-      if (!cleanKey || !val || typeof val !== 'object' || Array.isArray(val)) continue;
+      if (!cleanKey || isReservedObjectKey(cleanKey) || !val || typeof val !== 'object' || Array.isArray(val)) {
+        continue;
+      }
+      if (++count > SIMULATION_BOUNDS.MAX_OVERRIDE_ENTRIES) break;
       const obj = val as Record<string, unknown>;
-      const rawDelta = obj.deltaDays;
-      const numDelta =
-        rawDelta !== undefined && rawDelta !== '' ? Number(rawDelta) : 0;
-      const deltaDays = Math.max(
-        -5,
-        Math.min(90, Number.isFinite(numDelta) ? numDelta : 0)
-      );
       clean[cleanKey] = {
-        deltaDays,
+        deltaDays: clampDelayDays(obj.deltaDays, 0),
         addDeveloper: Boolean(obj.addDeveloper),
         decoupleBlockingEdges: Boolean(obj.decoupleBlockingEdges),
         trimScope: Boolean(obj.trimScope),
@@ -176,8 +245,9 @@ export async function simulateDelayImpact(
     payload.context?.jira?.projectKey ||
     context?.jira?.projectKey;
   const cloudId = extractActionCloudId(payload, context);
+  const authMode = payload.authMode ?? 'user';
 
-  const graph = await fetchProjectCausalGraph({ projectKey, cloudId });
+  const graph = await fetchProjectCausalGraph({ projectKey, cloudId, authMode });
 
   const rawAssignee =
     typeof payload.assigneeName === 'string' ? payload.assigneeName.trim() : '';
@@ -186,27 +256,21 @@ export async function simulateDelayImpact(
     : '';
 
   const parsedCompound = parseCompoundOverridesJson(payload.compoundOverridesJson);
+  const sanitizedPayloadNodes = sanitizeNodeOverridesMap(payload.nodeOverrides);
   const effectiveNodeOverrides: Record<string, NodeInterventionOverride> = {
     ...parsedCompound,
-    ...(payload.nodeOverrides ?? {}),
+    ...sanitizedPayloadNodes,
   };
 
-  const effectiveAssigneeOverrides: Record<string, AssigneeInterventionOverride> = {
-    ...(payload.assigneeOverrides ?? {}),
-  };
+  const effectiveAssigneeOverrides: Record<string, AssigneeInterventionOverride> =
+    sanitizeAssigneeOverridesMap(payload.assigneeOverrides);
 
-  if (canonicalAssignee) {
+  if (canonicalAssignee && !isReservedObjectKey(canonicalAssignee)) {
     const mitigationTokens =
       typeof payload.personMitigation === 'string'
         ? payload.personMitigation.toLowerCase()
         : '';
-    const rawUnavail = payload.unavailableDays;
-    const parsedUnavail =
-      rawUnavail !== undefined && rawUnavail !== '' ? Number(rawUnavail) : 0;
-    const unavailableDays = Math.max(
-      -5,
-      Math.min(30, Number.isFinite(parsedUnavail) ? parsedUnavail : 0)
-    );
+    const unavailableDays = clampUnavailableDays(payload.unavailableDays, 0);
     effectiveAssigneeOverrides[canonicalAssignee] = {
       assignee: canonicalAssignee,
       unavailableDays,
@@ -236,19 +300,9 @@ export async function simulateDelayImpact(
 
   const hasExplicitDelay =
     payload.delayDays !== undefined && payload.delayDays !== '';
-  const parsedDelay = hasExplicitDelay ? Number(payload.delayDays) : NaN;
-  const delayDays = Math.max(
-    -5,
-    Math.min(
-      90,
-      hasExplicitDelay
-        ? Number.isFinite(parsedDelay)
-          ? parsedDelay
-          : 7
-        : hasMitigationOrCompound
-          ? 0
-          : 7
-    )
+  const delayDays = clampDelayDays(
+    payload.delayDays,
+    hasExplicitDelay ? 7 : hasMitigationOrCompound ? 0 : 7
   );
 
   const result = runIntervention(graph, issueKey, delayDays, {
@@ -271,7 +325,7 @@ export async function simulateDelayImpact(
   const affectedGoalsSummary = result.goalImpacts
     .map(
       (g) =>
-        `• **${g.goalName}** (${g.goalKey}): ${g.baselineP85Date} → **${g.p85CompletionDate}** (${formatSigned(g.rippleDelayDays)} shift, status: **${g.status}**, on-time prob: ${Math.round(g.probabilityOfOnTime * 100)}%)`
+        `• **${sanitizeForLlmText(g.goalName)}** (${sanitizeForLlmText(g.goalKey, 40)}): ${g.baselineP85Date} → **${g.p85CompletionDate}** (${formatSigned(g.rippleDelayDays)} shift, status: **${g.status}**, on-time prob: ${Math.round(g.probabilityOfOnTime * 100)}%)`
     )
     .join('\n');
 
@@ -280,7 +334,7 @@ export async function simulateDelayImpact(
     .slice(0, 6)
     .map(
       (d) =>
-        `• **${d.key}** (${d.team}): ${d.summary} → shifts **${formatSigned(d.shiftDays)}** to ${d.intervenedP85Date} (weight: ${d.effectiveWeight})`
+        `• **${sanitizeForLlmText(d.key, 32)}** (${sanitizeForLlmText(d.team, 48)}): ${sanitizeForLlmText(d.summary)} → shifts **${formatSigned(d.shiftDays)}** to ${d.intervenedP85Date} (weight: ${d.effectiveWeight})`
     )
     .join('\n');
 
@@ -306,13 +360,13 @@ export async function simulateDelayImpact(
   }
 
   const summaryMarkdown = [
-    `### Counterfactual Simulation: \`do(${result.targetNodeKey} = ${formatSigned(result.deltaDays)})\``,
-    `**Target Task:** ${result.targetNodeKey} — *${result.targetNodeSummary}*`,
+    `### Counterfactual Simulation: \`do(${sanitizeForLlmText(result.targetNodeKey, 32)} = ${formatSigned(result.deltaDays)})\``,
+    `**Target Task:** ${sanitizeForLlmText(result.targetNodeKey, 32)} — *${sanitizeForLlmText(result.targetNodeSummary)}*`,
     ...(activeMitigations.length > 0
       ? [`**Active Mitigations:** ${activeMitigations.join(' · ')}`]
       : []),
     ...(compoundClauses.length > 0
-      ? [`**Compound Overrides:** ${compoundClauses.join(' + ')}`]
+      ? [`**Compound Overrides:** ${sanitizeForLlmText(compoundClauses.join(' + '), 240)}`]
       : []),
     `**Simulation Engine:** 500-iteration Paired Twin-Network Monte Carlo (${result.executionTimeMs} ms)`,
     '',
@@ -375,8 +429,9 @@ export async function analyzeCriticalPath(
     payload.context?.jira?.projectKey ||
     context?.jira?.projectKey;
   const cloudId = extractActionCloudId(payload, context);
+  const authMode = payload.authMode ?? 'user';
 
-  const graph = await fetchProjectCausalGraph({ projectKey, cloudId });
+  const graph = await fetchProjectCausalGraph({ projectKey, cloudId, authMode });
   const sim = runMonteCarloSimulation(graph, { iterations: 500 });
 
   // Sort specifically to highlight the top 3 bottleneck nodes with highest downstream ripple weight & risk
@@ -389,12 +444,12 @@ export async function analyzeCriticalPath(
   const bottleneckLines = top3Bottlenecks
     .map(
       (b, idx) =>
-        `${idx + 1}. **${b.key}** — *${b.summary}* (${b.team}, Assignee: ${b.assignee})\n   - **Downstream Ripple Weight:** ${b.downstreamRippleWeight} (${b.downstreamCount} dependent tasks) | **Criticality Index:** ${Math.round(b.criticalityIndex * 100)}% | **Mitigation ROI:** ${b.mitigationROI ?? 1.5}x | **Risk Score:** ${b.riskScore}/100\n   - **Mitigation:** ${b.recommendation}`
+        `${idx + 1}. **${sanitizeForLlmText(b.key, 32)}** — *${sanitizeForLlmText(b.summary)}* (${sanitizeForLlmText(b.team, 48)}, Assignee: ${sanitizeForLlmText(b.assignee, 48)})\n   - **Downstream Ripple Weight:** ${b.downstreamRippleWeight} (${b.downstreamCount} dependent tasks) | **Criticality Index:** ${Math.round(b.criticalityIndex * 100)}% | **Mitigation ROI:** ${b.mitigationROI ?? 1.5}x | **Risk Score:** ${b.riskScore}/100\n   - **Mitigation:** ${sanitizeForLlmText(b.recommendation, 180)}`
     )
     .join('\n');
 
   const summaryMarkdown = [
-    `### Rovo-World-Model — Critical Path & Delivery Governance (${graph.projectName})`,
+    `### Rovo-World-Model — Critical Path & Delivery Governance (${sanitizeForLlmText(graph.projectName, 80)})`,
     `- **Likely Finish (50% odds / Core Work Estimate):** ${sim.p50Date} (+${sim.p50Days}d)`,
     `- **Target Commit Date (85% safe):** **${sim.p85Date}** (+${sim.p85Days}d, Team Risk Buffer: +${sim.reserves?.pmContingencyReserveDays ?? 0}d)`,
     `- **Safe Buffer Date (95% cutoff):** ${sim.p95Date} (+${sim.p95Days}d, Executive Contingency: +${sim.reserves?.managementReserveDays ?? 0}d)`,
@@ -447,6 +502,7 @@ export async function seedDemoScenario(
   const report = await seedProjectChronosScenario({
     projectKey,
     populateJiraIssues,
+    authMode: payload.authMode ?? 'user',
   });
 
   const baselineSim = runMonteCarloSimulation(report.graph, { iterations: 500 });

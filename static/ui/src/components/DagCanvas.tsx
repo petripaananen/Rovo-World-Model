@@ -31,6 +31,7 @@ import {
   getInitials,
   renderDragHandleBadge,
   renderInfoTooltip,
+  sanitizeHexColor,
 } from './tooltip';
 
 export interface DagCanvasProps {
@@ -148,11 +149,16 @@ export function computeNodeCoordinates(
   const laneCount = activeTeams.length;
   const laneHeight =
     laneCount === 1
-      ? 456
+      ? Math.max(456, graph.goals.length > 5 ? graph.goals.length * 76 : 456)
       : laneCount === 2
         ? 228
         : 152;
-  const svgHeight = laneCount <= 3 ? 472 : laneCount * laneHeight + 16;
+  const svgHeight =
+    laneCount === 1
+      ? laneHeight + 16
+      : laneCount <= 3
+        ? 472
+        : laneCount * laneHeight + 16;
   const nodeW = 104;
   const nodeH = 104;
 
@@ -308,7 +314,7 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       const teamNodes = graph.nodes.filter((n) => n.team === team.name);
       const doneCount = teamNodes.filter((n) => n.status === 'Done').length;
       const activeCount = teamNodes.filter((n) => n.status !== 'Done').length;
-      const accentColor = team.color || '#0284C7';
+      const accentColor = sanitizeHexColor(team.color, '#0284C7');
 
       // Split long team names cleanly into 1 or 2 upright horizontal lines without reordering words
       let nameLine1 = team.name;
@@ -530,10 +536,8 @@ export function renderDagCanvas(props: DagCanvasProps): string {
       const goalY =
         activeTeams.length === 1
           ? goalsToRender.length === 1
-            ? 234
-            : gIdx === 0
-              ? 154
-              : 314
+            ? Math.round(laneHeight / 2)
+            : Math.round(((gIdx + 1) / (goalsToRender.length + 1)) * laneHeight) + 2
           : yTopBand + Math.round((laneHeight - 8) / 2);
       const pillW = 160;
       const pillH = 48;

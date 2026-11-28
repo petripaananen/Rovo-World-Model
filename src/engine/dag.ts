@@ -75,19 +75,25 @@ export function computePertParameters(node: CausalNode): {
  * Resolves a node identifier (either `node.key`, `node.id`, or matching numeric suffix like `CORE-104` -> `CHRON-104`)
  * to its canonical `node.key`.
  */
-export function resolveNodeKey(nodes: CausalNode[], identifier: string): string | undefined {
+export function resolveNodeKey(
+  nodes: CausalNode[],
+  identifier: string,
+  allowSuffixFallback = true
+): string | undefined {
   const normalized = identifier.trim().toUpperCase();
   const exact = nodes.find(
     (n) => n.key.toUpperCase() === normalized || n.id.toUpperCase() === normalized
   );
   if (exact) return exact.key;
 
-  // Fallback: match by numeric suffix (e.g., CORE-104 matches CHRON-104)
-  const suffixMatch = normalized.match(/-(\d+)$/);
-  if (suffixMatch) {
-    const suffix = `-${suffixMatch[1]}`;
-    const bySuffix = nodes.find((n) => n.key.toUpperCase().endsWith(suffix));
-    if (bySuffix) return bySuffix.key;
+  // Fallback: match by numeric suffix (e.g., CORE-104 matches CHRON-104 in synthetic demos)
+  if (allowSuffixFallback) {
+    const suffixMatch = normalized.match(/-(\d+)$/);
+    if (suffixMatch) {
+      const suffix = `-${suffixMatch[1]}`;
+      const bySuffix = nodes.find((n) => n.key.toUpperCase().endsWith(suffix));
+      if (bySuffix) return bySuffix.key;
+    }
   }
 
   return undefined;
@@ -324,7 +330,7 @@ export function getDownstreamBlastRadius(
   blastRadiusKeys: string[];
   effectiveWeights: Record<string, number>;
 } {
-  const targetKey = resolveNodeKey(graph.nodes, targetNodeId);
+  const targetKey = resolveNodeKey(graph.nodes, targetNodeId, graph.isSyntheticDemo);
   if (!targetKey) {
     return { targetKey: undefined, blastRadiusKeys: [], effectiveWeights: {} };
   }
@@ -534,12 +540,13 @@ export function computeDeterministicCriticalPath(
           edgeMaxLS = Math.max(0, succLF - lag);
           edgeForcedMaxLS = succForcedLF - lag;
         } else {
-          // Default FS (Finish-to-Start)
-          const effectiveConstraint =
-            edge.propagationWeight > 0 ? (succLS - lag) / edge.propagationWeight : succLS - lag;
-          const boundedConstraint = Math.min(projectDuration, effectiveConstraint);
-          edgeMaxLS = Math.max(0, boundedConstraint - dur);
-          edgeForcedMaxLS = succForcedLS - lag - dur;
+          // Default FS (Finish-to-Start): predES + dur * w + lag <= succLS
+          const weightedDur = dur * edge.propagationWeight;
+          edgeMaxLS = Math.max(
+            0,
+            Math.min(projectDuration - dur, succLS - lag - weightedDur)
+          );
+          edgeForcedMaxLS = succForcedLS - lag - weightedDur;
         }
 
         if (edgeMaxLS < minLatestStart) {
@@ -752,9 +759,15 @@ export function buildDAGFromJiraIssues(
     }
 
     const assignedTeam = inferIssueTeam(issue, projectKey, teams, index);
+    const fallbackGoalIdx =
+      defaultGoals.length <= 1
+        ? 0
+        : index < Math.ceil(rawIssues.length * 0.55)
+          ? 0
+          : Math.min(1, defaultGoals.length - 1);
     const assignedGoalId = goalLabel
       ? goalLabel.slice(5).toUpperCase()
-      : defaultGoals[index < Math.ceil(rawIssues.length * 0.55) ? 0 : 1].id;
+      : defaultGoals[fallbackGoalIdx].id;
 
     const issueTypeName = issue.fields.issuetype?.name || 'Task';
     const hasGateLabel = labels.some(
@@ -1168,7 +1181,17 @@ function normalizeStatus(raw: string): string {
 }
 
 export function addCalendarDays(isoDate: string, daysToAdd: number): string {
-  const base = new Date(`${isoDate.slice(0, 10)}T00:00:00.000Z`);
-  base.setUTCDate(base.getUTCDate() + Math.round(daysToAdd));
+  const safeIso =
+    typeof isoDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(isoDate.trim())
+      ? isoDate.trim().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+  const parsed = new Date(`${safeIso}T00:00:00.000Z`);
+  const base = Number.isNaN(parsed.getTime())
+    ? new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`)
+    : parsed;
+  const safeDays = Number.isFinite(daysToAdd)
+    ? Math.max(-3650, Math.min(3650, Math.round(daysToAdd)))
+    : 0;
+  base.setUTCDate(base.getUTCDate() + safeDays);
   return base.toISOString().slice(0, 10);
 }

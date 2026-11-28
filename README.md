@@ -108,7 +108,7 @@ Connected IDE/AI clients can inspect tools via `rovo:mcp` in Rovo Studio or send
 }
 ```
 
-Write operations (`pwm_seed_demo_scenario` with `populateJiraIssues: true`) require the explicit confirmation header `X-PWM-Confirm-Write: true` so external MCP calls never mutate Jira issues accidentally.
+Write operations (`pwm_seed_demo_scenario` with `populateJiraIssues: true`) require a valid `Authorization: Bearer <token>` header, the explicit confirmation header `X-PWM-Confirm-Write: true`, and an empty/synthetic target project so external MCP calls never mutate active Jira projects accidentally.
 
 ---
 
@@ -119,10 +119,11 @@ Write operations (`pwm_seed_demo_scenario` with `populateJiraIssues: true`) requ
 | `read:jira-work` | Read Jira projects, issues, sub-tasks, estimates, story points, and `issuelinks` |
 | `write:jira-work` | Create sample linked Jira issues only when a user clicks `+ Add Sample Issues` or invokes `seed-demo-scenario` with `populateJiraIssues: true` |
 | `read:jira-user` | Read assignee display names for workload/capacity contention analysis |
-| `storage:app` | Store seeded demo snapshot state in native Forge Storage (`@forge/api`) |
+| `storage:app` | Store seeded demo snapshot state and encrypted MCP bearer token (`storage.setSecret`/`getSecret`) in native Forge Storage (`@forge/api`) |
 
-- **User-First Jira Access:** Requests prefer `api.asUser()` to enforce active user browse permissions, falling back cleanly to `api.asApp()` only when invoked without user context (such as unauthenticated `webtrigger` requests).
-- **Input Safety & Zero External Servers:** Jira project keys are validated against `/^[A-Z][A-Z0-9_]*$/` before JQL queries, UI text is HTML-escaped, and zero external servers, databases, or manual API keys are required.
+- **Strict User-Scoped Jira Access:** Custom UI and Rovo actions execute strictly via `api.asUser()` with zero `api.asApp()` escalation fallback on `401`/`403` errors, enforcing Jira project permissions per user.
+- **Authenticated MCP Webtrigger & Strict CORS:** `mcp-world-model-endpoint` requires `Authorization: Bearer <token>` (auto-provisioned in Forge encrypted secret storage and verified via `crypto.timingSafeEqual`), omits wildcard CORS, and disables GET tool execution.
+- **Input Safety & Zero External Servers:** Jira project keys are validated against `/^[A-Z][A-Z0-9_]*$/`, TWG Cypher results are project-scoped, UI text/colors/dates are sanitized, and zero external servers, databases, or manual API keys are required.
 - **License:** MIT ([`package.json`](./package.json)).
 
 ---

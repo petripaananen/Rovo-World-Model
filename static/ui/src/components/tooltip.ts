@@ -18,11 +18,21 @@ export function escapeHtmlText(str: string | undefined | null): string {
     .replace(/'/g, '&#39;');
 }
 
+export function sanitizeHexColor(
+  color: string | undefined | null,
+  fallback = '#0284C7'
+): string {
+  const trimmed = String(color ?? '').trim();
+  return /^#[0-9a-fA-F]{3,8}$/.test(trimmed) ? trimmed : fallback;
+}
+
 export function formatFriendlyDate(
   isoDate: string | undefined | null,
   includeYear = false
 ): string {
-  if (!isoDate || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) return String(isoDate ?? 'N/A');
+  if (!isoDate || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+    return escapeHtmlText(String(isoDate ?? 'N/A'));
+  }
   const [y, m, d] = isoDate.split('-').map(Number);
   const months = [
     'Jan',

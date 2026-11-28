@@ -465,6 +465,52 @@ export interface InterventionResult extends SimulationResult {
 }
 
 /**
+ * Centralized simulation bounds and defensive input validation helpers.
+ */
+export const SIMULATION_BOUNDS = {
+  MIN_DELAY_DAYS: -5,
+  MAX_DELAY_DAYS: 60,
+  MIN_UNAVAILABLE_DAYS: -3,
+  MAX_UNAVAILABLE_DAYS: 15,
+  MAX_OVERRIDE_ENTRIES: 50,
+  MAX_COMPOUND_JSON_BYTES: 16_384,
+  MAX_MCP_BODY_BYTES: 65_536,
+} as const;
+
+const RESERVED_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/**
+ * Returns true if `key` is a JavaScript prototype-polluting property name.
+ */
+export function isReservedObjectKey(key: string): boolean {
+  return RESERVED_OBJECT_KEYS.has(key);
+}
+
+/**
+ * Clamps a schedule shift (`deltaDays` / `delayDays`) to `[-5, 60]` with NaN/Infinity fallback.
+ */
+export function clampDelayDays(val: unknown, fallback = 0): number {
+  const num = val !== undefined && val !== null && val !== '' ? Number(val) : NaN;
+  const base = Number.isFinite(num) ? num : fallback;
+  return Math.max(
+    SIMULATION_BOUNDS.MIN_DELAY_DAYS,
+    Math.min(SIMULATION_BOUNDS.MAX_DELAY_DAYS, base)
+  );
+}
+
+/**
+ * Clamps an assignee unavailability shift (`unavailableDays`) to `[-3, 15]` with NaN/Infinity fallback.
+ */
+export function clampUnavailableDays(val: unknown, fallback = 0): number {
+  const num = val !== undefined && val !== null && val !== '' ? Number(val) : NaN;
+  const base = Number.isFinite(num) ? num : fallback;
+  return Math.max(
+    SIMULATION_BOUNDS.MIN_UNAVAILABLE_DAYS,
+    Math.min(SIMULATION_BOUNDS.MAX_UNAVAILABLE_DAYS, base)
+  );
+}
+
+/**
  * Raw Jira REST API v3 issue structure for DAG construction.
  */
 export interface RawJiraIssueLink {

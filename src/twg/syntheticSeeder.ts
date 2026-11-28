@@ -468,19 +468,58 @@ export interface SeedExecutionReport {
 }
 
 /**
- * Helper `seedJiraProject(projectKey)` that uses `api.asApp().requestJira(route`/rest/api/3/issue`)`
- * to create real linked demo issues in Jira when the user clicks "Create Real Jira Issues".
+ * Helper `seedJiraProject(projectKey)` that creates real linked demo issues in Jira
+ * using the caller's authorized Jira client (`api.asUser()` by default).
  */
-export async function seedJiraProject(projectKey: string = 'CHRON'): Promise<SeedExecutionReport> {
+export async function seedJiraProject(
+  projectKey: string = 'CHRON',
+  authMode: 'user' | 'app' = 'user'
+): Promise<SeedExecutionReport> {
   return seedProjectChronosScenario({
     projectKey,
     populateJiraIssues: true,
+    authMode,
   });
+}
+
+async function resolveProjectIssueTypeName(
+  client: {
+    requestJira: (
+      url: ReturnType<typeof import('@forge/api').route>,
+      opts?: Record<string, unknown>
+    ) => Promise<{ ok: boolean; json: () => Promise<unknown> }>;
+  },
+  route: typeof import('@forge/api').route,
+  projectKey: string
+): Promise<string> {
+  try {
+    const metaRes = await client.requestJira(
+      route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (metaRes.ok) {
+      const meta = (await metaRes.json()) as {
+        issueTypes?: Array<{ name?: string; subtask?: boolean }>;
+        values?: Array<{ name?: string; subtask?: boolean }>;
+      };
+      const candidates = (meta.issueTypes ?? meta.values ?? []).filter(
+        (t) => t.name && !t.subtask
+      );
+      const preferred =
+        candidates.find((t) => t.name!.toLowerCase() === 'task') ??
+        candidates.find((t) => t.name!.toLowerCase() === 'story') ??
+        candidates[0];
+      if (preferred?.name) return preferred.name;
+    }
+  } catch {
+    // Fallback to 'Task' when createmeta is unavailable
+  }
+  return 'Task';
 }
 
 /**
  * Populates the Project Chronos scenario either:
- * (a) into live Jira issues + issueLinks via `api.asApp().requestJira()` when `populateJiraIssues` is true, OR
+ * (a) into live Jira issues + issueLinks via Jira REST API when `populateJiraIssues` is true, OR
  * (b) into an in-memory / Forge app storage causal graph snapshot (`isSyntheticDemo: true`) so judges can test
  *     immediately in empty Jira cloud instances with zero setup.
  */
@@ -488,8 +527,15 @@ export async function seedProjectChronosScenario(options: {
   projectKey?: string;
   populateJiraIssues?: boolean;
   referenceDate?: string;
+  authMode?: 'user' | 'app';
 } = {}): Promise<SeedExecutionReport> {
-  const projectKey = (options.projectKey || 'CHRON').trim().toUpperCase();
+  const rawProjectKey = (options.projectKey || 'CHRON').trim().toUpperCase();
+  const isValidKey = /^[A-Z][A-Z0-9_]{0,15}$/.test(rawProjectKey);
+  if (!isValidKey && options.populateJiraIssues) {
+    throw new Error('Invalid Jira project key for issue seeding');
+  }
+  const projectKey = isValidKey ? rawProjectKey : 'CHRON';
+  const authMode = options.authMode ?? 'user';
   const referenceDate = options.referenceDate || CHRONOS_DEFAULT_REFERENCE_DATE;
   const syntheticGraph = getChronosSyntheticGraph(projectKey, referenceDate);
 
@@ -515,7 +561,7 @@ export async function seedProjectChronosScenario(options: {
     };
   }
 
-  // Option (a): Attempt to create real linked Jira issues via `api.asApp().requestJira(route`/rest/api/3/issue`)`
+  // Option (a): Attempt to create real linked Jira issues using strict authMode
   let createdIssuesCount = 0;
   let createdLinksCount = 0;
   const syntheticToRealKey = new Map<string, string>();
@@ -524,60 +570,130 @@ export async function seedProjectChronosScenario(options: {
     const forgeApi = await import('@forge/api');
     const api = forgeApi.default;
     const { route } = forgeApi;
+    const jiraClient = authMode === 'app' ? api.asApp() : api.asUser();
+    const issueTypeName = await resolveProjectIssueTypeName(
+      jiraClient,
+      route,
+      projectKey
+    );
 
-    for (const node of syntheticGraph.nodes) {
-      const response = await api.asApp().requestJira(route`/rest/api/3/issue`, {
+    const buildIssueBody = (node: CausalNode) => ({
+      fields: {
+        project: { key: projectKey },
+        summary: `[PWM] ${node.summary}`,
+        issuetype: { name: issueTypeName },
+        labels: [
+          `team:${node.team.replace(/\s+/g, '_')}`,
+          `goal:${node.goalId}`,
+          `estimate:${node.baseEstimateDays}d`,
+        ],
+      },
+    });
+
+    // Try bulk issue creation first to stay well below Forge's 25s timeout
+    let bulkSucceeded = false;
+    try {
+      const bulkRes = await jiraClient.requestJira(route`/rest/api/3/issue/bulk`, {
         method: 'POST',
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          fields: {
-            project: { key: projectKey },
-            summary: `[PWM] ${node.summary}`,
-            issuetype: { name: 'Task' },
-            labels: [
-              `team:${node.team.replace(/\s+/g, '_')}`,
-              `goal:${node.goalId}`,
-              `estimate:${node.baseEstimateDays}d`,
-            ],
-          },
+          issueUpdates: syntheticGraph.nodes.map(buildIssueBody),
         }),
       });
-
-      if (response.ok) {
-        const data = (await response.json()) as { key?: string };
-        if (data?.key) {
-          syntheticToRealKey.set(node.key, data.key);
-          createdIssuesCount++;
-        }
+      if (bulkRes.ok) {
+        const bulkPayload = (await bulkRes.json()) as {
+          issues?: Array<{ key?: string }>;
+        };
+        const created = bulkPayload.issues ?? [];
+        created.forEach((item, idx) => {
+          const srcNode = syntheticGraph.nodes[idx];
+          if (item?.key && srcNode) {
+            syntheticToRealKey.set(srcNode.key, item.key);
+            createdIssuesCount++;
+          }
+        });
+        bulkSucceeded = createdIssuesCount >= 5;
       } else {
-        break;
+        console.warn(
+          `[PWM Seeder] Bulk issue creation returned HTTP ${bulkRes.status}; falling back to chunked issue creation.`
+        );
+      }
+    } catch (bulkErr) {
+      console.warn(
+        `[PWM Seeder] Bulk endpoint fallback (${bulkErr instanceof Error ? bulkErr.message : String(bulkErr)}).`
+      );
+    }
+
+    // Fallback: bounded-concurrency chunks of 5 individual issue creations
+    if (!bulkSucceeded && createdIssuesCount === 0) {
+      const CHUNK_SIZE = 5;
+      for (let i = 0; i < syntheticGraph.nodes.length; i += CHUNK_SIZE) {
+        const chunk = syntheticGraph.nodes.slice(i, i + CHUNK_SIZE);
+        const results = await Promise.all(
+          chunk.map(async (node) => {
+            const response = await jiraClient.requestJira(route`/rest/api/3/issue`, {
+              method: 'POST',
+              headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(buildIssueBody(node)),
+            });
+            if (!response.ok) {
+              console.warn(
+                `[PWM Seeder] Failed creating issue for ${node.key}: HTTP ${response.status}`
+              );
+              return null;
+            }
+            const data = (await response.json()) as { key?: string };
+            return data?.key ? { syntheticKey: node.key, realKey: data.key } : null;
+          })
+        );
+        for (const r of results) {
+          if (r) {
+            syntheticToRealKey.set(r.syntheticKey, r.realKey);
+            createdIssuesCount++;
+          }
+        }
+        if (results.every((r) => r === null)) break;
       }
     }
 
     if (createdIssuesCount >= 5) {
-      for (const edge of syntheticGraph.edges) {
-        const outwardKey = syntheticToRealKey.get(edge.to);
-        const inwardKey = syntheticToRealKey.get(edge.from);
-        if (!outwardKey || !inwardKey) continue;
-
-        const linkRes = await api.asApp().requestJira(route`/rest/api/3/issueLink`, {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            type: { name: 'Blocks' },
-            inwardIssue: { key: inwardKey },
-            outwardIssue: { key: outwardKey },
-          }),
-        });
-        if (linkRes.ok) {
-          createdLinksCount++;
-        }
+      // Jira POST /rest/api/3/issueLink for "Blocks": outwardIssue (blocker) blocks inwardIssue (blocked)
+      const LINK_CHUNK_SIZE = 5;
+      for (let i = 0; i < syntheticGraph.edges.length; i += LINK_CHUNK_SIZE) {
+        const edgeChunk = syntheticGraph.edges.slice(i, i + LINK_CHUNK_SIZE);
+        const linkResults = await Promise.all(
+          edgeChunk.map(async (edge) => {
+            const blockerKey = syntheticToRealKey.get(edge.from);
+            const blockedKey = syntheticToRealKey.get(edge.to);
+            if (!blockerKey || !blockedKey) return false;
+            const linkRes = await jiraClient.requestJira(route`/rest/api/3/issueLink`, {
+              method: 'POST',
+              headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                type: { name: 'Blocks' },
+                outwardIssue: { key: blockerKey },
+                inwardIssue: { key: blockedKey },
+              }),
+            });
+            if (!linkRes.ok) {
+              console.warn(
+                `[PWM Seeder] Failed linking ${blockerKey} -> ${blockedKey}: HTTP ${linkRes.status}`
+              );
+              return false;
+            }
+            return true;
+          })
+        );
+        createdLinksCount += linkResults.filter(Boolean).length;
       }
 
       return {
@@ -587,6 +703,17 @@ export async function seedProjectChronosScenario(options: {
         createdLinksCount,
         graph: syntheticGraph,
         message: `Populated ${createdIssuesCount} live Jira issues and ${createdLinksCount} dependency links in project ${projectKey}, and synced the Project Chronos World Model snapshot.`,
+      };
+    }
+
+    if (createdIssuesCount > 0) {
+      return {
+        mode: 'in-memory-snapshot',
+        projectKey,
+        createdIssuesCount,
+        createdLinksCount,
+        graph: syntheticGraph,
+        message: `Partially created ${createdIssuesCount} Jira issues in ${projectKey} before hitting Jira API restrictions; loaded Project Chronos snapshot.`,
       };
     }
   } catch (err) {

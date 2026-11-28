@@ -80,7 +80,7 @@ export function renderTopAppBar(props: HeaderBarProps): string {
     Boolean(hasAnyIntervention) || delayDays !== 0 || addDeveloper || decoupleBlockingEdges;
 
   const topBlocker = activeSim.topBottlenecks[0];
-  const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'BLP-7';
+  const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'N/A';
 
   const projectList: JiraProjectOption[] =
     availableProjects.length > 0
@@ -135,7 +135,7 @@ export function renderTopAppBar(props: HeaderBarProps): string {
             ${renderInfoTooltip(
               'Rovo-World-Model Digital Twin',
               'Automatically loads issues, sub-tasks, and dependencies from your selected Jira project and runs 500 Monte Carlo simulations to forecast delivery dates and goal risks.',
-              `Active Project: ${graph.projectKey} (${graph.nodes.length} nodes, ${graph.edges.length} links) | Latency: ${activeSim.executionTimeMs} ms`
+              `Active Project: ${escapeHtmlText(graph.projectKey)} (${graph.nodes.length} nodes, ${graph.edges.length} links) | Latency: ${activeSim.executionTimeMs} ms`
             )}
             ${
               statusBanner
@@ -187,17 +187,29 @@ export function renderLeftStatusRail(props: HeaderBarProps): string {
 
   const p85Shift = intervention ? intervention.p85ShiftDays : 0;
   const topBlocker = activeSim.topBottlenecks[0];
-  const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'BLP-7';
+  const topBlockerKey = topBlocker?.key ?? graph.nodes[0]?.key ?? 'N/A';
   const superCriticalCount = activeSim.superCriticalNodes?.length ?? 0;
   const evm = activeSim.earnedValue;
 
-  // Compute overall on-time confidence % (relative to baseline P85 commitment + goals)
+  // Compute overall on-time confidence % directly from Monte Carlo Teamwork Graph goal probabilities
   const baseOnTimePct =
-    p85Shift > 0
-      ? Math.max(20, Math.round(85 - p85Shift * 3.2))
-      : p85Shift < 0
-        ? Math.min(98, Math.round(85 + Math.abs(p85Shift) * 2.5))
-        : 85;
+    activeSim.goalImpacts.length > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round(
+              Math.min(
+                ...activeSim.goalImpacts.map((g) => g.probabilityOfOnTime)
+              ) * 100
+            )
+          )
+        )
+      : p85Shift > 0
+        ? Math.max(20, Math.round(85 - p85Shift * 3.2))
+        : p85Shift < 0
+          ? Math.min(98, Math.round(85 + Math.abs(p85Shift) * 2.5))
+          : 85;
 
   const gauge1Color =
     baseOnTimePct >= 75 ? '#10B981' : baseOnTimePct >= 50 ? '#F59E0B' : '#F43F5E';
@@ -244,7 +256,7 @@ export function renderLeftStatusRail(props: HeaderBarProps): string {
 
       <div class="rail-gauges-stack">
         <!-- Gauge 1: On-Time Probability -->
-        <div class="rail-gauge-card" title="85% Confidence Target Commit Date: ${activeSim.p85Date} (Baseline: ${baselineSim.p85Date})">
+        <div class="rail-gauge-card" title="85% Confidence Target Commit Date: ${escapeHtmlText(activeSim.p85Date)} (Baseline: ${escapeHtmlText(baselineSim.p85Date)})">
           <div class="rail-gauge-visual">
             ${renderArchGaugeSvg(baseOnTimePct / 100, gauge1Color)}
             <div class="rail-gauge-value ${gauge1TextClass}">
@@ -307,7 +319,7 @@ export function renderLeftStatusRail(props: HeaderBarProps): string {
         </div>
 
         <!-- Gauge 4: Target Commit Date -->
-        <div class="rail-gauge-card" title="Target Commit Date (85% safe): ${activeSim.p85Date}">
+        <div class="rail-gauge-card" title="Target Commit Date (85% safe): ${escapeHtmlText(activeSim.p85Date)}">
           <div class="rail-gauge-visual">
             ${renderArchGaugeSvg(0.85, '#8B5CF6')}
             <div class="rail-gauge-value text-violet-light">
